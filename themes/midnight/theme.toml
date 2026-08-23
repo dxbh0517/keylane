@@ -1,0 +1,13 @@
+id = "midnight"
+name = "Midnight"
+author = "built-in"
+version = "1.0.0"
+description = "Dark charcoal with soft cyan accent."
+
+[colors]
+bg = "#09090b"
+surface = "#18181b"
+text = "#fafafa"
+muted = "#a1a1aa"
+accent = "#22d3ee"
+border = "#27272a"

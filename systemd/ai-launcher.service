@@ -1,0 +1,14 @@
+[Unit]
+Description=Keylane launcher
+After=graphical-session.target
+Wants=ai-gateway.service
+
+[Service]
+WorkingDirectory=%h/.local/share/ai-gateway
+ExecStart=%h/.local/share/ai-gateway/.venv/bin/python %h/.local/share/ai-gateway/launcher/main.py
+Restart=on-failure
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,30 @@
+# Gateway plugin state — managed by the control panel.
+# See docs/PLUGINS.md
+
+[plugins.lmstudio]
+enabled = true
+
+[plugins.claude]
+enabled = true
+
+[plugins.cursor]
+enabled = true
+
+[plugins.comfyui]
+enabled = true
+
+[plugins.comfyui.settings]
+command = "comfy-mcp"
+args = "[]"
+health_tool = "server_info"
+run_tool = "generate_image"
+
+[plugins.comfyui-http]
+enabled = false
+
+[plugins.lemonade]
+enabled = true
+
+[plugins.lemonade.settings]
+host = "127.0.0.1"
+port = 9000

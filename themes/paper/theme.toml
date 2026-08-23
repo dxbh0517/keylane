@@ -1,0 +1,13 @@
+id = "paper"
+name = "Paper"
+author = "built-in"
+version = "1.0.0"
+description = "Warm paper light theme with brick accent."
+
+[colors]
+bg = "#f7f3ee"
+surface = "#fffdf9"
+text = "#1c1917"
+muted = "#78716c"
+accent = "#c2410c"
+border = "#e7e5e4"

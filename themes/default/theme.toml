@@ -1,0 +1,13 @@
+id = "default"
+name = "Default"
+author = "built-in"
+version = "1.0.0"
+description = "Calm zinc surfaces with emerald accent."
+
+[colors]
+bg = "#f4f4f5"
+surface = "#ffffff"
+text = "#18181b"
+muted = "#71717a"
+accent = "#059669"
+border = "#e4e4e7"

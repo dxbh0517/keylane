@@ -1,0 +1,15 @@
+[Unit]
+Description=Keylane local AI gateway
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+WorkingDirectory=%h/.local/share/ai-gateway
+ExecStart=%h/.local/share/ai-gateway/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9100
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

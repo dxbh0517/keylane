@@ -1,0 +1,12 @@
+id = "example-mcp"
+name = "Example MCP"
+description = "Template community MCP plugin. Copy this folder and edit."
+kind = "mcp"
+author = "community"
+version = "0.1.0"
+worker_id = "example-mcp"
+cloud = false
+command = "comfy-mcp"
+args = []
+health_tool = "server_info"
+run_tool = "generate_image"

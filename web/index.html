@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Keylane</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png" />
+  <link rel="stylesheet" href="/assets/app.css" />
+  <link rel="stylesheet" id="theme-css" href="/theme.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail" aria-label="Sections">
+      <div class="brand">
+        <img class="brand-mark" src="/assets/logo.png" width="32" height="32" alt="" />
+        <div>
+          <strong>Keylane</strong>
+          <span class="muted">Local AI gateway</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <button type="button" class="nav-item is-active" data-tab="status">Status</button>
+        <button type="button" class="nav-item" data-tab="config">Gateway</button>
+        <button type="button" class="nav-item" data-tab="plugins">Plugins</button>
+        <button type="button" class="nav-item" data-tab="themes">Themes</button>
+      </nav>
+      <p class="rail-foot muted">Bound to 127.0.0.1 only</p>
+    </aside>
+
+    <main class="main">
+      <header class="top">
+        <div>
+          <h1 id="page-title">Status</h1>
+          <p class="lede" id="page-lede">Worker health and NPU readiness.</p>
+        </div>
+        <button type="button" class="btn ghost" id="refresh-btn">Refresh</button>
+      </header>
+
+      <section id="tab-status" class="panel is-active">
+        <div class="status-grid" id="status-grid"></div>
+        <p class="hint muted">Port 9000 is often Lemonade (<code>lemond</code>). This gateway defaults to <code>9100</code>.</p>
+      </section>
+
+      <section id="tab-config" class="panel">
+        <form id="config-form" class="form-stack">
+          <label>
+            <span>Host</span>
+            <input name="host" autocomplete="off" />
+          </label>
+          <label>
+            <span>Port</span>
+            <input name="port" type="number" min="1024" max="65535" />
+          </label>
+          <label>
+            <span>Max retries</span>
+            <input name="max_retries" type="number" min="0" max="10" />
+          </label>
+          <label class="check">
+            <input name="local_only" type="checkbox" />
+            <span>Local only (block Claude / Cursor)</span>
+          </label>
+          <label>
+            <span>Allowed project roots (one per line)</span>
+            <textarea name="allowed_project_roots" rows="4"></textarea>
+          </label>
+          <label class="check">
+            <input name="require_confirmation_for_modifications" type="checkbox" />
+            <span>Confirm file modifications</span>
+          </label>
+          <div class="row">
+            <button type="submit" class="btn primary">Save settings</button>
+            <p class="muted" id="config-note"></p>
+          </div>
+        </form>
+      </section>
+
+      <section id="tab-plugins" class="panel">
+        <div class="row between">
+          <p class="muted">Enable workers and MCP servers. ComfyUI uses <code>comfy-mcp</code> by default.</p>
+          <button type="button" class="btn ghost" id="reload-plugins">Reload</button>
+        </div>
+        <div id="plugin-list" class="card-list"></div>
+
+        <details class="installer">
+          <summary>Install MCP plugin</summary>
+          <form id="mcp-install-form" class="form-stack compact">
+            <label><span>ID</span><input name="id" placeholder="my-mcp" required /></label>
+            <label><span>Name</span><input name="name" placeholder="My MCP" /></label>
+            <label><span>Command</span><input name="command" placeholder="comfy-mcp" required /></label>
+            <label><span>Args (JSON array)</span><input name="args" value="[]" /></label>
+            <label><span>Health tool</span><input name="health_tool" value="server_info" /></label>
+            <label><span>Run tool</span><input name="run_tool" value="generate_image" /></label>
+            <label><span>Worker ID</span><input name="worker_id" placeholder="same as id if routing" /></label>
+            <label class="check"><input name="cloud" type="checkbox" /><span>Cloud service</span></label>
+            <button type="submit" class="btn primary">Install MCP plugin</button>
+          </form>
+          <p class="hint muted">See <code>docs/PLUGINS.md</code> for manifests and community packaging.</p>
+        </details>
+      </section>
+
+      <section id="tab-themes" class="panel">
+        <div id="theme-list" class="theme-grid"></div>
+        <form id="theme-install-form" class="form-stack compact">
+          <label>
+            <span>Install community theme (.zip with theme.toml)</span>
+            <input type="file" name="file" accept=".zip,application/zip" required />
+          </label>
+          <button type="submit" class="btn primary">Install theme</button>
+        </form>
+        <p class="hint muted">Active theme styles this page and the GTK launcher popup. See <code>docs/THEMES.md</code>.</p>
+      </section>
+
+      <div id="toast" class="toast" hidden></div>
+    </main>
+  </div>
+  <script src="/assets/app.js" type="module"></script>
+</body>
+</html>

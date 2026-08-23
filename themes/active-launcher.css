@@ -1,0 +1,86 @@
+@define-color ag_bg #f4f4f5;
+@define-color ag_surface #ffffff;
+@define-color ag_text #18181b;
+@define-color ag_muted #71717a;
+@define-color ag_accent #059669;
+@define-color ag_border #e4e4e7;
+@define-color ag_danger #b91c1c;
+
+window, window.background, .background {
+  background-color: @ag_bg;
+  color: @ag_text;
+}
+
+headerbar, headerbar.flat {
+  background-color: @ag_surface;
+  color: @ag_text;
+  border-bottom-color: @ag_border;
+}
+
+headerbar label, headerbar .title {
+  color: @ag_text;
+}
+
+.ag-shell {
+  background-color: @ag_bg;
+}
+
+entry, textview, textview > text {
+  background-color: @ag_surface;
+  color: @ag_text;
+  border-color: @ag_border;
+  caret-color: @ag_accent;
+}
+
+entry:focus, textview:focus {
+  border-color: @ag_accent;
+  box-shadow: 0 0 0 1px @ag_accent;
+}
+
+label {
+  color: @ag_text;
+}
+
+label.dim-label, .dim-label {
+  color: @ag_muted;
+}
+
+button {
+  background-color: @ag_surface;
+  color: @ag_text;
+  border-color: @ag_border;
+}
+
+button:hover {
+  background-color: mix(@ag_surface, @ag_accent, 0.12);
+}
+
+button.suggested-action, button.suggested-action:hover {
+  background-color: @ag_accent;
+  color: @ag_surface;
+  border-color: @ag_accent;
+}
+
+button.destructive-action {
+  color: @ag_danger;
+  border-color: mix(@ag_danger, @ag_border, 0.5);
+}
+
+checkbutton, checkbutton label {
+  color: @ag_text;
+}
+
+dropdown, popover, popover.menu, popover > contents {
+  background-color: @ag_surface;
+  color: @ag_text;
+  border-color: @ag_border;
+}
+
+listview, listview row {
+  background-color: @ag_surface;
+  color: @ag_text;
+}
+
+scrollbar {
+  background-color: transparent;
+}

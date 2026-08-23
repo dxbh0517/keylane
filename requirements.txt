@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+python-multipart
+httpx
+pydantic
+pydantic-settings
+openvino
+openvino-genai
+openvino-tokenizers
+mcp
+tomli-w
+# PyGObject: install via dnf (python3-gobject), not pip — see scripts/install.sh
+sounddevice
+numpy
+tomli; python_version < "3.11"
+pytest
+pytest-asyncio
