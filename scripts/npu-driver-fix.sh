@@ -20,12 +20,34 @@ PREFIX="/usr/local/lib"        # ahead of /usr/lib64 for the dynamic loader
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
 
-run() { echo "+ $*"; [ "$DRY" = 1 ] || "$@"; }
+# Root escalation has to work from three places: an interactive terminal, a
+# desktop session with no controlling TTY (sudo cannot prompt there), and a
+# dry run that must touch nothing at all.
+ROOT_CMD=""
+pick_root() {
+  [ "$(id -u)" = 0 ] && { ROOT_CMD=""; return; }
+  if sudo -n true 2>/dev/null; then ROOT_CMD="sudo"
+  elif [ -t 0 ] && [ -t 1 ]; then ROOT_CMD="sudo"
+  elif command -v pkexec >/dev/null 2>&1 && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+    # No TTY but a graphical session: pkexec puts up its own dialog.
+    ROOT_CMD="pkexec"
+  else
+    echo "!! Need root, but there is no terminal to ask on and no pkexec." >&2
+    echo "   Re-run this script from a normal terminal window." >&2
+    exit 1
+  fi
+}
+
+run()      { echo "+ $*"; [ "$DRY" = 1 ] || "$@"; }
+run_root() { echo "+ $ROOT_CMD $*"; [ "$DRY" = 1 ] || ${ROOT_CMD:+$ROOT_CMD} "$@"; }
 
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 [ -e /dev/accel/accel0 ] || { echo "No NPU device at /dev/accel/accel0" >&2; exit 1; }
 
-work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+work="$(mktemp -d)"; chmod 755 "$work"; trap 'rm -rf "$work"' EXIT
+pick_root
+[ -n "$ROOT_CMD" ] && echo "==> Escalating with: $ROOT_CMD"
+
 echo "==> Fetching linux-npu-driver $DRIVER_TAG"
 asset=$(curl -fsSL "https://api.github.com/repos/intel/linux-npu-driver/releases/tags/$DRIVER_TAG" \
         | python3 -c 'import json,sys; print(json.load(sys.stdin)["assets"][0]["name"])')
@@ -43,9 +65,21 @@ src="$work/root/usr/lib/x86_64-linux-gnu"
 ls "$src"/*.so* >/dev/null 2>&1 || { echo "No libraries unpacked" >&2; exit 1; }
 
 echo "==> Installing into $PREFIX"
-run sudo install -d "$PREFIX"
-for lib in "$src"/*.so*; do run sudo install -m 0755 "$lib" "$PREFIX/$(basename "$lib")"; done
-run sudo ldconfig
+# One escalation, not one per file: pkexec puts up a password dialog for every
+# invocation, and five dialogs to copy five libraries is a terrible way to ask.
+installer="$work/install-root.sh"
+{
+  echo '#!/bin/sh'
+  echo 'set -eu'
+  echo "install -d '$PREFIX'"
+  for lib in "$src"/*.so*; do
+    echo "install -m 0755 '$lib' '$PREFIX/$(basename "$lib")'"
+  done
+  echo 'ldconfig'
+} > "$installer"
+chmod 755 "$installer"
+echo "--- will run as root ---"; sed 's/^/    /' "$installer"
+run_root "$installer"
 
 echo "==> Pinning the gateway's OpenVINO to $OPENVINO"
 GW="${KEYLANE_HOME:-$HOME/.local/share/ai-gateway}"
