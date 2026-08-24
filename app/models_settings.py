@@ -465,10 +465,21 @@ def models_overview() -> dict[str, Any]:
     rec = recommendations(hw)
     from app.worker_models import policy_summary
 
+    cfg = get_config()
     return {
         "settings": settings.model_dump(),
         "resolved_device": resolve_openvino_device(settings),
         "hardware": hardware_dict(),
+        # Stored paths are relative so the config stays portable, but "./models"
+        # reads as the current folder — which is the source checkout, not the
+        # install the service runs from. Say where that actually is.
+        "paths": {
+            "root": str(cfg.root),
+            "models": str(cfg.root / "models"),
+            "router": str(cfg.root / "models" / "router"),
+            "chat": str(cfg.root / "models" / "chat"),
+            "resolved_router": str(cfg.resolve_path(settings.router_model_path)),
+        },
         "recommendations": rec,
         "worker_policy": policy_summary(),
         "autostart": {

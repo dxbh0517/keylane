@@ -363,3 +363,30 @@ def test_chat_downloads_target_lm_studio(client):
     assert str(destination).startswith(str(lmstudio))
     assert destination.name == "Some-Model-GGUF"
     assert destination.parent.name == "lmstudio-community"
+
+
+def test_models_overview_names_the_real_download_location(client):
+    """Relative paths hide where downloads actually go.
+
+    ``./models/router`` reads as the current directory, which for anyone with
+    the source checked out is the wrong folder — the service runs from the
+    install. The panel has to state the absolute path.
+    """
+    from pathlib import Path
+
+    data = client.get("/api/models").json()
+    paths = data.get("paths") or {}
+    for key in ("root", "models", "router", "chat", "resolved_router"):
+        assert key in paths, f"no {key} path reported"
+        assert Path(paths[key]).is_absolute(), f"{key} is not absolute: {paths[key]}"
+    assert paths["router"].endswith("models/router")
+
+
+def test_installed_models_carry_an_absolute_path(client):
+    data = client.get("/api/models").json()
+    from pathlib import Path
+
+    for model in (data.get("recommendations") or {}).get("installed") or []:
+        assert Path(model["absolute"]).is_absolute()
+        # The relative form is still stored, for a portable config.
+        assert model["path"].startswith("./")

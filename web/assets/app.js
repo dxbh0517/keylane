@@ -1418,6 +1418,16 @@ async function loadModels() {
   const rc = $("#rec-chat");
   if (rc) rc.innerHTML = (rec.chat || []).slice(0, 4).map((m) => recCard(m, "chat")).join("");
 
+  // "./models" is relative to the *install*, not to wherever the user has a
+  // checkout open — which is exactly the confusion worth heading off.
+  const paths = data.paths || {};
+  const where = $("#models-location");
+  if (where) {
+    where.innerHTML = paths.router
+      ? `Downloads go to <code>${esc(paths.router)}</code>`
+      : "";
+  }
+
   const installed = rec.installed || [];
   const inst = $("#installed-models");
   if (inst) {
@@ -1426,12 +1436,12 @@ async function loadModels() {
           .map(
             (m) => `<article class="rec-card">
               <strong>${esc(m.name)}</strong>
-              <p class="muted meta">${esc(m.path)}</p>
+              <p class="muted meta" title="${esc(m.absolute || m.path)}">${esc(m.absolute || m.path)}</p>
               <button type="button" class="btn ghost small use-installed" data-path="${esc(m.path)}" data-id="${esc(m.id)}">Use as router</button>
             </article>`
           )
           .join("")
-      : `<p class="empty">No OpenVINO exports under <code>models/</code> yet. Search Hugging Face above for an INT4 export.</p>`;
+      : `<p class="empty">Nothing downloaded yet. Use a <strong>Download</strong> button above, or search Hugging Face.</p>`;
   }
 }
 
@@ -1642,6 +1652,7 @@ function renderHfJobs(jobs) {
         </div>
         <div class="hf-progress"><div style="width:${pct}%"></div></div>
         <p class="muted meta">${esc(j.message || j.error || "")}</p>
+        ${j.dest ? `<p class="args" title="${esc(j.dest)}">${esc(j.dest)}</p>` : ""}
       </div>`;
       })
       .join("");
@@ -1705,7 +1716,7 @@ document.addEventListener("click", async (e) => {
     toast(
       btn.dataset.target === "chat"
         ? `Downloading ${job.repo_id} into LM Studio`
-        : `Downloading ${job.repo_id}`
+        : `Downloading ${job.repo_id} → ${job.dest || "models/router"}`
     );
     setTab("models");
     await refreshHfJobs();

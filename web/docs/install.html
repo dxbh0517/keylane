@@ -138,6 +138,12 @@ curl -s http://127.0.0.1:9100/api/status | python -m json.tool</code></pre>
 <p><strong>Gateway → Local only</strong> blocks every cloud worker. Claude Code and Cursor disappear from routing and from the assistant&#x27;s catalogue, so nothing leaves the machine.</p>
 <h2>Autostart</h2>
 <p><strong>Models → Startup</strong> toggles the user services for the gateway, the popup and the control panel at login.</p>
+<h2>Where downloaded models live</h2>
+<p>Downloads go into the <strong>install</strong>, not the source checkout:</p>
+<span class="code-label">text</span><pre><code>~/.local/share/ai-gateway/models/router/    OpenVINO exports Keylane runs
+~/.lmstudio/models/&lt;publisher&gt;/&lt;repo&gt;/      GGUF chat models, for LM Studio</code></pre>
+<p>Config stores these as relative paths (<code>./models/router/…</code>) so a config file stays portable, but <code>./</code> means the install directory. If you have the source checked out, its <code>models/</code> folder stays empty — that is expected. The Models tab shows the absolute path so there is no guessing.</p>
+<p>Upgrading never touches them; <code>models/</code> is excluded from the sync.</p>
 <h2>Layout</h2>
 <span class="code-label">text</span><pre><code>app/            gateway: routing, tools, assistant, plugins, themes
   tools/        the assistant&#x27;s capabilities

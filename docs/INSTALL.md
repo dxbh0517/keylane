@@ -225,6 +225,22 @@ machine.
 **Models → Startup** toggles the user services for the gateway, the popup and
 the control panel at login.
 
+## Where downloaded models live
+
+Downloads go into the **install**, not the source checkout:
+
+```text
+~/.local/share/ai-gateway/models/router/    OpenVINO exports Keylane runs
+~/.lmstudio/models/<publisher>/<repo>/      GGUF chat models, for LM Studio
+```
+
+Config stores these as relative paths (`./models/router/…`) so a config file
+stays portable, but `./` means the install directory. If you have the source
+checked out, its `models/` folder stays empty — that is expected. The Models
+tab shows the absolute path so there is no guessing.
+
+Upgrading never touches them; `models/` is excluded from the sync.
+
 ## Layout
 
 ```text
