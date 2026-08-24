@@ -172,6 +172,20 @@ python scripts/build_docs.py          # rebuild web/docs from docs/*.md</code></
 KEYLANE_GATEWAY=http://127.0.0.1:9199 \
 KEYLANE_APP_ID=app.keylane.LauncherDev \
 python launcher/main.py</code></pre>
+<h2>Getting the router onto the NPU</h2>
+<p>Keylane falls back to the GPU when the NPU cannot compile a model, and says so in the panel. On Fedora the usual cause is a version mismatch, because the NPU compiler ships <strong>inside the NPU driver</strong>, not with the OpenVINO package, and Fedora versions the two separately:</p>
+<div class="table-wrap"><table><thead><tr><th>Component</th><th>Fedora ships</th><th>Built for</th></tr></thead><tbody><tr><td><code>intel-npu-driver</code></td><td>1.32.0</td><td>OpenVINO 2026.0</td></tr><tr><td><code>intel-npu-compiler</code></td><td>2025.1.0</td><td>OpenVINO 2025.1</td></tr><tr><td><code>openvino</code> (pip)</td><td>2026.3.0</td><td>—</td></tr></tbody></table></div>
+<p>Three components, three generations. Nothing compiles, and the error names a configuration key (<code>NPU_MAX_TILES</code>) rather than the cause. An eight-element addition fails just as surely as a language model, which is the quickest way to confirm this is what you are looking at:</p>
+<span class="code-label">bash</span><pre><code>python -c &quot;
+import openvino as ov, openvino.opset13 as op, numpy as np
+x = op.parameter([1,8], ov.Type.f32)
+m = ov.Model([op.add(x, op.constant(np.ones((1,8), np.float32)))], [x])
+ov.Core().compile_model(m, &#x27;NPU&#x27;); print(&#x27;NPU compiles fine&#x27;)&quot;</code></pre>
+<p>To fix it:</p>
+<span class="code-label">bash</span><pre><code>scripts/npu-driver-fix.sh --dry-run   # see exactly what it will do
+scripts/npu-driver-fix.sh</code></pre>
+<p>It installs Intel&#x27;s matched compiler and Level Zero backend into <code>/usr/local/lib</code>, ahead of Fedora&#x27;s in the loader path — Fedora&#x27;s files are left alone, and deleting the three installed libraries plus <code>ldconfig</code> reverts it. It then pins the gateway&#x27;s OpenVINO to the release the driver was built for.</p>
+<p><strong>Model size matters.</strong> On a Meteor Lake NPU a 1.5B int4 export compiles in about ten seconds. A 3.8B export may not finish at all. Prefer a small router model for the NPU and leave larger models on the GPU.</p>
         <nav class="page-nav"><a href="index.html"><span class="dir">Previous</span><span class="name">Keylane handbook</span></a><a class="next" href="popup.html"><span class="dir">Next</span><span class="name">The popup and the tray</span></a></nav>
       </article>
     </main>

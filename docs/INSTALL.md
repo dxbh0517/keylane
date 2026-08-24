@@ -281,3 +281,45 @@ KEYLANE_APP_ID=app.keylane.LauncherDev \
 python launcher/main.py
 ```
 
+## Getting the router onto the NPU
+
+Keylane falls back to the GPU when the NPU cannot compile a model, and says so
+in the panel. On Fedora the usual cause is a version mismatch, because the NPU
+compiler ships **inside the NPU driver**, not with the OpenVINO package, and
+Fedora versions the two separately:
+
+| Component | Fedora ships | Built for |
+| --- | --- | --- |
+| `intel-npu-driver` | 1.32.0 | OpenVINO 2026.0 |
+| `intel-npu-compiler` | 2025.1.0 | OpenVINO 2025.1 |
+| `openvino` (pip) | 2026.3.0 | — |
+
+Three components, three generations. Nothing compiles, and the error names a
+configuration key (`NPU_MAX_TILES`) rather than the cause. An eight-element
+addition fails just as surely as a language model, which is the quickest way to
+confirm this is what you are looking at:
+
+```bash
+python -c "
+import openvino as ov, openvino.opset13 as op, numpy as np
+x = op.parameter([1,8], ov.Type.f32)
+m = ov.Model([op.add(x, op.constant(np.ones((1,8), np.float32)))], [x])
+ov.Core().compile_model(m, 'NPU'); print('NPU compiles fine')"
+```
+
+To fix it:
+
+```bash
+scripts/npu-driver-fix.sh --dry-run   # see exactly what it will do
+scripts/npu-driver-fix.sh
+```
+
+It installs Intel's matched compiler and Level Zero backend into
+`/usr/local/lib`, ahead of Fedora's in the loader path — Fedora's files are
+left alone, and deleting the three installed libraries plus `ldconfig` reverts
+it. It then pins the gateway's OpenVINO to the release the driver was built
+for.
+
+**Model size matters.** On a Meteor Lake NPU a 1.5B int4 export compiles in
+about ten seconds. A 3.8B export may not finish at all. Prefer a small router
+model for the NPU and leave larger models on the GPU.
