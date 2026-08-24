@@ -274,33 +274,71 @@ def reload_pipelines(config: AppConfig | None = None) -> dict[str, bool]:
 # attempted — which then fails with whatever configuration key the plugin
 # happened to try first. Reporting that key sends people chasing a setting
 # when the real answer is a missing package.
-_COMPILER_LIBRARY = "libnpu_driver_compiler.so"
-_COMPILER_SEARCH = ("/usr/lib64", "/usr/lib", "/usr/local/lib64", "/usr/local/lib")
+_COMPILER_LIBRARIES = (
+    "libnpu_driver_compiler.so",          # driver releases up to ~1.32
+    "libopenvino_intel_npu_compiler.so",  # renamed in ~1.35
+)
+_COMPILER_SEARCH = (
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/local/lib64",
+    "/usr/local/lib",
+)
 
 
 def npu_compiler_present() -> bool:
     """True when the NPU driver's compiler library is installed."""
     from pathlib import Path as _Path
 
-    return any((_Path(d) / _COMPILER_LIBRARY).exists() for d in _COMPILER_SEARCH)
+    return any(
+        (_Path(d) / name).exists()
+        for d in _COMPILER_SEARCH
+        for name in _COMPILER_LIBRARIES
+    )
 
 
-def npu_failure_diagnosis() -> str:
-    """Explain an NPU compile failure, when the cause is knowable."""
-    if npu_compiler_present():
-        return ""
-    version = None
+def _npu_compiler_version() -> int | None:
     try:
         import openvino as ov
 
-        version = ov.Core().get_property("NPU", "NPU_COMPILER_VERSION")
+        return int(ov.Core().get_property("NPU", "NPU_COMPILER_VERSION"))
     except Exception:  # noqa: BLE001
-        pass
-    if version not in (None, 0):
-        # A compiler is reachable by some other route; the failure is not this.
-        return ""
+        return None
+
+
+def npu_failure_diagnosis() -> str:
+    """Explain an NPU compile failure, when the cause is knowable.
+
+    Two causes account for every NPU failure seen so far, and neither is
+    visible in the error the plugin raises:
+
+    * the compiler is missing entirely, so nothing compiles;
+    * the compiler is present but built for a different OpenVINO generation
+      than the runtime, so trivial graphs compile and real models do not.
+
+    The compiler ships inside the NPU driver, not with the OpenVINO wheel, so
+    upgrading one without the other is easy to do by accident.
+    """
+    version = _npu_compiler_version()
+    if not npu_compiler_present() or version in (None, 0):
+        return (
+            "The NPU driver's compiler is not installed, so no model can be "
+            "compiled for the NPU. On Fedora: sudo dnf install "
+            "intel-npu-compiler — but check that its version matches the "
+            "installed OpenVINO, because Fedora versions the two separately."
+        )
+
+    try:
+        import openvino as ov
+
+        runtime = ov.__version__.split("-")[0]
+    except Exception:  # noqa: BLE001
+        runtime = "unknown"
     return (
-        "The NPU driver's compiler is not installed, so no model can be "
-        f"compiled for the NPU ({_COMPILER_LIBRARY} is missing). On Fedora: "
-        "sudo dnf install intel-npu-compiler."
+        f"The NPU compiler (interface {version >> 16}.{version & 0xFFFF}) "
+        f"rejected the model while OpenVINO {runtime} is in use. The compiler "
+        "ships with the NPU driver rather than the OpenVINO package, so the "
+        "two have to come from the same release — see "
+        "github.com/intel/linux-npu-driver/releases for the pairing."
     )

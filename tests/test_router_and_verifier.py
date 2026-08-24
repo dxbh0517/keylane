@@ -138,19 +138,38 @@ def test_verifier_accepts_image_output(tmp_path):
     assert result.complete is True
 
 
-def test_npu_diagnosis_is_silent_when_the_compiler_is_installed(monkeypatch):
-    """No compiler, no explanation to give — and vice versa.
+def test_npu_diagnosis_names_the_missing_compiler():
+    """No compiler at all — the panel must name the package, not a config key.
 
     The NPU enumerates fine with only the Level Zero backend installed, so a
-    compile failure gets blamed on whatever config key the plugin tried first.
-    The diagnosis exists to name the missing package instead.
+    compile failure gets blamed on whatever the plugin tried first.
     """
     from app.npu import pipeline
 
-    monkeypatch.setattr(pipeline, "npu_compiler_present", lambda: True)
-    assert pipeline.npu_failure_diagnosis() == ""
-
-    monkeypatch.setattr(pipeline, "npu_compiler_present", lambda: False)
-    message = pipeline.npu_failure_diagnosis()
-    assert "libnpu_driver_compiler.so" in message
+    original = pipeline.npu_compiler_present
+    pipeline.npu_compiler_present = lambda: False
+    try:
+        message = pipeline.npu_failure_diagnosis()
+    finally:
+        pipeline.npu_compiler_present = original
+    assert "not installed" in message
     assert "intel-npu-compiler" in message
+
+
+def test_npu_diagnosis_reports_a_version_mismatch():
+    """A compiler that is present but from the wrong OpenVINO generation.
+
+    This is the harder case: trivial graphs compile and real models do not,
+    so the error looks like a problem with the model.
+    """
+    from app.npu import pipeline
+
+    present, version = pipeline.npu_compiler_present, pipeline._npu_compiler_version
+    pipeline.npu_compiler_present = lambda: True
+    pipeline._npu_compiler_version = lambda: 0x70002
+    try:
+        message = pipeline.npu_failure_diagnosis()
+    finally:
+        pipeline.npu_compiler_present, pipeline._npu_compiler_version = present, version
+    assert "7.2" in message, "the compiler interface version must be named"
+    assert "linux-npu-driver" in message
