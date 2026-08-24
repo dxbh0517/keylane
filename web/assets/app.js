@@ -1,12 +1,25 @@
+/* Keylane control panel. */
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 const titles = {
-  status: ["Status", "Worker health and NPU readiness."],
-  config: ["Gateway", "Host, port, retries, and project sandbox."],
-  plugins: ["Plugins", "Native workers and MCP servers."],
-  themes: ["Themes", "Style the control panel and GTK launcher."],
+  status: ["Status", "Worker health, NPU readiness and what the assistant is doing."],
+  assistant: ["Assistant", "What the on-device model may do, and the tools it can reach."],
+  plugins: ["Plugins", "Workers, MCP servers and tool providers."],
+  skills: ["Skills", "Instruction packs that extend the assistant."],
+  models: ["Models", "Device selection, downloads and per-worker defaults."],
+  themes: ["Themes", "Style this panel and reshape the Super+Space popup."],
+  config: ["Gateway", "Host, port, retries and the project sandbox."],
 };
+
+const esc = (value) =>
+  String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 
 function toast(message) {
   const el = $("#toast");
@@ -15,7 +28,7 @@ function toast(message) {
   clearTimeout(toast._t);
   toast._t = setTimeout(() => {
     el.hidden = true;
-  }, 3200);
+  }, 3600);
 }
 
 async function api(path, options = {}) {
@@ -50,115 +63,503 @@ $$(".nav-item").forEach((btn) => {
   btn.addEventListener("click", () => setTab(btn.dataset.tab));
 });
 
-function pill(label, ok, detail = "", state = null) {
-  const kind = state || (ok ? "ok" : "bad");
-  const labelText =
-    kind === "ok" ? "Online" : kind === "warn" ? "Driver only" : "Offline";
-  return `<article class="pill">
-    <div class="label">${label}</div>
-    <div class="value"><span class="dot ${kind}"></span>${labelText}</div>
-    ${detail ? `<div class="muted" style="font-size:.82rem">${detail}</div>` : ""}
-  </article>`;
+function applyThemeCss() {
+  const link = $("#theme-css");
+  if (link) link.href = `/theme.css?t=${Date.now()}`;
 }
 
-function applyThemeCss() {
-  const link = $("#theme-css") || document.querySelector('link[href*="theme.css"]');
-  if (!link) return;
-  link.href = `/theme.css?t=${Date.now()}`;
+/* ————————————————————————————————————————————————— status ——— */
+
+function pill(label, ok, detail = "", state = null) {
+  const kind = state || (ok ? "ok" : "bad");
+  const text = kind === "ok" ? "Online" : kind === "warn" ? "Driver only" : "Offline";
+  return `<article class="pill">
+    <div class="label">${esc(label)}</div>
+    <div class="value"><span class="dot ${kind}"></span>${text}</div>
+    ${detail ? `<div class="detail">${esc(detail)}</div>` : ""}
+  </article>`;
 }
 
 async function loadStatus() {
   const data = await api("/api/status");
-  const grid = $("#status-grid");
   const npuState = data.npu ? "ok" : data.npu_driver ? "warn" : "bad";
-  grid.innerHTML = [
+  $("#status-grid").innerHTML = [
     pill("NPU", data.npu, data.npu_detail || "", npuState),
+    pill(
+      "Assistant",
+      data.assistant,
+      data.assistant
+        ? `${data.tool_count} tools ready`
+        : `No NPU model loaded — ${data.tool_count} tools ready, keyword fallback in use`,
+      data.assistant ? "ok" : "warn"
+    ),
     pill("LM Studio", data.lmstudio),
     pill("ComfyUI", data.comfyui),
-    pill("Claude", data.claude),
+    pill("Claude Code", data.claude),
     pill("Cursor", data.cursor),
     pill("Lemonade", data.lemonade),
     pill("Gateway", data.gateway, data.local_only ? "Local-only mode" : "All workers allowed"),
   ].join("");
+
+  $("#count-tools").textContent = data.tool_count || "";
+
+  const banner = $("#status-banner");
+  if (!data.assistant && data.npu) {
+    banner.innerHTML = `<div class="banner warn">
+      <svg viewBox="0 0 24 24"><use href="#i-alert" /></svg>
+      <div>The NPU is available but no router model is loaded, so Keylane is using
+      keyword matching instead of the model. Download an OpenVINO export under
+      <strong>Models</strong> to switch the assistant on.</div>
+    </div>`;
+  } else if (!data.tools_enabled) {
+    banner.innerHTML = `<div class="banner warn">
+      <svg viewBox="0 0 24 24"><use href="#i-alert" /></svg>
+      <div>The assistant tool layer is switched off — every request goes straight to a worker.</div>
+    </div>`;
+  } else {
+    banner.innerHTML = "";
+  }
+  return data;
 }
 
-async function loadConfig() {
-  const data = await api("/api/config");
-  const form = $("#config-form");
-  form.host.value = data.host;
-  form.port.value = data.port;
-  form.max_retries.value = data.max_retries;
-  form.local_only.checked = !!data.local_only;
-  form.require_confirmation_for_modifications.checked = !!data.require_confirmation_for_modifications;
-  form.allowed_project_roots.value = (data.allowed_project_roots || []).join("\n");
-  $("#config-note").textContent = data.note || "";
+/* ————————————————————————————————————————————— activity ——— */
+
+function activityRow(task, { live }) {
+  const icon = live
+    ? `<span class="spinner"></span>`
+    : `<span class="dot ${task.status === "completed" ? "ok" : task.status === "failed" ? "bad" : "warn"}"></span>`;
+  const when = task.finished_at || task.updated_at || task.started_at || "";
+  const time = when ? new Date(when).toLocaleTimeString() : "";
+  const detail = task.step || task.error || task.worker || task.status;
+  return `<div class="activity-row">
+    ${icon}
+    <span class="title">${esc(task.title || "(untitled)")}</span>
+    <span class="badge">${esc(detail || task.status)}</span>
+    <time>${esc(time)}</time>
+  </div>`;
 }
 
-$("#config-form").addEventListener("submit", async (e) => {
+function renderActivity(snapshot) {
+  const active = snapshot.active || [];
+  const recent = snapshot.recent || [];
+
+  $("#activity-active").innerHTML = active.length
+    ? active.map((t) => activityRow(t, { live: t.status !== "waiting_confirmation" })).join("")
+    : `<p class="empty">Nothing running. Press <kbd>Super</kbd>+<kbd>Space</kbd> to ask for something.</p>`;
+
+  $("#activity-recent").innerHTML = recent.length
+    ? recent.map((t) => activityRow(t, { live: false })).join("")
+    : `<p class="empty">No tasks yet this session.</p>`;
+
+  $("#activity-meta").textContent = snapshot.busy
+    ? `${snapshot.active_count} running`
+    : "Idle";
+
+  const rail = $("#rail-activity");
+  const kind = snapshot.needs_attention ? "warn" : snapshot.busy ? "ok" : "";
+  const label = snapshot.needs_attention
+    ? `${snapshot.needs_attention} awaiting approval`
+    : snapshot.busy
+      ? `${snapshot.active_count} running`
+      : "Idle";
+  rail.innerHTML = `<span class="dot ${kind}"></span>${esc(label)}`;
+}
+
+function connectActivityStream() {
+  let source;
+  try {
+    source = new EventSource("/api/events");
+  } catch {
+    setInterval(() => api("/api/activity").then(renderActivity).catch(() => {}), 4000);
+    return;
+  }
+  source.addEventListener("snapshot", (event) => {
+    try {
+      renderActivity(JSON.parse(event.data));
+    } catch {
+      /* ignore a malformed frame */
+    }
+  });
+  source.onerror = () => {
+    // EventSource reconnects on its own; keep a slow poll as a safety net.
+    api("/api/activity").then(renderActivity).catch(() => {});
+  };
+}
+
+/* ————————————————————————————————————————————— assistant ——— */
+
+let toolsCache = [];
+
+function toolCard(tool) {
+  const props = Object.keys(tool.parameters?.properties || {});
+  const blocked = !tool.enabled;
+  const unusable = blocked || !tool.available;
+  // "Unavailable" means the machine lacks something; "off" means policy says no.
+  const missing = tool.available === false && !blocked;
+  return `<article class="tool-card ${tool.danger} ${unusable ? "is-off" : ""}" data-tool="${esc(tool.name)}">
+    <div class="row between">
+      <span class="name">${esc(tool.name)}</span>
+      <div class="row">
+        <span class="badge">${esc(tool.danger)}</span>
+        ${tool.requires_confirmation ? `<span class="badge warn">asks first</span>` : ""}
+      </div>
+    </div>
+    <p class="desc">${esc(tool.description)}</p>
+    ${props.length ? `<p class="args">${esc(props.join(", "))}</p>` : ""}
+    ${missing ? `<p class="args">unavailable: ${esc(tool.unavailable_reason || "")}</p>` : ""}
+    <div class="tool-controls">
+      <label class="check">
+        <input type="checkbox" class="tool-enabled" ${blocked ? "" : "checked"} />
+        <span>Enabled</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" class="tool-autoconfirm" ${tool.requires_confirmation ? "" : "checked"}
+               ${tool.danger === "safe" ? "disabled" : ""} />
+        <span>Run without asking</span>
+      </label>
+      <button type="button" class="btn ghost small tool-run" ${unusable ? "disabled" : ""}>Try it</button>
+    </div>
+  </article>`;
+}
+
+function renderTools(filter = "") {
+  const needle = filter.trim().toLowerCase();
+  const shown = needle
+    ? toolsCache.filter(
+        (t) =>
+          t.name.toLowerCase().includes(needle) ||
+          t.description.toLowerCase().includes(needle) ||
+          t.category.toLowerCase().includes(needle)
+      )
+    : toolsCache;
+
+  if (!shown.length) {
+    $("#tool-grid").innerHTML = `<p class="empty">No tools match “${esc(filter)}”.</p>`;
+    return;
+  }
+
+  const groups = new Map();
+  for (const tool of shown) {
+    if (!groups.has(tool.category)) groups.set(tool.category, []);
+    groups.get(tool.category).push(tool);
+  }
+  $("#tool-grid").innerHTML = [...groups.entries()]
+    .map(
+      ([category, tools]) =>
+        `<h4 class="tool-group-title">${esc(category)} · ${tools.length}</h4>` +
+        tools.map(toolCard).join("")
+    )
+    .join("");
+}
+
+async function loadTools() {
+  const data = await api("/api/tools");
+  toolsCache = data.tools || [];
+  renderTools($("#tool-search").value);
+  $("#count-tools").textContent = toolsCache.filter((t) => t.enabled && t.available).length;
+}
+
+$("#tool-search").addEventListener("input", (e) => renderTools(e.target.value));
+
+$("#tool-grid").addEventListener("change", async (e) => {
+  const card = e.target.closest("[data-tool]");
+  if (!card) return;
+  const name = card.dataset.tool;
+  const body = {};
+  if (e.target.classList.contains("tool-enabled")) body.enabled = e.target.checked;
+  else if (e.target.classList.contains("tool-autoconfirm")) body.auto_confirm = e.target.checked;
+  else return;
+  try {
+    await api(`/api/tools/${encodeURIComponent(name)}/policy`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    toast(`${name} updated`);
+    await Promise.all([loadTools(), loadAssistant(), loadStatus()]);
+  } catch (err) {
+    toast(err.message);
+    await loadTools();
+  }
+});
+
+$("#tool-grid").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".tool-run");
+  if (!btn) return;
+  const name = e.target.closest("[data-tool]").dataset.tool;
+  const tool = toolsCache.find((t) => t.name === name);
+  const props = tool?.parameters?.properties || {};
+  const required = tool?.parameters?.required || [];
+
+  const args = {};
+  for (const [key, schema] of Object.entries(props)) {
+    const hint = schema.description ? `\n${schema.description}` : "";
+    const value = prompt(`${name} — ${key}${required.includes(key) ? " (required)" : ""}${hint}`, "");
+    if (value === null) return;
+    if (value === "" && !required.includes(key)) continue;
+    args[key] = schema.type === "integer" ? Number(value)
+      : schema.type === "boolean" ? /^(true|yes|1|on)$/i.test(value)
+      : value;
+  }
+
+  btn.disabled = true;
+  try {
+    let res = await api("/api/tools/call", {
+      method: "POST",
+      body: JSON.stringify({ tool: name, arguments: args }),
+    });
+    if (res.requires_confirmation) {
+      if (!confirm(`${name} is a ${res.danger} tool. Run it now?`)) return;
+      res = await api("/api/tools/call", {
+        method: "POST",
+        body: JSON.stringify({ tool: name, arguments: args, confirmed: true }),
+      });
+    }
+    alert(res.ok ? (res.output || "(no output)").slice(0, 4000) : `Failed: ${res.error}`);
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#refresh-tools").addEventListener("click", async (e) => {
+  e.target.closest("button").disabled = true;
+  try {
+    const res = await api("/api/tools/refresh", { method: "POST", body: "{}" });
+    await loadTools();
+    await loadAssistant();
+    toast(`${res.count} tools (${res.mcp_tools} from MCP servers)`);
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    e.target.closest("button").disabled = false;
+  }
+});
+
+async function loadAssistant() {
+  const data = await api("/api/assistant");
+  const s = data.settings || {};
+  const form = $("#assistant-form");
+
+  form.tools_enabled.checked = !!s.tools?.enabled;
+  form.confirm_danger_at.value = s.tools?.confirm_danger_at || "sensitive";
+  form.max_steps.value = s.tools?.max_steps ?? 6;
+  form.persona.value = s.persona || "";
+
+  form.delegation_enabled.checked = !!s.delegation?.enabled;
+  form.delegation_follow_up.checked = !!s.delegation?.follow_up;
+  form.max_delegations.value = s.delegation?.max_delegations ?? 2;
+
+  form.search_engine.value = s.search?.engine || "duckduckgo";
+  form.searxng_url.value = s.search?.searxng_url || "";
+  form.search_max_results.value = s.search?.max_results ?? 5;
+
+  form.shell_enabled.checked = !!s.shell?.enabled;
+  form.shell_allowlist.value = (s.shell?.allowlist || []).join("\n");
+  form.shell_working_directory.value = s.shell?.working_directory || "~";
+
+  form.email_enabled.checked = !!s.email?.enabled;
+  form.smtp_host.value = s.email?.smtp_host || "";
+  form.smtp_port.value = s.email?.smtp_port ?? 587;
+  form.use_tls.checked = !!s.email?.use_tls;
+  form.email_username.value = s.email?.username || "";
+  form.email_password.value = s.email?.password || "";
+  form.from_address.value = s.email?.from_address || "";
+  form.from_name.value = s.email?.from_name || "";
+  form.allowed_recipients.value = (s.email?.allowed_recipients || []).join("\n");
+
+  $("#assistant-device").textContent = data.model_loaded
+    ? `NPU model on ${data.device || "device"}`
+    : "no model — keyword fallback";
+  $("#system-prompt").textContent = data.system_prompt || "";
+
+  const banner = $("#assistant-banner");
+  banner.innerHTML = data.model_loaded
+    ? ""
+    : `<div class="banner">
+        <svg viewBox="0 0 24 24"><use href="#i-alert" /></svg>
+        <div>No OpenVINO router model is loaded, so the assistant recognises only a
+        few obvious requests (open an app, search the web, system status) and hands
+        everything else to a worker. Download a router model under <strong>Models</strong>
+        to get the full plan–act–verify loop.</div>
+      </div>`;
+}
+
+$("#assistant-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = e.currentTarget;
-  const body = {
-    host: form.host.value.trim(),
-    port: Number(form.port.value),
-    max_retries: Number(form.max_retries.value),
-    local_only: form.local_only.checked,
-    require_confirmation_for_modifications: form.require_confirmation_for_modifications.checked,
-    allowed_project_roots: form.allowed_project_roots.value
+  const lines = (value) =>
+    value
       .split("\n")
       .map((s) => s.trim())
-      .filter(Boolean),
+      .filter(Boolean);
+
+  const body = {
+    persona: form.persona.value,
+    tools: {
+      enabled: form.tools_enabled.checked,
+      confirm_danger_at: form.confirm_danger_at.value,
+      max_steps: Number(form.max_steps.value),
+    },
+    delegation: {
+      enabled: form.delegation_enabled.checked,
+      follow_up: form.delegation_follow_up.checked,
+      max_delegations: Number(form.max_delegations.value),
+    },
+    search: {
+      engine: form.search_engine.value,
+      searxng_url: form.searxng_url.value.trim(),
+      max_results: Number(form.search_max_results.value),
+    },
+    shell: {
+      enabled: form.shell_enabled.checked,
+      allowlist: lines(form.shell_allowlist.value),
+      working_directory: form.shell_working_directory.value.trim() || "~",
+    },
+    email: {
+      enabled: form.email_enabled.checked,
+      smtp_host: form.smtp_host.value.trim(),
+      smtp_port: Number(form.smtp_port.value),
+      use_tls: form.use_tls.checked,
+      username: form.email_username.value.trim(),
+      password: form.email_password.value,
+      from_address: form.from_address.value.trim(),
+      from_name: form.from_name.value.trim(),
+      allowed_recipients: lines(form.allowed_recipients.value),
+    },
   };
+
   try {
-    const saved = await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
-    $("#config-note").textContent = saved.note || "Saved.";
-    toast(saved.restart_required ? "Saved. Restart service for port/host." : "Settings saved.");
+    await api("/api/assistant", { method: "PUT", body: JSON.stringify(body) });
+    $("#assistant-note").textContent = "Saved.";
+    toast("Assistant settings saved");
+    await Promise.all([loadAssistant(), loadTools(), loadStatus()]);
   } catch (err) {
     toast(err.message);
   }
 });
 
+/* ——————————————————————————————————————————————— plugins ——— */
+
 function settingInputs(plugin) {
   const schema = plugin.settings_schema || [];
   if (!schema.length) return "";
-  return `<div class="settings-grid" data-plugin-settings="${plugin.id}">
+  return `<div class="settings-grid" data-plugin-settings="${esc(plugin.id)}">
     ${schema
       .map((field) => {
         const val = plugin.settings?.[field.key] ?? field.default ?? "";
         if (field.type === "boolean") {
-          return `<label class="check"><input type="checkbox" name="${field.key}" ${val ? "checked" : ""}/><span>${field.label}</span></label>`;
+          return `<label class="check"><input type="checkbox" name="${esc(field.key)}" ${val ? "checked" : ""}/><span>${esc(field.label)}</span></label>`;
         }
-        const type = field.type === "integer" ? "number" : "text";
-        return `<label><span>${field.label}</span><input name="${field.key}" type="${type}" value="${String(val).replaceAll('"', "&quot;")}" /></label>`;
+        const type =
+          field.type === "integer" ? "number" : field.type === "secret" ? "password" : "text";
+        return `<label><span>${esc(field.label)}</span>
+          <input name="${esc(field.key)}" type="${type}" value="${esc(val)}" />
+          ${field.description ? `<span class="field-help">${esc(field.description)}</span>` : ""}
+        </label>`;
       })
       .join("")}
-    <button type="button" class="btn ghost save-settings" data-id="${plugin.id}">Save plugin settings</button>
+    <button type="button" class="btn ghost save-settings" data-id="${esc(plugin.id)}">Save plugin settings</button>
   </div>`;
 }
 
+async function loadCatalog() {
+  const data = await api("/api/plugins/catalog");
+  const entries = data.plugins || [];
+  $("#catalog-meta").textContent = `${data.installed} of ${data.count} installed`;
+  $("#catalog-grid").innerHTML = entries.length
+    ? entries
+        .map(
+          (e) => `<article class="tool-card ${e.installed ? "safe" : ""}" data-catalog="${esc(e.id)}">
+        <div class="row between">
+          <span class="name">${esc(e.name)}</span>
+          <div class="row">
+            ${e.cloud ? `<span class="badge warn">cloud</span>` : `<span class="badge">local</span>`}
+            <span class="badge">${esc(e.kind)}</span>
+          </div>
+        </div>
+        <p class="desc">${esc(e.description)}</p>
+        ${e.tags?.length ? `<p class="args">${e.tags.map(esc).join(" · ")}</p>` : ""}
+        <div class="tool-controls">
+          ${
+            e.installed
+              ? `<span class="badge ok">installed</span>
+                 <button type="button" class="btn danger small catalog-remove">Remove</button>`
+              : `<button type="button" class="btn primary small catalog-install">Install</button>`
+          }
+          ${e.homepage ? `<a class="btn ghost small" href="${esc(e.homepage)}" target="_blank" rel="noopener">Homepage</a>` : ""}
+        </div>
+      </article>`
+        )
+        .join("")
+    : `<p class="empty">No catalog entries found under <code>plugins/catalog/</code>.</p>`;
+}
+
+$("#catalog-grid").addEventListener("click", async (e) => {
+  const card = e.target.closest("[data-catalog]");
+  if (!card) return;
+  const id = card.dataset.catalog;
+  const install = e.target.closest(".catalog-install");
+  const remove = e.target.closest(".catalog-remove");
+  if (!install && !remove) return;
+
+  const btn = install || remove;
+  btn.disabled = true;
+  try {
+    if (install) {
+      await api(`/api/plugins/catalog/${encodeURIComponent(id)}/install`, {
+        method: "POST",
+        body: "{}",
+      });
+      toast(`${id} installed`);
+    } else {
+      if (!confirm(`Remove ${id}? Its settings are kept.`)) {
+        btn.disabled = false;
+        return;
+      }
+      await api(`/api/plugins/catalog/${encodeURIComponent(id)}`, { method: "DELETE" });
+      toast(`${id} removed`);
+    }
+    await Promise.all([loadCatalog(), loadPlugins(), loadTools(), loadStatus()]);
+  } catch (err) {
+    toast(err.message);
+    btn.disabled = false;
+  }
+});
+
 async function loadPlugins() {
   const plugins = await api("/api/plugins?health=true");
-  const list = $("#plugin-list");
-  list.innerHTML = plugins
+  $("#count-plugins").textContent = plugins.filter((p) => p.enabled).length;
+  $("#plugin-list").innerHTML = plugins
     .map((p) => {
       const health = p.health;
-      const healthText = health ? `${health.ok ? "Healthy" : "Down"} - ${health.detail || ""}` : "";
+      const healthBadge = !p.enabled
+        ? `<span class="badge">disabled</span>`
+        : health
+          ? `<span class="badge ${health.ok ? "ok" : "bad"}">${health.ok ? "healthy" : "unreachable"}</span>`
+          : "";
+      const toolCount = (p.tools || []).length;
       return `<article class="card">
         <div class="card-head">
           <div>
-            <h3>${p.name}</h3>
-            <p class="muted" style="margin:.25rem 0 0">${p.description || ""}</p>
-            <p class="muted" style="margin:.35rem 0 0;font-size:.85rem">${healthText}</p>
+            <div class="row"><h3>${esc(p.name)}</h3>${healthBadge}</div>
+            <p class="muted hint" style="margin-top:4px">${esc(p.description || "")}</p>
+            ${health?.detail ? `<p class="muted hint" style="margin-top:4px">${esc(health.detail)}</p>` : ""}
           </div>
-          <div class="row">
-            <span class="badge ${p.kind === "mcp" ? "mcp" : ""}">${p.kind}</span>
-            ${p.worker_id ? `<span class="badge">${p.worker_id}</span>` : ""}
+          <div class="row wrap" style="justify-content:flex-end">
+            <span class="badge ${p.kind === "mcp" ? "mcp" : ""}">${esc(p.kind)}</span>
+            ${p.worker_id ? `<span class="badge mono">${esc(p.worker_id)}</span>` : ""}
+            ${p.cloud ? `<span class="badge warn">cloud</span>` : ""}
+            ${toolCount ? `<span class="badge">${toolCount} tools</span>` : ""}
           </div>
         </div>
         <div class="card-actions">
-          <button type="button" class="btn ${p.enabled ? "ghost" : "primary"} toggle-plugin" data-id="${p.id}" data-enabled="${p.enabled}">
+          <button type="button" class="btn ${p.enabled ? "ghost" : "primary"} toggle-plugin"
+                  data-id="${esc(p.id)}" data-enabled="${p.enabled}">
             ${p.enabled ? "Disable" : "Enable"}
           </button>
-          ${p.removable ? `<button type="button" class="btn danger remove-plugin" data-id="${p.id}">Remove</button>` : ""}
+          ${p.homepage ? `<a class="btn ghost" href="${esc(p.homepage)}" target="_blank" rel="noopener">Homepage</a>` : ""}
+          ${p.removable ? `<button type="button" class="btn danger remove-plugin" data-id="${esc(p.id)}">Remove</button>` : ""}
         </div>
         ${settingInputs(p)}
       </article>`;
@@ -178,13 +579,12 @@ $("#plugin-list").addEventListener("click", async (e) => {
         body: JSON.stringify({ enabled }),
       });
       toast(`${toggle.dataset.id} ${enabled ? "enabled" : "disabled"}`);
-      await loadPlugins();
-      await loadStatus();
+      await Promise.all([loadPlugins(), loadStatus(), loadTools()]);
     }
     if (remove) {
       await api(`/api/plugins/${remove.dataset.id}`, { method: "DELETE" });
       toast("Plugin removed");
-      await loadPlugins();
+      await Promise.all([loadPlugins(), loadTools()]);
     }
     if (save) {
       const wrap = save.closest("[data-plugin-settings]");
@@ -197,6 +597,7 @@ $("#plugin-list").addEventListener("click", async (e) => {
         body: JSON.stringify(body),
       });
       toast("Plugin settings saved");
+      await loadPlugins();
     }
   } catch (err) {
     toast(err.message);
@@ -205,9 +606,9 @@ $("#plugin-list").addEventListener("click", async (e) => {
 
 $("#reload-plugins").addEventListener("click", async () => {
   try {
-    await api("/api/plugins/reload", { method: "POST", body: "{}" });
-    await loadPlugins();
-    toast("Plugins reloaded");
+    const res = await api("/api/plugins/reload", { method: "POST", body: "{}" });
+    await Promise.all([loadPlugins(), loadCatalog(), loadTools(), loadSkills()]);
+    toast(`${res.count} plugins · ${res.tools} tools · ${res.skills} skills`);
   } catch (err) {
     toast(err.message);
   }
@@ -240,11 +641,239 @@ $("#mcp-install-form").addEventListener("submit", async (e) => {
     form.health_tool.value = "server_info";
     form.run_tool.value = "generate_image";
     toast("MCP plugin installed");
-    await loadPlugins();
+    await Promise.all([loadPlugins(), loadTools()]);
   } catch (err) {
     toast(err.message);
   }
 });
+
+/* ———————————————————————————————————————————————— skills ——— */
+
+let skillsCache = [];
+
+const skillForm = $("#skill-form");
+
+function showSkillForm(skill = null) {
+  const f = skillForm;
+  f.hidden = false;
+  f.original.value = skill?.name || "";
+  f.name.value = skill?.name || "";
+  f.description.value = skill?.description || "";
+  f.triggers.value = (skill?.triggers || []).join(", ");
+  f.always.checked = !!skill?.always;
+  f.enabled.checked = skill ? !!skill.enabled : true;
+  f.content.value = skill?.content || "";
+  $("#skill-form-title").textContent = skill ? `Edit “${skill.name}”` : "New skill";
+  $("#skill-form-source").textContent = skill?.source || "user";
+  $("#skill-note").textContent = "";
+  f.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  f.name.focus();
+}
+
+function hideSkillForm() {
+  skillForm.hidden = true;
+  skillForm.reset();
+}
+
+$("#new-skill").addEventListener("click", () => showSkillForm(null));
+$("#cancel-skill").addEventListener("click", hideSkillForm);
+
+skillForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.currentTarget;
+  const original = f.original.value;
+  const body = {
+    name: f.name.value.trim(),
+    description: f.description.value.trim(),
+    triggers: f.triggers.value
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    always: f.always.checked,
+    enabled: f.enabled.checked,
+    content: f.content.value,
+  };
+  try {
+    await api(original ? `/api/skills/${encodeURIComponent(original)}` : "/api/skills", {
+      method: original ? "PUT" : "POST",
+      body: JSON.stringify(body),
+    });
+    toast(original ? "Skill updated" : "Skill created");
+    hideSkillForm();
+    await loadSkills();
+  } catch (err) {
+    $("#skill-note").textContent = err.message;
+  }
+});
+
+async function loadSkills() {
+  const data = await api("/api/skills");
+  skillsCache = data.skills || [];
+  $("#skills-dir").textContent = data.directory || "skills/";
+  $("#count-skills").textContent = skillsCache.length || "";
+
+  $("#skill-list").innerHTML = skillsCache.length
+    ? skillsCache
+        .map((s) => {
+          const fromPlugin = s.source !== "user";
+          const inert = !s.always && !(s.triggers || []).length;
+          return `<article class="skill-card" data-skill="${esc(s.name)}">
+        <div class="row between">
+          <div class="row">
+            <strong>${esc(s.name)}</strong>
+            ${s.enabled ? "" : `<span class="badge">off</span>`}
+            ${s.always ? `<span class="badge ok">always on</span>` : ""}
+            ${fromPlugin ? `<span class="badge mcp">${esc(s.source)}</span>` : ""}
+          </div>
+          <div class="row">
+            <label class="check" title="Enable or disable this skill">
+              <input type="checkbox" class="skill-enabled" ${s.enabled ? "checked" : ""}
+                     ${fromPlugin ? "disabled" : ""} />
+              <span>On</span>
+            </label>
+            ${fromPlugin ? "" : `<button type="button" class="btn ghost small skill-edit">Edit</button>`}
+            ${fromPlugin ? "" : `<button type="button" class="btn danger small skill-delete">Delete</button>`}
+          </div>
+        </div>
+        ${s.description ? `<p class="muted hint">${esc(s.description)}</p>` : ""}
+        ${
+          (s.triggers || []).length
+            ? `<div class="trigger-list">${s.triggers.map((x) => `<span class="badge mono">${esc(x)}</span>`).join("")}</div>`
+            : `<p class="muted hint">${
+                s.always
+                  ? "No triggers needed — always applied."
+                  : "No triggers and not always-on, so this skill never activates."
+              }</p>`
+        }
+        ${inert && !s.always ? `<p class="muted hint">⚠ add a trigger or turn on “always”.</p>` : ""}
+        <pre>${esc(s.content)}</pre>
+      </article>`;
+        })
+        .join("")
+    : `<p class="empty">No skills yet. Press <strong>New skill</strong>, or drop a markdown file into <code>${esc(data.directory)}</code>.</p>`;
+}
+
+$("#skill-list").addEventListener("click", async (e) => {
+  const card = e.target.closest("[data-skill]");
+  if (!card) return;
+  const name = card.dataset.skill;
+  const skill = skillsCache.find((s) => s.name === name);
+
+  if (e.target.closest(".skill-edit")) {
+    showSkillForm(skill);
+    return;
+  }
+  if (e.target.closest(".skill-delete")) {
+    if (!confirm(`Delete the skill “${name}”? The markdown file is removed.`)) return;
+    try {
+      await api(`/api/skills/${encodeURIComponent(name)}`, { method: "DELETE" });
+      toast("Skill deleted");
+      await loadSkills();
+    } catch (err) {
+      toast(err.message);
+    }
+  }
+});
+
+$("#skill-list").addEventListener("change", async (e) => {
+  if (!e.target.classList.contains("skill-enabled")) return;
+  const name = e.target.closest("[data-skill]").dataset.skill;
+  try {
+    await api(`/api/skills/${encodeURIComponent(name)}/enable`, {
+      method: "POST",
+      body: JSON.stringify({ enabled: e.target.checked }),
+    });
+    await loadSkills();
+  } catch (err) {
+    toast(err.message);
+    await loadSkills();
+  }
+});
+
+let discovered = { repo: "", skills: [] };
+
+$("#skill-discover-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const repo = e.currentTarget.repo.value.trim();
+  const btn = $("#discover-btn");
+  const note = $("#discover-note");
+  btn.disabled = true;
+  note.textContent = "Reading the repository…";
+  $("#discover-results").innerHTML = "";
+  $("#import-actions").hidden = true;
+  try {
+    const data = await api("/api/skills/discover", {
+      method: "POST",
+      body: JSON.stringify({ repo }),
+    });
+    discovered = data;
+    note.textContent = `${data.count} skill${data.count === 1 ? "" : "s"} in ${data.repo}@${data.ref}`;
+    $("#discover-results").innerHTML = data.skills
+      .map(
+        (s) => `<label class="skill-card check-row">
+        <input type="checkbox" class="import-pick" value="${esc(s.path)}" />
+        <div>
+          <strong>${esc(s.name)}</strong>
+          <p class="muted hint">${esc(s.description)}</p>
+          <p class="args">${esc(s.path)}</p>
+        </div>
+      </label>`
+      )
+      .join("");
+    $("#import-actions").hidden = data.skills.length === 0;
+  } catch (err) {
+    note.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#select-all-skills").addEventListener("click", () => {
+  const boxes = $$(".import-pick");
+  const target = !boxes.every((b) => b.checked);
+  boxes.forEach((b) => (b.checked = target));
+});
+
+$("#import-selected").addEventListener("click", async (e) => {
+  const paths = $$(".import-pick").filter((b) => b.checked).map((b) => b.value);
+  if (!paths.length) {
+    toast("Pick at least one skill");
+    return;
+  }
+  e.target.disabled = true;
+  try {
+    const res = await api("/api/skills/import", {
+      method: "POST",
+      body: JSON.stringify({ repo: discovered.repo, paths }),
+    });
+    const failed = res.failed || [];
+    toast(
+      `Imported ${res.installed.length}${failed.length ? `, ${failed.length} failed` : ""} — all disabled until you switch them on`
+    );
+    $("#discover-note").textContent = failed.length
+      ? failed.map((f) => `${f.path}: ${f.reason}`).join("; ")
+      : res.note || "";
+    await loadSkills();
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    e.target.disabled = false;
+  }
+});
+
+$("#reload-skills").addEventListener("click", async () => {
+  try {
+    const res = await api("/api/skills/reload", { method: "POST", body: "{}" });
+    await loadSkills();
+    toast(`${res.count} skills loaded`);
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+/* ———————————————————————————————————————————————— themes ——— */
+
+const BUILTIN_THEMES = ["default", "midnight", "panel", "paper", "studio", "orb"];
 
 async function loadThemes() {
   const themes = await api("/api/themes");
@@ -253,20 +882,28 @@ async function loadThemes() {
       const colors = t.preview_colors || {};
       const swatches = ["bg", "surface", "accent", "text"]
         .filter((k) => colors[k])
-        .map((k) => `<span class="swatch" style="background:${colors[k]}" title="${k}"></span>`)
+        .map((k) => `<span class="swatch" style="background:${esc(colors[k])}" title="${k}"></span>`)
         .join("");
+      const popup = t.popup || {};
       return `<article class="theme-card ${t.active ? "is-active" : ""}">
+        <div class="popup-preview" data-mode="${esc(popup.mode || "panel")}" aria-hidden="true">
+          <div class="shape"></div>
+        </div>
         <div class="swatches">${swatches}</div>
         <div>
-          <strong>${t.name}</strong>
-          <div class="muted" style="font-size:.85rem">${t.author} · v${t.version}</div>
-          <p class="muted" style="margin:.4rem 0 0;font-size:.9rem">${t.description || ""}</p>
+          <div class="row between">
+            <strong>${esc(t.name)}</strong>
+            <span class="badge mono">${esc(popup.mode || "panel")}</span>
+          </div>
+          <div class="theme-meta">${esc(t.author)} · v${esc(t.version)}</div>
+          <p class="muted hint" style="margin-top:6px">${esc(t.description || "")}</p>
         </div>
-        <div class="row">
-          <button type="button" class="btn ${t.active ? "ghost" : "primary"} activate-theme" data-id="${t.id}" ${t.active ? "disabled" : ""}>
+        <div class="card-actions">
+          <button type="button" class="btn ${t.active ? "ghost" : "primary"} activate-theme"
+                  data-id="${esc(t.id)}" ${t.active ? "disabled" : ""}>
             ${t.active ? "Active" : "Use theme"}
           </button>
-          ${["default", "midnight", "paper"].includes(t.id) ? "" : `<button type="button" class="btn danger remove-theme" data-id="${t.id}">Remove</button>`}
+          ${BUILTIN_THEMES.includes(t.id) ? "" : `<button type="button" class="btn danger remove-theme" data-id="${esc(t.id)}">Remove</button>`}
         </div>
       </article>`;
     })
@@ -278,13 +915,17 @@ $("#theme-list").addEventListener("click", async (e) => {
   const remove = e.target.closest(".remove-theme");
   try {
     if (activate) {
-      await api("/api/themes/active", { method: "PUT", body: JSON.stringify({ id: activate.dataset.id }) });
+      await api("/api/themes/active", {
+        method: "PUT",
+        body: JSON.stringify({ id: activate.dataset.id }),
+      });
       applyThemeCss();
-      toast("Theme activated — web + Super+Space launcher");
+      toast("Theme activated — this panel and the popup");
       await loadThemes();
     }
     if (remove) {
       await api(`/api/themes/${remove.dataset.id}`, { method: "DELETE" });
+      applyThemeCss();
       toast("Theme removed");
       await loadThemes();
     }
@@ -311,14 +952,640 @@ $("#theme-install-form").addEventListener("submit", async (e) => {
   }
 });
 
-async function refreshAll() {
-  await Promise.all([loadStatus(), loadConfig(), loadPlugins(), loadThemes()]);
+/* ——————————————————————————————————————————————— gateway ——— */
+
+async function loadConfig() {
+  const data = await api("/api/config");
+  const form = $("#config-form");
+  form.host.value = data.host;
+  form.port.value = data.port;
+  form.max_retries.value = data.max_retries;
+  form.docs_url.value = data.docs_url || "/docs";
+  if (form.result_corner) form.result_corner.value = data.result_corner || "top-right";
+  form.local_only.checked = !!data.local_only;
+  form.require_confirmation_for_modifications.checked =
+    !!data.require_confirmation_for_modifications;
+  form.allowed_project_roots.value = (data.allowed_project_roots || []).join("\n");
+  $("#config-note").textContent = data.note || "";
+
+  const link = $("#docs-link");
+  const url = (data.docs_url || "/docs").trim();
+  link.href = url.endsWith("/") || url.includes("#") ? url : `${url}/`;
 }
 
-$("#refresh-btn").addEventListener("click", () => {
-  refreshAll().then(() => toast("Refreshed")).catch((err) => toast(err.message));
+$("#config-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const body = {
+    host: form.host.value.trim(),
+    port: Number(form.port.value),
+    max_retries: Number(form.max_retries.value),
+    docs_url: form.docs_url.value.trim() || "/docs",
+    result_corner: form.result_corner ? form.result_corner.value : undefined,
+    local_only: form.local_only.checked,
+    require_confirmation_for_modifications:
+      form.require_confirmation_for_modifications.checked,
+    allowed_project_roots: form.allowed_project_roots.value
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  };
+  try {
+    const saved = await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
+    $("#config-note").textContent = saved.note || "Saved.";
+    toast(saved.restart_required ? "Saved — restart the service for host/port." : "Settings saved.");
+    await loadConfig();
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+/* ——————————————————————————————————————————————— projects ——— */
+
+function projectRow(name = "", path = "") {
+  return `<div class="project-row row wrap">
+    <label class="grow"><span>Name</span><input class="project-name" value="${esc(name)}" placeholder="aurora" /></label>
+    <label class="grow" style="flex:2"><span>Path</span><input class="project-path" value="${esc(path)}" placeholder="~/Documents/Code/aurora" /></label>
+    <button type="button" class="btn danger small remove-project">Remove</button>
+  </div>`;
+}
+
+async function loadProjects() {
+  const data = await api("/api/projects");
+  const rows = (data.projects || []).map((p) => projectRow(p.name, p.path));
+  $("#project-rows").innerHTML = rows.length ? rows.join("") : projectRow();
+}
+
+$("#add-project").addEventListener("click", () => {
+  $("#project-rows").insertAdjacentHTML("beforeend", projectRow());
+});
+
+$("#project-rows").addEventListener("click", (e) => {
+  if (e.target.closest(".remove-project")) e.target.closest(".project-row").remove();
+});
+
+$("#save-projects").addEventListener("click", async () => {
+  const projects = $$(".project-row")
+    .map((row) => ({
+      name: $(".project-name", row).value.trim(),
+      path: $(".project-path", row).value.trim(),
+    }))
+    .filter((p) => p.name && p.path);
+  try {
+    const res = await api("/api/projects", {
+      method: "PUT",
+      body: JSON.stringify({ projects }),
+    });
+    const rejected = res.rejected || [];
+    $("#projects-note").textContent = rejected.length
+      ? `Saved ${res.projects.length}. Rejected: ${rejected.map((r) => `${r.name} (${r.reason})`).join("; ")}`
+      : `Saved ${res.projects.length} project${res.projects.length === 1 ? "" : "s"}.`;
+    toast(rejected.length ? "Saved, some entries rejected" : "Projects saved");
+    await loadProjects();
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+/* ——————————————————————————————————————— worker endpoints ——— */
+
+const WORKER_FIELDS = [
+  "lmstudio_base_url", "lmstudio_default_model", "lmstudio_timeout_seconds",
+  "lemonade_base_url", "lemonade_default_model", "lemonade_timeout_seconds",
+  "comfyui_base_url", "comfyui_output_dir", "comfyui_timeout_seconds",
+  "claude_command", "claude_timeout_seconds",
+  "cursor_command", "cursor_timeout_seconds",
+  "audio_sample_rate", "audio_channels",
+];
+
+async function loadWorkerEndpoints() {
+  const { settings } = await api("/api/workers");
+  const form = $("#workers-form");
+  for (const key of WORKER_FIELDS) {
+    if (form[key]) form[key].value = settings[key] ?? "";
+  }
+}
+
+$("#workers-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const body = {};
+  for (const key of WORKER_FIELDS) {
+    const el = form[key];
+    if (!el) continue;
+    const raw = el.value.trim();
+    if (raw === "") continue;
+    body[key] = el.type === "number" ? Number(raw) : raw;
+  }
+  try {
+    const res = await api("/api/workers", { method: "PUT", body: JSON.stringify(body) });
+    $("#workers-note").textContent = res.note || "Saved.";
+    toast("Worker endpoints saved");
+    await Promise.all([loadWorkerEndpoints(), loadStatus()]);
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+/* ————————————————————————————————————————— system info ——— */
+
+async function loadSystemInfo() {
+  const d = await api("/api/system");
+  const row = (label, value) =>
+    `<div class="row between info-row"><span class="muted">${esc(label)}</span>` +
+    `<code>${esc(value)}</code></div>`;
+
+  const pipes = d.pipelines || {};
+  const counts = d.counts || {};
+  const paths = d.paths || {};
+  const hw = d.hardware || {};
+
+  $("#system-info").innerHTML = [
+    row("Version", d.version),
+    row("Python", d.python),
+    row("Platform", d.platform),
+    hw.summary ? row("Hardware", hw.summary) : "",
+    row(
+      "Router model",
+      pipes.router?.loaded ? `loaded on ${pipes.router.device}` : "not loaded"
+    ),
+    row(
+      "Verifier model",
+      pipes.verifier?.loaded ? `loaded on ${pipes.verifier.device}` : "shares the router"
+    ),
+    row(
+      "Counts",
+      `${counts.plugins} plugins · ${counts.tools} tools · ${counts.skills} skills · ${counts.projects} projects`
+    ),
+    ...Object.entries(paths).map(([k, v]) => row(k, v)),
+  ]
+    .filter(Boolean)
+    .join("");
+}
+
+/* ———————————————————————————————————————————————— models ——— */
+
+let modelsCache = null;
+
+function fillSelect(sel, items, selected, valueKey = "id", labelFn = null, emptyLabel = "— none available —") {
+  if (!sel) return;
+  const list = items || [];
+  const current = selected || sel.value;
+  if (!list.length) {
+    sel.innerHTML = `<option value="">${esc(emptyLabel)}</option>`;
+    sel.value = "";
+    return;
+  }
+  sel.innerHTML = list
+    .map((item) => {
+      const value = typeof item === "string" ? item : item[valueKey];
+      const label = labelFn
+        ? labelFn(item)
+        : typeof item === "string"
+          ? item
+          : `${item.name}${item.recommended ? " ★" : ""}`;
+      return `<option value="${esc(value)}">${esc(label)}</option>`;
+    })
+    .join("");
+  if (current && [...sel.options].some((o) => o.value === current)) sel.value = current;
+  else sel.selectedIndex = 0;
+}
+
+function recCard(item, kind) {
+  const ready = kind === "router" ? !!item.installed : !!item.available;
+  const badge = ready
+    ? `<span class="badge ok">downloaded</span>`
+    : item.recommended
+      ? `<span class="badge">suggested</span>`
+      : "";
+  const link = item.hf_url
+    ? `<a class="muted hint" href="${esc(item.hf_url)}" target="_blank" rel="noopener">Hugging Face</a>`
+    : "";
+  const useBtn = ready
+    ? `<button type="button" class="btn ghost small use-rec" data-kind="${kind}" data-id="${esc(item.id)}">Use</button>`
+    : `<button type="button" class="btn ghost small" disabled title="Download this model first">Not downloaded</button>`;
+  return `<article class="rec-card ${ready ? "is-rec" : ""}">
+    <div class="row between"><strong>${esc(item.name)}</strong>${badge}</div>
+    <p class="muted meta">${esc(item.size_hint || "")} ${item.quant ? `· ${esc(item.quant)}` : ""}</p>
+    <p class="notes">${esc(item.notes || item.reason || "")}</p>
+    <div class="row between actions">
+      <span class="muted reason">${esc(item.reason || "")}</span>
+      <div class="row">${link}${useBtn}</div>
+    </div>
+  </article>`;
+}
+
+function fillWorkerModelSelect(sel, items, selected) {
+  if (!sel) return;
+  const ids = (items || []).map((m) => (typeof m === "string" ? m : m.id)).filter(Boolean);
+  const current = selected || sel.value || "";
+  const opts = ['<option value="">— leave blank for auto —</option>'];
+  if (!ids.length) opts.push('<option value="" disabled>No models detected from this worker</option>');
+  for (const id of ids) opts.push(`<option value="${esc(id)}">${esc(id)}</option>`);
+  sel.innerHTML = opts.join("");
+  sel.value = current && ids.includes(current) ? current : "";
+}
+
+function findRec(kind, id) {
+  return (modelsCache?.recommendations?.[kind] || []).find((m) => m.id === id);
+}
+
+async function loadModels() {
+  const data = await api("/api/models");
+  modelsCache = data;
+  const form = $("#models-form");
+  if (!form) return;
+  const s = data.settings || {};
+  const hw = data.hardware || {};
+  const rec = data.recommendations || {};
+
+  const summary = $("#hardware-summary");
+  if (summary) summary.textContent = hw.summary || "Hardware profile unavailable";
+  const chips = $("#hardware-chips");
+  if (chips) {
+    chips.innerHTML = (hw.devices || [])
+      .map((d) => `<span class="chip ${esc(d.kind)}">${esc((d.kind || "").toUpperCase())} · ${esc(d.name)}</span>`)
+      .join("");
+  }
+  const tips = $("#hardware-tips");
+  if (tips) tips.innerHTML = (rec.guidance || []).map((t) => `<li>${esc(t)}</li>`).join("");
+
+  const available = data.available || {};
+  const routerModels = available.router || rec.installed || [];
+  fillSelect(
+    form.router_model_id,
+    routerModels,
+    s.router_model_id,
+    "id",
+    (m) => `${m.name || m.id}${m.size_hint ? ` (${m.size_hint})` : ""}`,
+    "— no OpenVINO models downloaded —"
+  );
+
+  fillWorkerModelSelect(form.lmstudio_model, available.lmstudio || [], s.lmstudio_model || s.chat_model_id || "");
+  fillWorkerModelSelect(form.lemonade_model, available.lemonade || [], s.lemonade_model || "");
+  fillWorkerModelSelect(form.comfyui_model, available.comfyui || [], s.comfyui_model || "");
+
+  form.primary_device.value = s.primary_device || "auto";
+  form.npu_device.value = s.npu_device || "NPU";
+  form.gpu_device.value = s.gpu_device || "GPU";
+  form.fallback_device.value = s.fallback_device || "CPU";
+  form.verifier_model_id.value = s.verifier_model_id || "";
+  form.verifier_model_path.value = s.verifier_model_path || "";
+  form.preferred_chat_worker.value = s.preferred_chat_worker || "auto";
+  form.lmstudio_mode.value = s.lmstudio_mode || "auto";
+  form.lemonade_mode.value = s.lemonade_mode || "auto";
+  form.comfyui_mode.value = s.comfyui_mode || "auto";
+  if (form.lemonade_base_url)
+    form.lemonade_base_url.value = s.lemonade_base_url || "http://127.0.0.1:13305/api/v1";
+  if (form.chat_model_id) form.chat_model_id.value = form.lmstudio_model.value || s.chat_model_id || "";
+  form.whisper_model.value = s.whisper_model || "tiny";
+  form.autostart_gateway.checked = !!s.autostart_gateway;
+  form.autostart_launcher.checked = !!s.autostart_launcher;
+  form.open_panel_on_login.checked = !!s.open_panel_on_login;
+
+  const selectedRouter = routerModels.find((m) => m.id === form.router_model_id.value);
+  form.router_model_path.value = selectedRouter?.path || s.router_model_path || "";
+
+  const resolved = $("#resolved-device");
+  if (resolved) resolved.textContent = data.resolved_device || "—";
+  const auto = data.autostart || {};
+  const autoEl = $("#autostart-status");
+  if (autoEl) {
+    autoEl.textContent =
+      `Login — gateway: ${auto.gateway_enabled ? "on" : "off"}, ` +
+      `launcher: ${auto.launcher_enabled ? "on" : "off"}, ` +
+      `panel: ${auto.panel_autostart ? "on" : "off"}`;
+  }
+
+  const rr = $("#rec-router");
+  if (rr) rr.innerHTML = (rec.router || []).slice(0, 4).map((m) => recCard(m, "router")).join("");
+  const rc = $("#rec-chat");
+  if (rc) rc.innerHTML = (rec.chat || []).slice(0, 4).map((m) => recCard(m, "chat")).join("");
+
+  const installed = rec.installed || [];
+  const inst = $("#installed-models");
+  if (inst) {
+    inst.innerHTML = installed.length
+      ? installed
+          .map(
+            (m) => `<article class="rec-card">
+              <strong>${esc(m.name)}</strong>
+              <p class="muted meta">${esc(m.path)}</p>
+              <button type="button" class="btn ghost small use-installed" data-path="${esc(m.path)}" data-id="${esc(m.id)}">Use as router</button>
+            </article>`
+          )
+          .join("")
+      : `<p class="empty">No OpenVINO exports under <code>models/</code> yet. Search Hugging Face above for an INT4 export.</p>`;
+  }
+}
+
+function applyRouterChoice(item) {
+  const form = $("#models-form");
+  if (!form || !item) return false;
+  const installed = modelsCache?.available?.router || modelsCache?.recommendations?.installed || [];
+  const match =
+    installed.find((m) => m.id === item.id || m.path === item.path || m.path === item.path_hint) ||
+    (item.installed && (item.path || item.id) ? item : null);
+  if (!match) {
+    toast("That router model is not downloaded yet — use the Hugging Face search.");
+    return false;
+  }
+  if (![...form.router_model_id.options].some((o) => o.value === match.id)) {
+    const opt = document.createElement("option");
+    opt.value = match.id;
+    opt.textContent = match.name || match.id;
+    form.router_model_id.append(opt);
+  }
+  form.router_model_id.value = match.id;
+  form.router_model_path.value = match.path || item.path_hint || "";
+  return true;
+}
+
+function applyChatChoice(item) {
+  const form = $("#models-form");
+  if (!form || !item) return false;
+  const sel = form.lmstudio_model;
+  const available = (modelsCache?.available?.lmstudio || []).map((m) => m.id);
+  let mid = available.includes(item.id) ? item.id : "";
+  if (!mid) {
+    const token = String(item.id || "").toLowerCase();
+    mid =
+      available.find((id) => {
+        const lower = id.toLowerCase();
+        return lower.includes(token) || token.includes(lower);
+      }) || "";
+  }
+  if (!mid) {
+    toast("That chat model is not loaded in LM Studio yet.");
+    return false;
+  }
+  if (sel) sel.value = mid;
+  if (form.chat_model_id) form.chat_model_id.value = mid;
+  form.lmstudio_mode.value = "fixed";
+  form.preferred_chat_worker.value = "lmstudio";
+  return true;
+}
+
+$("#models-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const body = {
+    primary_device: form.primary_device.value,
+    npu_device: form.npu_device.value.trim(),
+    gpu_device: form.gpu_device.value.trim(),
+    fallback_device: form.fallback_device.value.trim(),
+    router_model_id: form.router_model_id.value,
+    router_model_path: form.router_model_path.value.trim(),
+    verifier_model_id: form.verifier_model_id.value.trim(),
+    verifier_model_path: form.verifier_model_path.value.trim(),
+    preferred_chat_worker: form.preferred_chat_worker.value,
+    lmstudio_mode: form.lmstudio_mode.value,
+    lmstudio_model: form.lmstudio_model.value,
+    lemonade_mode: form.lemonade_mode.value,
+    lemonade_model: form.lemonade_model.value,
+    lemonade_base_url: form.lemonade_base_url.value.trim(),
+    comfyui_mode: form.comfyui_mode.value,
+    comfyui_model: form.comfyui_model.value,
+    chat_model_id: form.lmstudio_model.value,
+    chat_backend:
+      form.preferred_chat_worker.value === "auto" ? "lmstudio" : form.preferred_chat_worker.value,
+    whisper_model: form.whisper_model.value,
+    autostart_gateway: form.autostart_gateway.checked,
+    autostart_launcher: form.autostart_launcher.checked,
+    open_panel_on_login: form.open_panel_on_login.checked,
+  };
+  try {
+    const saved = await api("/api/models", { method: "PUT", body: JSON.stringify(body) });
+    const note = $("#models-note");
+    if (note) note.textContent = saved.note || "Saved.";
+    const resolved = $("#resolved-device");
+    if (resolved) resolved.textContent = saved.resolved_device || "—";
+    toast(saved.restart_required ? "Saved — reload models to apply." : "Model settings saved.");
+    await loadModels();
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+$("#reload-models-btn")?.addEventListener("click", async () => {
+  try {
+    const res = await api("/api/models/reload", { method: "POST", body: "{}" });
+    toast(
+      res.status === "reloaded"
+        ? `Reloaded${res.device ? ` on ${res.device}` : ""} — router ${res.loaded ? "loaded" : "not found"}`
+        : res.note || "Restart required"
+    );
+    await Promise.all([loadStatus(), loadAssistant()]);
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+$("#apply-top-recs")?.addEventListener("click", () => {
+  const installed = modelsCache?.available?.router || modelsCache?.recommendations?.installed || [];
+  const router = installed[0] || (modelsCache?.recommendations?.router || []).find((m) => m.installed);
+  const chat = (modelsCache?.recommendations?.chat || []).find((m) => m.available);
+  let applied = 0;
+  if (router && applyRouterChoice(router)) applied += 1;
+  if (chat && applyChatChoice(chat)) applied += 1;
+  const suggestion = modelsCache?.recommendations?.primary_suggestion;
+  if (suggestion) $("#models-form").primary_device.value = suggestion;
+  toast(
+    applied
+      ? "Applied downloaded models — click Save to keep them."
+      : "Nothing downloaded to apply yet."
+  );
+});
+
+document.addEventListener("click", (e) => {
+  const useRec = e.target.closest(".use-rec");
+  if (useRec) {
+    const kind = useRec.dataset.kind === "chat" ? "chat" : "router";
+    const item = findRec(kind, useRec.dataset.id);
+    const ok = kind === "chat" ? applyChatChoice(item) : applyRouterChoice(item);
+    if (ok) toast(`Selected ${item?.name || useRec.dataset.id}`);
+  }
+  const useInst = e.target.closest(".use-installed");
+  if (useInst) {
+    const form = $("#models-form");
+    form.router_model_path.value = useInst.dataset.path;
+    if (![...form.router_model_id.options].some((o) => o.value === useInst.dataset.id)) {
+      const opt = document.createElement("option");
+      opt.value = useInst.dataset.id;
+      opt.textContent = useInst.dataset.id;
+      form.router_model_id.append(opt);
+    }
+    form.router_model_id.value = useInst.dataset.id;
+    toast("Router path set — click Save.");
+  }
+});
+
+$("#models-form")?.router_model_id?.addEventListener("change", (e) => {
+  const installed = modelsCache?.available?.router || modelsCache?.recommendations?.installed || [];
+  const match = installed.find((m) => m.id === e.target.value);
+  if (match?.path) $("#models-form").router_model_path.value = match.path;
+});
+
+/* ————————————————————————————————— Hugging Face downloads ——— */
+
+let hfPollTimer = null;
+
+function formatBytes(n) {
+  if (!n || n < 1) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function hfResultCard(item) {
+  const badge = item.compatible
+    ? `<span class="badge ok">compatible</span>`
+    : `<span class="badge">low match</span>`;
+  const installed = item.installed ? `<span class="badge">installed</span>` : "";
+  const params = item.params_b != null ? `${item.params_b}B · ` : "";
+  return `<article class="rec-card ${item.compatible ? "is-rec" : ""}" data-repo="${esc(item.repo_id)}">
+    <div class="row between">
+      <strong>${esc(item.repo_id)}</strong>
+      <div class="row">${badge}${installed}</div>
+    </div>
+    <p class="muted meta">${params}${(item.downloads || 0).toLocaleString()} downloads → <code>${esc(item.dest_hint || "")}</code></p>
+    <p class="notes">${esc(item.reason || "")}</p>
+    <div class="row between actions">
+      <a class="muted hint" href="${esc(item.hf_url)}" target="_blank" rel="noopener">Hugging Face</a>
+      <button type="button" class="btn ghost small hf-download-btn"
+        data-repo="${esc(item.repo_id)}" data-target="${esc(item.target)}">
+        ${item.installed ? "Re-download" : "Download"}
+      </button>
+    </div>
+  </article>`;
+}
+
+function renderHfJobs(jobs) {
+  const el = $("#hf-downloads");
+  if (!el) return;
+  const active = (jobs || []).slice(0, 6);
+  if (!active.length) {
+    el.innerHTML = "";
+    return;
+  }
+  el.innerHTML =
+    `<h4>Downloads</h4>` +
+    active
+      .map((j) => {
+        const pct = Math.round((j.progress || 0) * 100);
+        const size = formatBytes(j.bytes_downloaded);
+        return `<div class="hf-job ${esc(j.status)}">
+        <div class="row between">
+          <strong>${esc(j.repo_id)}</strong>
+          <span class="muted hint">${esc(j.status)}${size ? ` · ${size}` : ""}</span>
+        </div>
+        <div class="hf-progress"><div style="width:${pct}%"></div></div>
+        <p class="muted meta">${esc(j.message || j.error || "")}</p>
+      </div>`;
+      })
+      .join("");
+}
+
+async function refreshHfJobs() {
+  try {
+    const data = await api("/api/models/hf/downloads");
+    renderHfJobs(data.jobs || []);
+    const busy = (data.jobs || []).some((j) => j.status === "queued" || j.status === "running");
+    if (busy && !hfPollTimer) {
+      hfPollTimer = setInterval(() => refreshHfJobs().catch(() => {}), 2000);
+    }
+    if (!busy && hfPollTimer) {
+      clearInterval(hfPollTimer);
+      hfPollTimer = null;
+      await loadModels();
+    }
+  } catch {
+    /* ignore while offline */
+  }
+}
+
+$("#hf-search-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const btn = $("#hf-search-btn");
+  const results = $("#hf-results");
+  const meta = $("#hf-search-meta");
+  btn.disabled = true;
+  results.innerHTML = `<p class="muted hint">Searching Hugging Face…</p>`;
+  try {
+    const params = new URLSearchParams({
+      q: form.q.value.trim(),
+      target: form.target.value,
+      limit: "12",
+    });
+    const data = await api(`/api/models/hf/search?${params}`);
+    meta.textContent = `${data.hardware_summary || ""} · scored for ${data.tier || "this device"} · ${data.count || 0} results`;
+    results.innerHTML = (data.results || []).length
+      ? data.results.map(hfResultCard).join("")
+      : `<p class="empty">No matching models. Try a different query or target.</p>`;
+  } catch (err) {
+    results.innerHTML = "";
+    toast(err.message || "Search failed");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".hf-download-btn");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    const job = await api("/api/models/hf/download", {
+      method: "POST",
+      body: JSON.stringify({ repo_id: btn.dataset.repo, target: btn.dataset.target }),
+    });
+    toast(`Download started: ${job.repo_id}`);
+    await refreshHfJobs();
+  } catch (err) {
+    toast(err.message || "Download failed to start");
+    btn.disabled = false;
+  }
+});
+
+/* ————————————————————————————————————————————————— boot ——— */
+
+async function refreshAll() {
+  await Promise.all([
+    loadStatus(),
+    loadConfig(),
+    loadAssistant(),
+    loadTools(),
+    loadModels(),
+    loadPlugins(),
+    loadCatalog(),
+    loadSkills(),
+    loadThemes(),
+    loadProjects(),
+    loadWorkerEndpoints(),
+    loadSystemInfo(),
+  ]);
+}
+
+$("#refresh-btn").addEventListener("click", (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  refreshAll()
+    .then(() => toast("Refreshed"))
+    .catch((err) => toast(err.message))
+    .finally(() => {
+      btn.disabled = false;
+    });
 });
 
 const initial = (location.hash || "#status").slice(1);
 setTab(titles[initial] ? initial : "status");
-refreshAll().catch((err) => toast(err.message));
+connectActivityStream();
+refreshAll()
+  .then(() => refreshHfJobs())
+  .catch((err) => toast(err.message));

@@ -2,7 +2,7 @@ id = "midnight"
 name = "Midnight"
 author = "built-in"
 version = "1.0.0"
-description = "Dark charcoal with soft cyan accent."
+description = "The same Spotlight bar in dark charcoal with a cyan accent."
 
 [colors]
 bg = "#09090b"
@@ -11,3 +11,8 @@ text = "#fafafa"
 muted = "#a1a1aa"
 accent = "#22d3ee"
 border = "#27272a"
+danger = "#f87171"
+
+[popup]
+preset = "spotlight"
+opacity = 0.97

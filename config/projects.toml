@@ -1,3 +1,2 @@
-[[projects]]
-name = "Example"
-path = "~/Documents/Code/example"
+# Projects offered in the Keylane popup's picker.
+# Every path must sit inside security.allowed_project_roots.

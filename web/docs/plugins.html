@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Writing plugins · Keylane docs</title>
+  <meta name="description" content="Add workers, MCP servers, tools and skills to Keylane." />
+  <link rel="icon" type="image/png" href="/assets/favicon.png" />
+  <link rel="stylesheet" href="assets/docs.css" />
+</head>
+<body>
+  <div class="docs">
+    <aside class="sidebar">
+      <a class="docs-brand" href="index.html">
+        <img src="/assets/logo.svg" width="30" height="30" alt="" />
+        <span>
+          <strong>Keylane</strong>
+          <span>Handbook</span>
+        </span>
+      </a>
+      <nav class="side-nav" aria-label="Documentation"><div><p class="side-group-title">Start here</p><div class="side-links"><a href="index.html">Keylane handbook</a><a href="install.html">Install, update, uninstall</a><a href="popup.html">The popup and the tray</a></div></div><div><p class="side-group-title">The assistant</p><div class="side-links"><a href="assistant.html">How the assistant thinks</a><a href="tools.html">Tools</a><a href="skills.html">Skills</a><a href="canvas.html">Canvas answers</a></div></div><div><p class="side-group-title">Extending</p><div class="side-links"><a href="plugins.html" aria-current="page">Writing plugins</a><a href="themes.html">Writing themes</a><a href="api.html">HTTP API</a><a href="roadmap.html">What it still needs</a></div></div></nav>
+      <div class="side-foot">
+        <a href="/">← Control panel</a>
+        <span>Local-first · 127.0.0.1</span>
+      </div>
+    </aside>
+
+    <main class="content">
+      <article class="article">
+        <p class="eyebrow">Guide</p>
+        <h1>Writing plugins</h1>
+<p>Everything Keylane can talk to is a plugin: Claude Code, Cursor, ComfyUI, LM Studio, Lemonade, and anything you add. A plugin can contribute any combination of three things, and nothing else in the system needs to know which:</p>
+<div class="table-wrap"><table><thead><tr><th>Contribution</th><th>What it means</th><th>Example</th></tr></thead><tbody><tr><td><strong>Worker</strong></td><td>Can be routed a whole task (<code>worker_id</code> set)</td><td>Claude Code takes a coding job</td></tr><tr><td><strong>Tools</strong></td><td>Individual capabilities the assistant may call</td><td><code>comfyui.generate_image</code></td></tr><tr><td><strong>Skills</strong></td><td>Instruction packs added to the assistant&#x27;s prompt</td><td>&quot;always deploy with <code>make release</code>&quot;</td></tr></tbody></table></div>
+<p>Plugins can be enabled, disabled, configured, installed and removed while the gateway is running. Enabling one immediately changes what the assistant can do — no restart.</p>
+<h2>Nothing is installed by default</h2>
+<p>A fresh Keylane ships with <strong>no plugins installed</strong>. It talks to nothing — no local model, no cloud agent, no image server — until you say so.</p>
+<p>Everything Keylane ships with lives in <a href="../plugins/catalog"><code>plugins/catalog/</code></a>, one folder per plugin, and is installed on request:</p>
+<p><strong>Control panel → Plugins → Catalog</strong>, or:</p>
+<span class="code-label">bash</span><pre><code>curl -s     http://127.0.0.1:9100/api/plugins/catalog
+curl -X POST http://127.0.0.1:9100/api/plugins/catalog/lmstudio/install
+curl -X DELETE http://127.0.0.1:9100/api/plugins/catalog/lmstudio          # keeps settings
+curl -X DELETE &#x27;http://127.0.0.1:9100/api/plugins/catalog/lmstudio?purge=true&#x27;</code></pre>
+<p>Installing records the plugin in <code>config/plugins.toml</code> and registers it immediately — the assistant&#x27;s tool list changes without a restart. Removing it unregisters it and keeps your settings unless you purge.</p>
+<div class="table-wrap"><table><thead><tr><th>Catalog entry</th><th>Worker</th><th>Reaches</th></tr></thead><tbody><tr><td><code>lmstudio</code></td><td><code>lmstudio</code></td><td>Your machine</td></tr><tr><td><code>lemonade</code></td><td><code>lemonade</code></td><td>Your machine</td></tr><tr><td><code>comfyui</code></td><td><code>comfyui</code></td><td>Your machine (MCP)</td></tr><tr><td><code>comfyui-http</code></td><td><code>comfyui</code></td><td>Your machine (legacy HTTP)</td></tr><tr><td><code>claude</code></td><td><code>claude</code></td><td><strong>Anthropic</strong></td></tr><tr><td><code>cursor</code></td><td><code>cursor</code></td><td><strong>Cursor</strong></td></tr></tbody></table></div>
+<div class="note "><span class="note-title">Note</span><p>Upgrading keeps what you had. Anything already recorded in <code>config/plugins.toml</code> is treated as installed, so an existing setup is not emptied out by this change.</p></div>
+<h3>Adding your own to the catalog</h3>
+<p>Drop a folder into <code>plugins/catalog/&lt;id&gt;/plugin.toml</code>:</p>
+<span class="code-label">toml</span><pre><code>id = &quot;ollama&quot;
+name = &quot;Ollama&quot;
+kind = &quot;native&quot;
+description = &quot;Local models served by Ollama.&quot;
+homepage = &quot;https://ollama.com&quot;
+worker_id = &quot;ollama&quot;
+cloud = false
+tags = &quot;worker, local, chat&quot;
+
+entry = &quot;plugin.py&quot;        # or &quot;builtin:&lt;id&gt;&quot; for an implementation Keylane ships</code></pre>
+<p><code>entry = &quot;builtin:&lt;id&gt;&quot;</code> points at a class already inside Keylane. Anything else is loaded from the folder — a <code>plugin.py</code>, or an MCP <code>command</code>.</p>
+<h2>The four kinds</h2>
+<div class="table-wrap"><table><thead><tr><th>Kind</th><th>Runs as</th><th>Use it when</th></tr></thead><tbody><tr><td><code>mcp</code></td><td>External process speaking <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener">MCP</a> over stdio</td><td>The tool already speaks MCP — <strong>start here</strong></td></tr><tr><td><code>native</code></td><td>Python in the gateway process</td><td>You need a worker with custom evidence collection</td></tr><tr><td><code>tool</code></td><td>Python, tools only, no worker</td><td>You are adding capabilities, not a destination for tasks</td></tr><tr><td><code>utility</code></td><td>Python, health and config only</td><td>A daemon you want to monitor but never route to</td></tr></tbody></table></div>
+<h2>Quick start: wrap an MCP server</h2>
+<p>If your tool speaks MCP, you are already done. Give Keylane the command and it discovers the rest.</p>
+<p><strong>Control panel → Plugins → Install an MCP plugin</strong></p>
+<div class="table-wrap"><table><thead><tr><th>Field</th><th>Meaning</th></tr></thead><tbody><tr><td>ID</td><td>Unique slug (<code>browser</code>, <code>notion</code>, <code>home-assistant</code>)</td></tr><tr><td>Command</td><td>Executable on <code>PATH</code></td></tr><tr><td>Args</td><td>JSON array of CLI arguments</td></tr><tr><td>Health tool</td><td>A cheap tool used as a ping — often <code>server_info</code> or <code>list_*</code></td></tr><tr><td>Run tool</td><td>Which tool a routed <em>task</em> calls; leave the default if this is tools-only</td></tr><tr><td>Worker ID</td><td>Set it to make the plugin a routing destination; leave blank for tools only</td></tr></tbody></table></div>
+<p>Every tool the server exposes then appears under <strong>Assistant → Tools</strong>, namespaced as <code>&lt;plugin-id&gt;.&lt;tool-name&gt;</code>, and the assistant can call it.</p>
+<h3>Or drop in a manifest</h3>
+<p>Create <code>plugins/community/&lt;id&gt;/plugin.toml</code>:</p>
+<span class="code-label">toml</span><pre><code>id = &quot;browser&quot;
+name = &quot;Browser control&quot;
+kind = &quot;mcp&quot;
+author = &quot;you&quot;
+version = &quot;0.1.0&quot;
+homepage = &quot;https://example.com/browser-mcp&quot;
+worker_id = &quot;&quot;            # blank = contributes tools but is never routed a task
+cloud = false             # true = blocked in local-only mode
+command = &quot;browser-mcp&quot;
+args = []
+health_tool = &quot;list_tabs&quot;
+run_tool = &quot;navigate&quot;
+env = { BROWSER_PROFILE = &quot;default&quot; }</code></pre>
+<p>Then <code>POST /api/plugins/reload</code>, or press <strong>Reload</strong> on the Plugins tab.</p>
+<div class="note "><span class="note-title">Note</span><p><code>cloud = true</code> marks a plugin as talking to a remote service. Local-only mode then refuses to route to it and hides its worker from the assistant.</p></div>
+<h2>Writing a Python plugin</h2>
+<p>Use this when MCP is not a good fit — for example a worker that needs to collect git evidence, or tools that need in-process access to gateway state.</p>
+<p>Create <code>plugins/community/&lt;id&gt;/plugin.toml</code>:</p>
+<span class="code-label">toml</span><pre><code>id = &quot;notes&quot;
+name = &quot;Notes&quot;
+kind = &quot;tool&quot;
+version = &quot;0.1.0&quot;
+author = &quot;you&quot;
+entry = &quot;plugin.py&quot;       # optional, this is the default</code></pre>
+<p>And <code>plugins/community/&lt;id&gt;/plugin.py</code>:</p>
+<span class="code-label">python</span><pre><code>from app.plugins.base import BasePlugin, PluginHealth, PluginKind, SettingField, SettingType
+from app.tools.base import BaseTool, ToolDanger, ToolResult, object_schema, string_prop
+
+
+class AppendNoteTool(BaseTool):
+    name = &quot;append_note&quot;
+    description = &quot;Append a line to the user&#x27;s daily note file.&quot;
+    danger = ToolDanger.SENSITIVE      # so it is confirmation-gated
+    category = &quot;notes&quot;
+
+    def __init__(self, plugin):
+        self._plugin = plugin
+
+    def parameters(self):
+        return object_schema(
+            {&quot;text&quot;: string_prop(&quot;The line to append.&quot;)},
+            required=[&quot;text&quot;],
+        )
+
+    async def run(self, args):
+        from datetime import date
+        from pathlib import Path
+
+        folder = Path(self._plugin.settings[&quot;folder&quot;]).expanduser()
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f&quot;{date.today():%Y-%m-%d}.md&quot;
+        with target.open(&quot;a&quot;, encoding=&quot;utf-8&quot;) as fh:
+            fh.write(str(args.get(&quot;text&quot;, &quot;&quot;)) + &quot;\n&quot;)
+        return ToolResult.success(f&quot;Added a line to {target}.&quot;)
+
+
+class Plugin(BasePlugin):
+    id = &quot;notes&quot;
+    name = &quot;Notes&quot;
+    description = &quot;Append lines to a daily markdown note.&quot;
+    kind = PluginKind.TOOL
+    worker_id = None                    # not a routing destination
+    cloud = False
+
+    def settings_schema(self):
+        return [
+            SettingField(
+                key=&quot;folder&quot;,
+                label=&quot;Notes folder&quot;,
+                type=SettingType.PATH,
+                default=&quot;~/Documents/notes&quot;,
+                required=True,
+            )
+        ]
+
+    async def health(self):
+        from pathlib import Path
+
+        folder = Path(self.settings.get(&quot;folder&quot;, &quot;&quot;)).expanduser()
+        ok = bool(self.settings.get(&quot;folder&quot;))
+        return PluginHealth(
+            ok=ok,
+            detail=f&quot;Writing to {folder}&quot; if ok else &quot;No notes folder configured&quot;,
+        )
+
+    def tools(self):
+        return [AppendNoteTool(self)]</code></pre>
+<p>The loader accepts either a <code>Plugin</code> class deriving from <code>BasePlugin</code>, or a <code>create_plugin(settings) -&gt; BasePlugin</code> factory if you need more control.</p>
+<div class="note warn"><span class="note-title">Warning</span><p>A Python plugin runs inside the gateway process with your user&#x27;s permissions. Treat community Python plugins exactly like any other script you would run on your machine — read it first.</p></div>
+<h2>The <code>BasePlugin</code> contract</h2>
+<span class="code-label">python</span><pre><code>class BasePlugin(ABC):
+    id: str                       # unique slug
+    name: str                     # shown in the control panel
+    description: str
+    kind: PluginKind              # NATIVE | MCP | TOOL | SKILL | UTILITY
+    worker_id: str | None         # routing destination, or None
+    cloud: bool                   # blocked in local-only mode
+    removable: bool               # can be uninstalled from the UI
+    homepage: str | None
+
+    def settings_schema(self) -&gt; list[SettingField]: ...
+    def default_settings(self) -&gt; dict: ...
+    def update_settings(self, data: dict) -&gt; dict: ...
+
+    async def health(self) -&gt; PluginHealth: ...          # required
+    async def run(self, decision) -&gt; WorkerResult: ...   # required for workers
+    def tools(self) -&gt; list[BaseTool]: ...               # optional
+    def skills(self) -&gt; list[Skill]: ...                 # optional
+    def mcp_descriptor(self) -&gt; dict | None: ...         # MCP plugins only
+    async def close(self) -&gt; None: ...</code></pre>
+<h3>Setting fields</h3>
+<p><code>SettingField</code> renders a form in the control panel. Types: <code>string</code>, <code>integer</code>, <code>boolean</code>, <code>path</code>, <code>select</code> (with <code>options</code>), <code>secret</code> (masked), <code>json</code>.</p>
+<span class="code-label">python</span><pre><code>SettingField(
+    key=&quot;api_base&quot;,
+    label=&quot;API base URL&quot;,
+    type=SettingType.STRING,
+    default=&quot;http://127.0.0.1:8080&quot;,
+    description=&quot;Shown as help text under the field.&quot;,
+    required=True,
+)</code></pre>
+<p>Settings persist to <code>config/plugins.toml</code> and are handed back to your plugin on the next load.</p>
+<h2>Writing a worker plugin</h2>
+<p>A worker receives a whole <code>RouteDecision</code> and returns a <code>WorkerResult</code>. The <code>WorkerEvidence</code> you attach is what the verifier judges, so populate it honestly — an empty <code>changed_files</code> on a <code>modify_project</code> action is how Keylane notices a worker claimed success without doing anything.</p>
+<span class="code-label">python</span><pre><code>class Plugin(BasePlugin):
+    id = &quot;ollama&quot;
+    name = &quot;Ollama&quot;
+    kind = PluginKind.NATIVE
+    worker_id = &quot;ollama&quot;
+    cloud = False
+
+    async def health(self):
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                r = await client.get(&quot;http://127.0.0.1:11434/api/tags&quot;)
+                return PluginHealth(ok=r.status_code &lt; 500, detail=&quot;Ollama reachable&quot;)
+        except Exception as exc:
+            return PluginHealth(ok=False, detail=str(exc))
+
+    async def run(self, decision):
+        import httpx
+        from app.schemas import WorkerEvidence, WorkerResult
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(
+                &quot;http://127.0.0.1:11434/api/generate&quot;,
+                json={&quot;model&quot;: decision.model or &quot;llama3&quot;, &quot;prompt&quot;: decision.instruction, &quot;stream&quot;: False},
+            )
+            r.raise_for_status()
+            answer = r.json()[&quot;response&quot;]
+
+        return WorkerResult(
+            success=True,
+            summary=answer,
+            evidence=WorkerEvidence(
+                worker=&quot;ollama&quot;,
+                action=decision.action,
+                response=answer,
+                stdout=answer,
+                exit_code=0,
+            ),
+        )</code></pre>
+<p>Registering a <code>worker_id</code> makes it a valid routing target automatically — the router prompt and the assistant&#x27;s <code>list_workers</code> tool both pick it up.</p>
+<h2>Contributing skills</h2>
+<p>Return <code>Skill</code> objects from <code>skills()</code> to ship prompt guidance with your plugin:</p>
+<span class="code-label">python</span><pre><code>from app.skills import Skill
+
+def skills(self):
+    return [
+        Skill(
+            name=&quot;ollama-models&quot;,
+            description=&quot;Which Ollama model to pick.&quot;,
+            triggers=[&quot;ollama&quot;, &quot;local model&quot;],
+            content=&quot;When delegating to Ollama, prefer llama3 for prose and &quot;
+                    &quot;qwen2.5-coder for code.&quot;,
+        )
+    ]</code></pre>
+<p>See <a href="skills.html">Skills</a> for the file-based equivalent.</p>
+<h2>Routing rules</h2>
+<ul>
+<li>Only <strong>enabled</strong> plugins with a <code>worker_id</code> can be routed a task.</li>
+<li><code>local_only</code> mode blocks every plugin with <code>cloud = true</code>.</li>
+<li>When two plugins share a <code>worker_id</code> (<code>comfyui</code> MCP and <code>comfyui-http</code>), the</li>
+</ul>
+<p><strong>MCP one wins</strong>.</p>
+<ul>
+<li>A tool name that collides with a built-in is prefixed with the plugin id;</li>
+</ul>
+<p>MCP tools are always namespaced <code>&lt;plugin-id&gt;.&lt;tool-name&gt;</code>.</p>
+<h2>HTTP API</h2>
+<span class="code-label">http</span><pre><code>GET    /api/plugins?health=true
+POST   /api/plugins/{id}/enable        {&quot;enabled&quot;: true}
+PUT    /api/plugins/{id}/settings      {...}
+POST   /api/plugins/install/mcp        {id, command, args, ...}
+DELETE /api/plugins/{id}
+POST   /api/plugins/reload
+POST   /api/tools/refresh</code></pre>
+<h2>Built-in plugins</h2>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Kind</th><th>Worker</th><th>Notes</th></tr></thead><tbody><tr><td><code>lmstudio</code></td><td>native</td><td><code>lmstudio</code></td><td>OpenAI-compatible local LLM</td></tr><tr><td><code>lemonade</code></td><td>native</td><td><code>lemonade</code></td><td>Lemonade Server, port 13305</td></tr><tr><td><code>claude</code></td><td>native (cloud)</td><td><code>claude</code></td><td>Claude Code CLI, needs a project</td></tr><tr><td><code>cursor</code></td><td>native (cloud)</td><td><code>cursor</code></td><td>Cursor Agent CLI, needs a project</td></tr><tr><td><code>comfyui</code></td><td>mcp</td><td><code>comfyui</code></td><td>Official <code>comfy-mcp</code>; exposes ~39 tools</td></tr><tr><td><code>comfyui-http</code></td><td>native</td><td><code>comfyui</code></td><td>Legacy direct HTTP client, off by default</td></tr></tbody></table></div>
+<p>Built-ins live in <code>app/plugins/builtin.py</code> and are registered in <code>create_builtin_plugins()</code>.</p>
+<h3>The official ComfyUI MCP</h3>
+<p>Following <a href="https://docs.comfy.org/agent-tools/mcp#local-comfy-mcp-connection" target="_blank" rel="noopener">Local Comfy MCP Connection</a>:</p>
+<ol>
+<li><code>pip install &quot;comfy-cli&gt;=1.14.0&quot; comfy-mcp</code></li>
+<li>Set up a workspace (<code>comfy install</code> / <code>comfy set-default</code>) and start it (<code>comfy launch</code>)</li>
+<li>Point Keylane at the stdio server, setting <code>COMFY_BIN</code> when the service <code>PATH</code></li>
+</ol>
+<p>does not include it:</p>
+<span class="code-label">toml</span><pre><code>[plugins.comfyui]
+enabled = true
+
+[plugins.comfyui.settings]
+command = &quot;comfy-mcp&quot;
+health_tool = &quot;server_info&quot;
+run_tool = &quot;generate_image&quot;
+env = &#x27;{&quot;COMFY_BIN&quot;: &quot;/home/YOU/.local/bin/comfy&quot;}&#x27;</code></pre>
+<p>Keylane auto-fills <code>COMFY_BIN</code> when it can find <code>comfy</code>, and <code>ai-gateway.service</code> sets <code>PATH</code> and <code>COMFY_BIN</code> for user installs under <code>~/.local/bin</code>.</p>
+<h2>Security notes</h2>
+<ul>
+<li>MCP commands and Python plugins run as your user, with your permissions.</li>
+<li>Do not point a plugin at a binary you did not install yourself.</li>
+<li>The gateway stays bound to <code>127.0.0.1</code>; a plugin should not change that.</li>
+<li>Mark anything that reaches the network <code>cloud = true</code> so local-only mode works.</li>
+</ul>
+        <nav class="page-nav"><a href="canvas.html"><span class="dir">Previous</span><span class="name">Canvas answers</span></a><a class="next" href="themes.html"><span class="dir">Next</span><span class="name">Writing themes</span></a></nav>
+      </article>
+    </main>
+
+    <aside class="toc" aria-label="On this page"></aside>
+  </div>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

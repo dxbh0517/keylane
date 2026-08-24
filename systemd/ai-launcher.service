@@ -1,14 +1,17 @@
 [Unit]
-Description=Keylane launcher
+Description=Keylane popup and tray indicator
 After=graphical-session.target
+PartOf=graphical-session.target
 Wants=ai-gateway.service
 
 [Service]
 WorkingDirectory=%h/.local/share/ai-gateway
-ExecStart=%h/.local/share/ai-gateway/.venv/bin/python %h/.local/share/ai-gateway/launcher/main.py
+ExecStart=%h/.local/share/ai-gateway/.venv/bin/python %h/.local/share/ai-gateway/launcher/main.py --background
 Restart=on-failure
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1
+# The tray is a child process; stop it with the launcher.
+KillMode=control-group
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target

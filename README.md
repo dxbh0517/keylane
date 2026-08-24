@@ -5,309 +5,315 @@
 <h1 align="center">Keylane</h1>
 
 <p align="center">
-  <strong>Super-key AI gateway for Fedora</strong><br />
-  Route desktop prompts through an Intel NPU control plane to local and cloud workers.
+  <strong>A personal assistant that lives on your desktop, not in a browser tab</strong><br />
+  Press Super+Space. A small model on your Intel NPU does the job — or hands it to a bigger AI and checks the result.
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
-  <a href="#architecture">Architecture</a> ·
-  <a href="#control-panel">Control panel</a> ·
-  <a href="#plugins--mcp">Plugins</a> ·
-  <a href="#themes">Themes</a> ·
-  <a href="#api">API</a> ·
-  <a href="#npu-status">NPU</a>
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#what-it-can-do">Capabilities</a> ·
+  <a href="docs/PLUGINS.md">Plugins</a> ·
+  <a href="docs/THEMES.md">Themes</a> ·
+  <a href="docs/INDEX.md">Handbook</a>
 </p>
 
 ---
 
 ## What is Keylane?
 
-**Keylane** is a local-first desktop AI gateway for Fedora Linux. Press **Super+Space**, type or dictate an instruction, and a small OpenVINO model on the Intel Core Ultra **NPU** classifies the request and routes it to the right worker:
+Press **Super+Space** and a Spotlight-style bar appears. Type or dictate what you
+want. A small OpenVINO model on the Intel **NPU** decides what to do with it:
 
-| Worker | Role |
-|--------|------|
-| **LM Studio** | General local LLM answers |
-| **Claude Code** | Advanced coding / repo work (cloud) |
-| **Cursor CLI** | Coding / repo work (cloud) |
-| **ComfyUI** | Image generation via MCP (`comfy-mcp`) |
-| **Lemonade** | Optional local OpenAI-compatible server |
+- **Does it itself** — opens an application, searches the web, reads a file,
+  checks the battery, copies to the clipboard, sends an email, runs an
+  allowlisted command.
+- **Delegates what it cannot** — repository work goes to Claude Code or Cursor,
+  images to ComfyUI, long-form writing to LM Studio.
+- **Follows up** — inspects the evidence that came back and, if the work is wrong
+  or incomplete, tries again with corrective feedback before answering you.
 
-A separate **NPU verifier** checks worker evidence and can retry failed tasks. The gateway—not the LLM—is the authority: models emit structured intents; Python validates and executes them.
-
-Design specification: [`fedora_local_ai_gateway.md`](fedora_local_ai_gateway.md).
+Everything runs on your machine. The gateway binds to `127.0.0.1` and nothing
+leaves it unless you enable a cloud worker.
 
 ```text
-Super+Space
-    │
-    ▼
-GTK4 / libadwaita launcher  (Keylane popup)
-    │  text · microphone
-    ▼
-FastAPI gateway  127.0.0.1:9100
-    │
-    ▼
-OpenVINO NPU router  (fallback: heuristic on CPU)
-    ├── LM Studio
-    ├── Claude Code
-    ├── Cursor CLI
-    ├── ComfyUI (MCP)
-    └── …plugins
-              │
-              ▼
-         Task evidence
-              │
-              ▼
-      OpenVINO NPU verifier
-              │
-         success / retry
+        Super+Space
+             │
+             ▼
+   ┌───────────────────┐    the active theme decides whether this is a
+   │  Keylane popup    │    bar, a panel, a full window or a corner orb
+   └─────────┬─────────┘
+             │  text · microphone
+             ▼
+   ┌───────────────────┐
+   │  FastAPI gateway  │  127.0.0.1:9100     ← the authority
+   └─────────┬─────────┘
+             │
+             ▼
+   ┌───────────────────┐
+   │  NPU assistant    │  plan → act → observe
+   └────┬─────────┬────┘
+        │         │
+   own tools   delegate
+        │         │
+        │         ▼
+        │   ┌──────────────────────────────┐
+        │   │ LM Studio · Claude Code ·    │
+        │   │ Cursor · ComfyUI · plugins   │
+        │   └──────────────┬───────────────┘
+        │                  │  evidence
+        │                  ▼
+        │        ┌───────────────────┐
+        └───────▶│   NPU verifier    │  is this actually done?
+                 └─────────┬─────────┘
+                           │
+                  success  │  retry with feedback
+                           ▼
+                      answer to you
 ```
 
-## Features
+**The gateway is the authority, not the model.** Models emit structured intents;
+Python validates them against a schema, checks them against your policy,
+executes them, and collects evidence. There is no path from model output to a
+shell.
 
-- **Super-key launcher** — GTK4 + libadwaita popup, themable, meant for Super+Space
-- **NPU control plane** — intent routing + verification when OpenVINO exposes `NPU`
-- **Plugin system** — native workers and **MCP** servers (install from the UI)
-- **Themes** — shared styles for the web control panel and the GTK popup
-- **Local-only mode** — hard-block cloud workers at the gateway
-- **Project sandbox** — allowed roots + confirmation for modifying actions
-- **systemd user services** — gateway + optional always-on launcher
-- **OpenAI-compatible** entrypoint at `/v1/chat/completions`
+## What it can do
 
-## Requirements
+Out of the box the assistant has twenty built-in tools, and every plugin adds
+more — enabling the ComfyUI MCP plugin alone contributes around forty.
 
-- Fedora (GTK4 / libadwaita)
-- Python 3.12+ recommended
-- Intel Core Ultra (or similar) with `intel_vpu` for the NPU path — CPU heuristics work without it
-- Optional workers: LM Studio, Claude Code CLI, Cursor agent CLI, ComfyUI + `comfy-mcp`, Lemonade
+| Area | Tools |
+| --- | --- |
+| Desktop | Launch apps, open URLs and files, notifications, clipboard, media keys, volume |
+| Web | Search (DuckDuckGo or your own SearXNG), fetch and read a page |
+| Files | List, read, write and search — sandboxed to your project roots |
+| System | Host/battery/disk info, allowlisted shell commands |
+| Communication | Send email through your SMTP account |
+| Delegation | Hand work to any configured AI worker, then verify the result |
+
+Every tool carries a danger level, and the gateway decides what needs your
+approval — reads run freely, anything that changes something asks first.
+
+See [Tools](docs/TOOLS.md) for the full list and how to add your own.
+
+## Everything is a plugin, and nothing is installed by default
+
+A fresh Keylane talks to nothing. Claude Code, Cursor, ComfyUI, LM Studio and
+Lemonade all live in [`plugins/catalog/`](plugins/catalog) and are installed
+only when you ask — so you decide what your machine reaches out to.
+
+Once installed, a plugin can be enabled, configured or removed while the
+gateway is running, and can contribute any combination of:
+
+- a **worker** that can be handed a whole task,
+- **tools** the assistant may call directly,
+- **skills** that extend its instructions.
+
+If your tool already speaks [MCP](https://modelcontextprotocol.io), wrapping it
+is one form in the control panel — its tools are discovered automatically and
+appear to the assistant immediately.
+
+See [Writing plugins](docs/PLUGINS.md).
+
+## Themes reshape the popup
+
+A theme is more than a palette. Its `[popup]` section decides the popup's
+**shape**, so the same launcher can be:
+
+| Mode | Look |
+| --- | --- |
+| `bar` | A chromeless Spotlight search bar floating above centre — the default |
+| `panel` | The bar plus status chips and a project picker |
+| `window` | A conventional assistant window with a title bar and scrollback |
+| `orb` | A small circle in a screen corner that expands when you call it |
+
+Six themes ship built in, covering all four shapes. Switching one changes the
+control panel and the popup at once, with nothing to restart.
+
+See [Writing themes](docs/THEMES.md).
+
+## The tray tells you when it is working
+
+A taskbar icon shows at a glance whether Keylane is idle, working, waiting for
+your approval, or offline — so a delegated Claude Code run that takes three
+minutes does not need the popup left open. Clicking it shows the current task.
 
 ## Quick start
-
-### 1. System packages
-
-```bash
-sudo dnf install -y \
-  git python3 python3-pip python3-devel \
-  gcc gcc-c++ make pkg-config \
-  gtk4-devel libadwaita-devel \
-  gobject-introspection-devel cairo-gobject-devel \
-  python3-gobject python3-gobject-base \
-  gtk4 libadwaita \
-  portaudio-devel ffmpeg
-```
-
-> Do **not** `pip install PyGObject`. Use Fedora’s `python3-gobject` and create the venv with `--system-site-packages`.
-
-### 2. Dev environment
 
 ```bash
 git clone https://github.com/dxbh0517/keylane.git
 cd keylane
-python3 -m venv --system-site-packages .venv
+./scripts/install.sh
+systemctl --user enable --now ai-gateway.service ai-launcher.service
+```
+
+The installer handles the Fedora packages, the virtualenv, the user services,
+the icons, the AppIndicator extension the tray needs, and — if you let it — the
+Super+Space binding.
+
+| | |
+| --- | --- |
+| Control panel | <http://127.0.0.1:9100/> |
+| Handbook | <http://127.0.0.1:9100/docs/> |
+| API explorer | <http://127.0.0.1:9100/api-docs> |
+
+**Update** — never touches your models, config, themes or skills:
+
+```bash
+git pull && ./scripts/install.sh --update
+systemctl --user restart ai-gateway.service ai-launcher.service
+```
+
+**Uninstall** — keeps your data unless you add `--purge`:
+
+```bash
+./scripts/uninstall.sh
+```
+
+Full walkthrough: [Install, update, uninstall](docs/INSTALL.md).
+
+### Development
+
+```bash
+python3 -m venv --system-site-packages .venv   # gi comes from Fedora, not pip
 source .venv/bin/activate
 pip install -r requirements.txt
+
+uvicorn app.main:app --reload --port 9100
+python launcher/main.py -v
+pytest -q
+python scripts/build_docs.py                    # rebuild web/docs from docs/*.md
+python scripts/make_logo.py                     # regenerate every icon
 ```
 
-### 3. Run
+> Do **not** `pip install PyGObject`. Use Fedora's `python3-gobject` and create
+> the venv with `--system-site-packages`.
 
-```bash
-# Terminal A — gateway (9100; 9000 is often taken by Lemonade’s lemond)
-uvicorn app.main:app --host 127.0.0.1 --port 9100
+## Requirements
 
-# Terminal B — launcher
-python launcher/main.py
-```
-
-Control panel: [http://127.0.0.1:9100/](http://127.0.0.1:9100/)
-
-### 4. Install as a user service
-
-```bash
-chmod +x scripts/install.sh
-./scripts/install.sh
-systemctl --user enable --now ai-launcher.service
-```
-
-Installs into `~/.local/share/ai-gateway` and enables `ai-gateway.service`.
-
-**GNOME shortcut:** Settings → Keyboard → Custom Shortcuts
-
-| Field | Value |
-|-------|--------|
-| Name | Keylane |
-| Command | `~/.local/share/ai-gateway/.venv/bin/python ~/.local/share/ai-gateway/launcher/main.py` |
-| Shortcut | Super+Space |
-
-## Architecture
-
-| Layer | Path | Responsibility |
-|-------|------|----------------|
-| Launcher | `launcher/` | Capture prompt / mic; call gateway |
-| Gateway | `app/main.py` | FastAPI, localhost only |
-| Orchestrator | `app/orchestrator.py` | Route → execute → verify → retry |
-| Router / verifier | `app/npu/` | OpenVINO GenAI or heuristic fallback |
-| Plugins | `app/plugins/` | Native + MCP workers |
-| Themes | `app/themes.py`, `themes/` | Web + GTK CSS |
-| Control panel | `web/` | Status, config, plugins, themes |
-| Config | `config/*.toml` | Gateway, workers, plugins, projects, themes |
-
-**Principles**
-
-1. **NPU = control plane** — small, frequent classification/verification — not the main coding or Flux engine
-2. **Gateway = authority** — structured intents are validated before any worker runs
-3. **Verifier ≠ executor** — success is judged from evidence, not worker self-report alone
-
-## Control panel
-
-[http://127.0.0.1:9100/](http://127.0.0.1:9100/)
-
-- **Status** — NPU (OpenVINO vs driver-only), LM Studio, ComfyUI, Claude, Cursor, Lemonade
-- **Gateway** — host/port, retries, local-only, project roots, confirmation policy
-- **Plugins** — enable/disable, settings, install MCP servers
-- **Themes** — activate built-ins or install community zips (web **and** Super+Space popup)
-
-## Configuration
-
-Primary file: `config/workers.toml`
-
-```toml
-[gateway]
-host = "127.0.0.1"
-port = 9100
-max_retries = 3
-local_only = false
-
-[npu]
-model_path = "./models/router"
-device = "NPU"
-fallback_device = "CPU"
-
-[security]
-allowed_project_roots = ["/home/you/Documents/Code"]
-require_confirmation_for_modifications = true
-```
-
-Also:
-
-- `config/projects.toml` — launcher project dropdown
-- `config/plugins.toml` — plugin enablement / MCP settings
-- `config/themes.toml` — active theme id
-
-## Plugins & MCP
-
-Guide: [`docs/PLUGINS.md`](docs/PLUGINS.md)
-
-| Kind | Purpose |
-|------|---------|
-| `native` | In-process Python workers (LM Studio, Claude, Cursor, Lemonade, …) |
-| `mcp` | External MCP over stdio (ComfyUI via `comfy-mcp`) |
-
-Install MCP plugins from **Plugins → Install MCP plugin**, or drop a package under `plugins/community/<id>/`.
-
-ComfyUI defaults to MCP (`comfy-mcp`), not a hand-rolled HTTP client.
-
-## Themes
-
-Guide: [`docs/THEMES.md`](docs/THEMES.md)
-
-Built-ins: `default`, `midnight`, `paper`.
-
-```text
-my-theme/
-  theme.toml
-  web.css
-  launcher.css
-```
-
-Activating a theme updates `/theme.css` for the control panel and `/api/themes/active/launcher.css` for the GTK popup (re-applied every time the launcher opens).
+- Fedora (or any distro with GTK 4 and libadwaita), Python 3.11+
+- Intel Core Ultra with `intel_vpu` for the NPU path — everything still works
+  without one, on CPU with keyword routing
+- Optional: LM Studio, Claude Code CLI, Cursor Agent CLI, ComfyUI + `comfy-mcp`,
+  Lemonade Server
+- For the tray on GNOME: `libayatana-appindicator-gtk3` plus the AppIndicator
+  shell extension
+- For exact popup placement: `gtk4-layer-shell` (wlroots compositors)
 
 ## NPU status
 
-Keylane separates **driver presence** from **OpenVINO NPU readiness**:
+Keylane separates **driver presence** from **OpenVINO readiness**:
 
 | State | Meaning |
-|-------|---------|
+| --- | --- |
 | Online | OpenVINO lists `NPU` |
-| Driver only | `/dev/accel/accel0` (or similar) exists, but OpenVINO does not expose `NPU` yet |
+| Driver only | `/dev/accel/accel0` exists but OpenVINO does not expose `NPU` yet |
 | Offline | No accelerator device |
 
-Typical Fedora gap: kernel `intel_vpu` is loaded, but **Level Zero NPU userspace** (`libze_intel_npu.so.1`) from [intel/linux-npu-driver](https://github.com/intel/linux-npu-driver/releases) is missing. Install that stack, ensure your user can access the accel device (often `render` group), then re-login.
+The usual Fedora gap is a loaded `intel_vpu` kernel driver with the Level Zero
+userspace missing:
 
 ```bash
+sudo dnf install intel-npu-driver oneapi-level-zero
+sudo usermod -aG render "$USER"     # then log out and back in
 python scripts/check_npu.py
-curl -s http://127.0.0.1:9100/api/status | jq '{npu,npu_driver,npu_detail,openvino_devices}'
 ```
 
-Until OpenVINO lists `NPU`, the router/verifier use **CPU / heuristic** fallbacks. Place a 1B–3B OpenVINO GenAI export under `models/router` when you have one.
+Until OpenVINO lists `NPU` — and until you download a router model — the
+assistant recognises only a few obvious requests and hands everything else to a
+worker. The control panel says so on both Status and Assistant.
 
-## API
+## Configuration
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/` | Control panel |
-| GET | `/theme.css` | Active web theme |
-| GET | `/api/status` | Worker + NPU health |
-| GET/PUT | `/api/config` | Gateway settings |
-| GET/POST… | `/api/plugins…` | Plugin list, enable, MCP install |
-| GET/PUT… | `/api/themes…` | Theme list / activate / install |
-| GET | `/api/themes/active/launcher.css` | GTK theme CSS |
-| POST | `/api/chat` | Route + execute (+ confirm/retry) |
-| POST | `/api/route` | Route only |
-| POST | `/api/transcribe` | Voice → text |
-| GET | `/api/projects` | Project list |
-| GET/POST | `/api/tasks/…` | Task status / cancel / confirm |
-| POST | `/v1/chat/completions` | OpenAI-compatible entry |
+| File | Holds |
+| --- | --- |
+| `config/workers.toml` | Host, port, retries, docs URL, project sandbox, worker endpoints |
+| `config/assistant.toml` | Tool policy, delegation, web search, SMTP |
+| `config/models.toml` | Device preference, router/verifier models, per-worker defaults |
+| `config/plugins.toml` | Which plugins are on, and their settings |
+| `config/themes.toml` | Active theme id |
+| `config/projects.toml` | The popup's project dropdown |
+| `skills/*.md` | Your instruction packs |
 
-Interactive docs: [http://127.0.0.1:9100/docs](http://127.0.0.1:9100/docs)
+All of it is editable from the control panel, and all of it is plain TOML you
+can edit by hand.
 
 ## Repository layout
 
 ```text
-app/           FastAPI gateway, orchestrator, NPU, plugins, workers
-launcher/      GTK4 / libadwaita Super-key UI + logo
-web/           Control panel + favicon
-themes/        Built-in themes (web.css + launcher.css)
-config/        TOML configuration
-plugins/       Community / drop-in plugin packages
-workflows/     Approved ComfyUI graphs
-models/router/ OpenVINO GenAI model (you provide)
-systemd/       User unit files
-scripts/       install.sh, check_npu.py, desktop entry
-assets/        Brand logo
-docs/          PLUGINS.md, THEMES.md
-tests/         Pytest suite
-fedora_local_ai_gateway.md   Design specification
+app/            gateway: routing, tools, assistant, plugins, themes
+  tools/        the assistant's capabilities
+  plugins/      plugin contracts, registry, built-ins
+  npu/          OpenVINO pipelines, router, verifier
+  workers/      worker implementations
+launcher/       GTK 4 popup, GTK 3 tray, entry point
+web/            control panel; the built handbook under web/docs
+docs/           handbook source — markdown, edit these
+themes/         installed themes; built-ins regenerate on start
+skills/         your markdown instruction packs
+plugins/community/   installed community plugins
+config/         TOML configuration
+models/         router/ chat/ comfyui/ — downloaded weights
+workflows/      approved ComfyUI graphs
+systemd/        user unit files
+scripts/        install.sh, build_docs.py, check_npu.py
+tests/          pytest suite
 ```
+
+## Documentation
+
+The handbook is served at `/docs` and its source lives in `docs/`:
+
+| Page | About |
+| --- | --- |
+| [Handbook index](docs/INDEX.md) | What Keylane is, and how the pieces fit |
+| [Install, update, uninstall](docs/INSTALL.md) | Getting it on a machine, upgrading, removing |
+| [The popup and the tray](docs/POPUP.md) | The overlay, the hotkey, the indicator |
+| [How the assistant thinks](docs/ASSISTANT.md) | Try, delegate, follow up |
+| [Tools](docs/TOOLS.md) | Every capability, and how to add one |
+| [Skills](docs/SKILLS.md) | Teach it your house rules |
+| [Writing plugins](docs/PLUGINS.md) | Workers, MCP servers, tools, skills |
+| [Writing themes](docs/THEMES.md) | Palettes and popup shapes |
+| [Canvas answers](docs/CANVAS.md) | The structured document answers render from |
+| [What it still needs](docs/ROADMAP.md) | Known gaps and next steps |
+| [HTTP API](docs/API.md) | Every endpoint |
+
+Point the panel's Docs button at your own docs subdomain with the `docs_url`
+setting under **Gateway**.
+
+## Security
+
+- The gateway binds to **127.0.0.1** only.
+- **Local-only mode** hard-blocks every cloud worker at the gateway, and removes
+  them from the assistant's catalogue.
+- File tools are sandboxed to your configured roots, with `.ssh`, `.gnupg`,
+  `.env` and similar refused outright.
+- `run_command` has no shell: arguments go straight to `execve`, the program
+  must be allowlisted, and `rm`, `sudo`, `dd`, `sh` and friends are refused even
+  if you allowlist them.
+- Tool output is an observation, never an instruction — a web page cannot talk
+  the assistant out of its rules.
+- Anything that changes something asks first, by default.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Super+Space does nothing | Another binding owns it — on GNOME, "Switch input source" |
+| No tray icon | Install `gnome-shell-extension-appindicator`, log out and back in |
+| Popup in the wrong place | Expected on GNOME for non-centred positions; install `gtk4-layer-shell` on wlroots |
+| Assistant "not loaded" | No OpenVINO router model yet — Models → Search Hugging Face |
+| NPU shows "Driver only" | Level Zero userspace missing, or you are not in `render` |
+| Port in use | Lemonade's `lemond` often owns 9000; Keylane defaults to 9100 |
+| Launcher cannot import `gi` | Install `python3-gobject`; rebuild the venv with `--system-site-packages` |
+| ComfyUI offline | Start ComfyUI; make sure `comfy-mcp` and `comfy` are on `PATH` |
 
 ## Tests
 
 ```bash
-source .venv/bin/activate
 pytest -q
 ```
-
-## Security notes
-
-- Gateway binds **127.0.0.1 only** by default — not exposed to the LAN
-- Cloud CLIs are optional and blocked in **local-only** mode
-- Project paths must sit under configured allowed roots
-- Destructive / modifying actions can require explicit confirmation in the launcher
-
-## Troubleshooting
-
-| Symptom | What to check |
-|---------|----------------|
-| Theme doesn’t change in the browser | Hard refresh; confirm `/theme.css` after activate |
-| Theme doesn’t change in Super+Space | Re-open launcher; confirm `/api/themes/active/launcher.css` |
-| NPU shows “Driver only” | Install Level Zero NPU userspace; `render` group; re-login |
-| Port already in use | Lemonade often owns `9000` — Keylane defaults to `9100` |
-| Launcher can’t import `gi` | Install `python3-gobject`; use `--system-site-packages` venv |
-| ComfyUI offline | Start ComfyUI; ensure `comfy-mcp` is on `PATH` |
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-## Credits
-
-Built for Fedora desktop AI workflows around OpenVINO NPU routing. Design goals are documented in `fedora_local_ai_gateway.md`.

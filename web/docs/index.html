@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Keylane handbook · Keylane docs</title>
+  <meta name="description" content="What Keylane is and where to go next." />
+  <link rel="icon" type="image/png" href="/assets/favicon.png" />
+  <link rel="stylesheet" href="assets/docs.css" />
+</head>
+<body>
+  <div class="docs">
+    <aside class="sidebar">
+      <a class="docs-brand" href="index.html">
+        <img src="/assets/logo.svg" width="30" height="30" alt="" />
+        <span>
+          <strong>Keylane</strong>
+          <span>Handbook</span>
+        </span>
+      </a>
+      <nav class="side-nav" aria-label="Documentation"><div><p class="side-group-title">Start here</p><div class="side-links"><a href="index.html" aria-current="page">Keylane handbook</a><a href="install.html">Install, update, uninstall</a><a href="popup.html">The popup and the tray</a></div></div><div><p class="side-group-title">The assistant</p><div class="side-links"><a href="assistant.html">How the assistant thinks</a><a href="tools.html">Tools</a><a href="skills.html">Skills</a><a href="canvas.html">Canvas answers</a></div></div><div><p class="side-group-title">Extending</p><div class="side-links"><a href="plugins.html">Writing plugins</a><a href="themes.html">Writing themes</a><a href="api.html">HTTP API</a><a href="roadmap.html">What it still needs</a></div></div></nav>
+      <div class="side-foot">
+        <a href="/">← Control panel</a>
+        <span>Local-first · 127.0.0.1</span>
+      </div>
+    </aside>
+
+    <main class="content">
+      <article class="article">
+        <p class="eyebrow">Documentation</p>
+        <h1>Keylane handbook</h1>
+<p>Keylane is a local-first desktop assistant for Linux. Press <kbd>Super</kbd>+<kbd>Space</kbd>, say what you want, and a small model on the Intel NPU either does it — opening an app, searching the web, reading a file, sending an email — or hands it to a bigger AI tool and checks the result.</p>
+<p>Everything runs on your machine. The gateway binds to <code>127.0.0.1</code> and nothing leaves it unless you have enabled a cloud worker.</p>
+<h2>Start here</h2>
+<ul>
+<li><strong><a href="install.html">Install and set up</a></strong> — from a clean Fedora install to a working hotkey.</li>
+<li><strong><a href="popup.html">The popup and the tray</a></strong> — the Spotlight overlay, the hotkey, and the background-work indicator.</li>
+<li><strong><a href="assistant.html">How the assistant thinks</a></strong> — try it yourself, delegate what you cannot, then follow up.</li>
+</ul>
+<h2>Extend it</h2>
+<ul>
+<li><strong><a href="tools.html">Tools</a></strong> — every capability the assistant can reach, and how to add one.</li>
+<li><strong><a href="skills.html">Skills</a></strong> — teach Keylane your house rules with a markdown file.</li>
+<li><strong><a href="plugins.html">Writing plugins</a></strong> — add workers, MCP servers, tools and skills.</li>
+<li><strong><a href="themes.html">Writing themes</a></strong> — restyle the panel and reshape the popup.</li>
+<li><strong><a href="api.html">HTTP API</a></strong> — every endpoint the gateway exposes.</li>
+</ul>
+<h2>How the pieces fit</h2>
+<span class="code-label">text</span><pre><code>        Super+Space
+             │
+             ▼
+   ┌───────────────────┐        the theme decides whether this is a
+   │  Keylane popup    │        bar, a panel, a window or an orb
+   └─────────┬─────────┘
+             │  text · microphone
+             ▼
+   ┌───────────────────┐
+   │  FastAPI gateway  │  127.0.0.1:9100     ← the authority
+   └─────────┬─────────┘
+             │
+             ▼
+   ┌───────────────────┐
+   │  NPU assistant    │  plan → act → observe
+   └────┬─────────┬────┘
+        │         │
+   own tools   delegate
+        │         │
+        │         ▼
+        │   ┌──────────────────────────────┐
+        │   │ LM Studio · Claude Code ·    │
+        │   │ Cursor · ComfyUI · plugins   │
+        │   └──────────────┬───────────────┘
+        │                  │  evidence
+        │                  ▼
+        │        ┌───────────────────┐
+        └───────▶│   NPU verifier    │  is this actually done?
+                 └─────────┬─────────┘
+                           │
+                  success  │  retry with feedback
+                           ▼
+                      answer to you</code></pre>
+<h2>The design rule</h2>
+<p><strong>The gateway is the authority, not the model.</strong> Models emit structured intents — a worker name, a tool name, JSON arguments. Python validates them against a schema, checks them against your policy, executes them, and collects evidence. There is no path from model output to a shell, and no tool the assistant can reach that you have not enabled.</p>
+<p>That is what makes it safe to give a small local model real reach over your desktop.</p>
+<h2>What runs where</h2>
+<div class="table-wrap"><table><thead><tr><th>Job</th><th>Where</th></tr></thead><tbody><tr><td>Routing, planning, verification</td><td>NPU (OpenVINO INT4, ~1.5B)</td></tr><tr><td>Chat, long-form writing</td><td>GPU via LM Studio or Lemonade</td></tr><tr><td>Repository work</td><td>Claude Code or Cursor, if you enable them</td></tr><tr><td>Images</td><td>ComfyUI, locally</td></tr><tr><td>Speech to text</td><td>Whisper, locally</td></tr><tr><td>Desktop actions</td><td>Python in the gateway process</td></tr></tbody></table></div>
+<h2>Getting help</h2>
+<ul>
+<li><strong>Status</strong> in the control panel says what is reachable and what is not; the</li>
+</ul>
+<p>NPU row explains exactly which piece is missing.</p>
+<ul>
+<li><code>journalctl --user -u ai-gateway.service -f</code> for gateway logs.</li>
+<li><code>python launcher/main.py -v</code> to run the popup in the foreground with logging.</li>
+</ul>
+        <nav class="page-nav"><a class="next" href="install.html"><span class="dir">Next</span><span class="name">Install, update, uninstall</span></a></nav>
+      </article>
+    </main>
+
+    <aside class="toc" aria-label="On this page"></aside>
+  </div>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

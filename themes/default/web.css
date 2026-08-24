@@ -1,9 +1,11 @@
 :root {
-  --ag-bg: #f4f4f5;
+  --ag-bg: #f6f6f7;
   --ag-surface: #ffffff;
-  --ag-text: #18181b;
-  --ag-muted: #71717a;
-  --ag-accent: #059669;
-  --ag-border: #e4e4e7;
+  --ag-text: #111113;
+  --ag-muted: #6b6b73;
+  --ag-accent: #2563eb;
+  --ag-border: #e2e2e6;
   --ag-danger: #b91c1c;
+  --ag-radius: 18px;
+  --ag-font-size: 20px;
 }

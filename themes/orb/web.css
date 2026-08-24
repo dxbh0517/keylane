@@ -1,0 +1,11 @@
+:root {
+  --ag-bg: #0b0f14;
+  --ag-surface: #131a22;
+  --ag-text: #eaf2ff;
+  --ag-muted: #8ba0b8;
+  --ag-accent: #38bdf8;
+  --ag-border: #1e2a37;
+  --ag-danger: #fb7185;
+  --ag-radius: 28px;
+  --ag-font-size: 15px;
+}

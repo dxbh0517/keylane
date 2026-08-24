@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Keylane
+GenericName=Local AI Gateway
+Comment=Super-key launcher for Keylane
+Exec=sh -c '$HOME/.local/share/ai-gateway/.venv/bin/python $HOME/.local/share/ai-gateway/launcher/main.py'
+Icon=keylane
+Terminal=false
+Type=Application
+Categories=Utility;Development;
+StartupNotify=true
+StartupWMClass=app.keylane.Launcher
+X-GNOME-UsesNotifications=false
+Keywords=AI;NPU;OpenVINO;assistant;keylane;

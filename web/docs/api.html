@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HTTP API · Keylane docs</title>
+  <meta name="description" content="Every endpoint the gateway exposes on 127.0.0.1." />
+  <link rel="icon" type="image/png" href="/assets/favicon.png" />
+  <link rel="stylesheet" href="assets/docs.css" />
+</head>
+<body>
+  <div class="docs">
+    <aside class="sidebar">
+      <a class="docs-brand" href="index.html">
+        <img src="/assets/logo.svg" width="30" height="30" alt="" />
+        <span>
+          <strong>Keylane</strong>
+          <span>Handbook</span>
+        </span>
+      </a>
+      <nav class="side-nav" aria-label="Documentation"><div><p class="side-group-title">Start here</p><div class="side-links"><a href="index.html">Keylane handbook</a><a href="install.html">Install, update, uninstall</a><a href="popup.html">The popup and the tray</a></div></div><div><p class="side-group-title">The assistant</p><div class="side-links"><a href="assistant.html">How the assistant thinks</a><a href="tools.html">Tools</a><a href="skills.html">Skills</a><a href="canvas.html">Canvas answers</a></div></div><div><p class="side-group-title">Extending</p><div class="side-links"><a href="plugins.html">Writing plugins</a><a href="themes.html">Writing themes</a><a href="api.html" aria-current="page">HTTP API</a><a href="roadmap.html">What it still needs</a></div></div></nav>
+      <div class="side-foot">
+        <a href="/">← Control panel</a>
+        <span>Local-first · 127.0.0.1</span>
+      </div>
+    </aside>
+
+    <main class="content">
+      <article class="article">
+        <p class="eyebrow">Reference</p>
+        <h1>HTTP API</h1>
+<p>The gateway listens on <code>127.0.0.1:9100</code> and is not reachable from the network. An interactive OpenAPI explorer is served at <a href="http://127.0.0.1:9100/api-docs" target="_blank" rel="noopener"><code>/api-docs</code></a>.</p>
+<h2>Chat and tasks</h2>
+<h3><code>POST /api/chat</code></h3>
+<p>The main entry point. Runs the assistant loop, falling through to worker routing when the assistant has nothing to contribute.</p>
+<span class="code-label">json</span><pre><code>{
+  &quot;message&quot;: &quot;generate a hero image and drop it into the landing page&quot;,
+  &quot;project&quot;: &quot;/home/you/code/site&quot;,
+  &quot;local_only&quot;: false,
+  &quot;confirmed&quot;: false,
+  &quot;task_id&quot;: null
+}</code></pre>
+<p>Response:</p>
+<span class="code-label">json</span><pre><code>{
+  &quot;task_id&quot;: &quot;5f069c5c2731&quot;,
+  &quot;status&quot;: &quot;completed&quot;,
+  &quot;worker&quot;: &quot;assistant&quot;,
+  &quot;result&quot;: &quot;…&quot;,
+  &quot;requires_confirmation&quot;: false,
+  &quot;assistant_steps&quot;: [
+    {&quot;index&quot;: 1, &quot;tool&quot;: &quot;delegate_to_worker&quot;, &quot;ok&quot;: true, &quot;observation&quot;: &quot;…&quot;}
+  ],
+  &quot;canvas&quot;: {&quot;title&quot;: &quot;…&quot;, &quot;blocks&quot;: [{&quot;type&quot;: &quot;stats&quot;, &quot;items&quot;: []}]},
+  &quot;pending_tool&quot;: null,
+  &quot;pending_arguments&quot;: {}
+}</code></pre>
+<p><code>status</code> is one of <code>pending</code>, <code>routing</code>, <code>waiting_confirmation</code>, <code>running</code>, <code>verifying</code>, <code>retrying</code>, <code>completed</code>, <code>failed</code>, <code>cancelled</code>.</p>
+<p><code>canvas</code> is the structured answer — see <a href="canvas.html">Canvas answers</a>. <code>result</code> carries the same content as plain text, so a client that cannot render a canvas still has something to show.</p>
+<p><strong>To approve a gated step</strong>, resend with the same <code>task_id</code>, the same <code>message</code>, and <code>&quot;confirmed&quot;: true</code>.</p>
+<h3>Other task endpoints</h3>
+<span class="code-label">http</span><pre><code>POST /api/tasks                 alias for /api/chat
+GET  /api/tasks/{id}            current state of a task
+POST /api/tasks/{id}/cancel     request cancellation
+POST /api/route                 route only — returns the decision, runs nothing</code></pre>
+<h3><code>POST /v1/chat/completions</code></h3>
+<p>A minimal OpenAI-compatible shim, so existing clients can point at Keylane. The last user message becomes the request; the reply is the task result.</p>
+<h2>Assistant and tools</h2>
+<span class="code-label">http</span><pre><code>GET  /api/assistant             settings, live system prompt, model state
+PUT  /api/assistant             update settings
+GET  /api/tools                 every tool, with schema, danger and availability
+GET  /api/tools?available_only=true
+POST /api/tools/refresh         rebuild the registry, re-query MCP servers
+POST /api/tools/call            invoke one tool directly
+GET  /api/skills                every skill and its content
+POST /api/skills                create one
+PUT  /api/skills/{name}         update or rename one
+POST /api/skills/{name}/enable  {&quot;enabled&quot;: true}
+DELETE /api/skills/{name}
+POST /api/skills/reload         re-read skills/
+POST /api/skills/discover       {&quot;repo&quot;: &quot;owner/repo&quot;} -&gt; what a GitHub repo contains
+POST /api/skills/import         {&quot;repo&quot;: &quot;...&quot;, &quot;paths&quot;: [...]} -&gt; install a selection</code></pre>
+<p><code>POST /api/tools/call</code>:</p>
+<span class="code-label">json</span><pre><code>{&quot;tool&quot;: &quot;web_search&quot;, &quot;arguments&quot;: {&quot;query&quot;: &quot;openvino npu&quot;}, &quot;confirmed&quot;: false}</code></pre>
+<p>A gated tool answers <code>{&quot;requires_confirmation&quot;: true, &quot;danger&quot;: &quot;sensitive&quot;, …}</code> until you resend with <code>&quot;confirmed&quot;: true</code>.</p>
+<h2>Activity</h2>
+<span class="code-label">http</span><pre><code>GET /api/activity     point-in-time snapshot
+GET /api/events       Server-Sent Events stream</code></pre>
+<p>The snapshot is what drives the tray icon:</p>
+<span class="code-label">json</span><pre><code>{
+  &quot;busy&quot;: true,
+  &quot;active_count&quot;: 1,
+  &quot;needs_attention&quot;: 0,
+  &quot;active&quot;: [
+    {&quot;task_id&quot;: &quot;ab12&quot;, &quot;title&quot;: &quot;refactor the client&quot;, &quot;status&quot;: &quot;running&quot;,
+     &quot;worker&quot;: &quot;claude&quot;, &quot;step&quot;: &quot;attempt 1&quot;, &quot;started_at&quot;: &quot;…&quot;}
+  ],
+  &quot;recent&quot;: []
+}</code></pre>
+<p><code>/api/events</code> emits <code>event: snapshot</code> frames with that same payload, plus <code>event: event</code> frames for individual steps, and a comment keepalive every 20 seconds.</p>
+<h2>Status and config</h2>
+<span class="code-label">http</span><pre><code>GET /api/status       NPU, workers, assistant, tool count, busy flag
+GET /api/projects     configured project roots
+GET /api/config       gateway settings
+PUT /api/config       update them
+GET /healthz          liveness</code></pre>
+<p><code>GET /api/status</code>:</p>
+<span class="code-label">json</span><pre><code>{
+  &quot;npu&quot;: true, &quot;npu_driver&quot;: true, &quot;npu_openvino&quot;: true,
+  &quot;npu_detail&quot;: &quot;OpenVINO NPU device available&quot;,
+  &quot;openvino_devices&quot;: [&quot;CPU&quot;, &quot;GPU&quot;, &quot;NPU&quot;],
+  &quot;lmstudio&quot;: true, &quot;comfyui&quot;: true, &quot;claude&quot;: true, &quot;cursor&quot;: true,
+  &quot;lemonade&quot;: true, &quot;gateway&quot;: true, &quot;local_only&quot;: false,
+  &quot;assistant&quot;: true, &quot;tools_enabled&quot;: true, &quot;tool_count&quot;: 58, &quot;busy&quot;: false,
+  &quot;plugins&quot;: {&quot;lmstudio&quot;: true, &quot;comfyui&quot;: true}
+}</code></pre>
+<h2>Plugins</h2>
+<span class="code-label">http</span><pre><code>GET    /api/plugins/catalog                    everything installable
+POST   /api/plugins/catalog/{id}/install
+DELETE /api/plugins/catalog/{id}?purge=false
+
+GET    /api/plugins?health=true
+POST   /api/plugins/{id}/enable      {&quot;enabled&quot;: true}
+PUT    /api/plugins/{id}/settings    {...}
+POST   /api/plugins/install/mcp      {id, command, args, health_tool, run_tool, ...}
+DELETE /api/plugins/{id}
+POST   /api/plugins/reload</code></pre>
+<p>Enabling or disabling a plugin rebuilds the tool registry, so the assistant&#x27;s capabilities change immediately.</p>
+<h2>Themes</h2>
+<span class="code-label">http</span><pre><code>GET    /api/themes                      every theme with its popup spec
+GET    /api/themes/active               active id, popup spec, colours
+GET    /api/themes/active/popup.json    just the popup spec
+GET    /api/themes/active/launcher.css  GTK CSS for the popup
+GET    /api/themes/presets              built-in popup presets
+GET    /theme.css                       control-panel CSS
+PUT    /api/themes/active               {&quot;id&quot;: &quot;midnight&quot;}
+POST   /api/themes/install              multipart zip
+DELETE /api/themes/{id}</code></pre>
+<h2>Models</h2>
+<span class="code-label">http</span><pre><code>GET  /api/models                    settings, hardware, recommendations, available
+GET  /api/models/available          what each worker reports as loaded
+PUT  /api/models                    update settings
+POST /api/models/reload             hot-reload every OpenVINO pipeline
+GET  /api/models/hf/targets
+GET  /api/models/hf/search?q=…&amp;target=router|chat|comfy&amp;limit=12
+POST /api/models/hf/download        {&quot;repo_id&quot;: &quot;...&quot;, &quot;target&quot;: &quot;router&quot;}
+GET  /api/models/hf/downloads
+GET  /api/models/hf/downloads/{job_id}</code></pre>
+<h2>Speech</h2>
+<span class="code-label">http</span><pre><code>POST /api/transcribe    multipart WAV → {&quot;text&quot;: &quot;...&quot;}</code></pre>
+<p>16 kHz mono is expected; the launcher resamples before uploading.</p>
+<h2>Docs</h2>
+<p>The handbook you are reading is served as static files at <code>/docs</code>. Point the control panel&#x27;s Docs button somewhere else — your own docs subdomain, say — with the <code>docs_url</code> setting under <strong>Gateway</strong>.</p>
+        <nav class="page-nav"><a href="themes.html"><span class="dir">Previous</span><span class="name">Writing themes</span></a><a class="next" href="roadmap.html"><span class="dir">Next</span><span class="name">What it still needs</span></a></nav>
+      </article>
+    </main>
+
+    <aside class="toc" aria-label="On this page"></aside>
+  </div>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

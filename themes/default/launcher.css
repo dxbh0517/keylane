@@ -1,28 +1,137 @@
-@define-color ag_bg #f4f4f5;
+@define-color ag_bg #f6f6f7;
 @define-color ag_surface #ffffff;
-@define-color ag_text #18181b;
-@define-color ag_muted #71717a;
-@define-color ag_accent #059669;
-@define-color ag_border #e4e4e7;
+@define-color ag_text #111113;
+@define-color ag_muted #6b6b73;
+@define-color ag_accent #2563eb;
+@define-color ag_border #e2e2e6;
 @define-color ag_danger #b91c1c;
 
-window, window.background, .background {
-  background-color: @ag_bg;
-  color: @ag_text;
+/* Generated from [colors] + [popup]. Ship your own launcher.css to override. */
+
+window.keylane-popup {
+  background-color: transparent;
 }
 
-headerbar, headerbar.flat {
+.keylane-shell {
+  background-color: alpha(@ag_bg, 1.00);
+  color: @ag_text;
+  border-radius: 18px;
+  /* A brighter hairline reads as light catching the edge of a real material. */
+  border: 1px solid alpha(@ag_border, 0.85);
+  padding: 10px;
+  
+}
+
+.keylane-card {
+  background-color: @ag_surface;
+  border-radius: 8px;
+  border: 1px solid alpha(@ag_border, 0.9);
+}
+
+.keylane-prompt {
+  background: none;
+  background-color: transparent;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  padding: 0 6px;
+  min-height: 44px;
+  font-size: 20px;
+  /* Large type reads too loose at default tracking. */
+  letter-spacing: -0.011em;
+  color: @ag_text;
+  caret-color: @ag_accent;
+}
+.keylane-prompt:focus,
+.keylane-prompt:focus-within,
+.keylane-prompt > text {
+  background: none;
+  background-color: transparent;
+  border: none;
+  outline: none;
+  box-shadow: none;
+}
+
+/* The mark sits at the head of the bar, tinted, never a pasted-on tile. */
+.keylane-mark {
+  color: @ag_accent;
+  margin: 0 4px 0 6px;
+}
+
+.keylane-title {
+  color: @ag_text;
+  font-weight: 700;
+  letter-spacing: -0.014em;
+}
+.keylane-subtitle, .keylane-hint, .keylane-progress { color: @ag_muted; }
+
+.keylane-result {
   background-color: @ag_surface;
   color: @ag_text;
-  border-bottom-color: @ag_border;
+  border-radius: 8px;
+  border: 1px solid @ag_border;
+}
+.keylane-progress {
+  font-size: 14px;
+  padding: 2px 8px 4px;
+}
+/* Results are a second region, so the divider only appears when they do. */
+.keylane-result-view {
+  border-top: 1px solid alpha(@ag_border, 0.7);
+  margin-top: 10px;
+  padding-top: 10px;
 }
 
-headerbar label, headerbar .title {
+.keylane-chip {
+  background-color: alpha(@ag_border, 0.55);
+  color: @ag_muted;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+}
+.keylane-chip.on { background-color: alpha(@ag_accent, 0.16); color: @ag_accent; }
+.keylane-chip.warn { background-color: alpha(@ag_danger, 0.16); color: @ag_danger; }
+
+.keylane-orb {
+  background-color: @ag_accent;
+  border-radius: 36px;
+  min-width: 72px;
+  min-height: 72px;
+}
+
+/* Round, quiet, and the same height as the entry so the row optically aligns. */
+.keylane-icon-btn {
+  background: none;
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  border-radius: 999px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  color: @ag_muted;
+}
+.keylane-icon-btn:hover {
+  background-color: alpha(@ag_text, 0.08);
   color: @ag_text;
 }
+.keylane-icon-btn:checked,
+.keylane-icon-btn.recording {
+  background-color: alpha(@ag_danger, 0.18);
+  color: @ag_danger;
+}
 
-.ag-shell {
-  background-color: @ag_bg;
+.keylane-send {
+  border-radius: 8px;
+  min-height: 38px;
+  padding: 0 16px;
+  font-weight: 600;
+}
+
+button.suggested-action, button.suggested-action:hover {
+  background-color: @ag_accent;
+  color: @ag_surface;
+  border-color: @ag_accent;
 }
 
 entry, textview, textview > text {
@@ -32,55 +141,118 @@ entry, textview, textview > text {
   caret-color: @ag_accent;
 }
 
-entry:focus, textview:focus {
-  border-color: @ag_accent;
-  box-shadow: 0 0 0 1px @ag_accent;
+label { color: @ag_text; }
+label.dim-label, .dim-label { color: @ag_muted; }
+
+popover, popover.menu, popover > contents, dropdown, listview, listview row {
+  background-color: @ag_surface;
+  color: @ag_text;
+  border-color: @ag_border;
 }
 
-label {
+headerbar, headerbar.flat {
+  background-color: transparent;
+  color: @ag_text;
+  border-bottom: none;
+  box-shadow: none;
+  min-height: 0;
+}
+
+scrollbar { background-color: transparent; }
+
+/* ---------------------------------------------------- working orb + canvas */
+
+window.keylane-orb-window { background-color: transparent; }
+
+.keylane-result-shell {
+  background-color: alpha(@ag_bg, 0.97);
+  border: 1px solid alpha(@ag_border, 0.9);
+  border-radius: 24px;
+  padding: 12px;
+}
+/* Collapsed, it is a circle — the squircle grows out of it. */
+.keylane-result-shell.is-orb {
+  border-radius: 999px;
+  padding: 0;
+  background-color: alpha(@ag_accent, 0.16);
+  border-color: alpha(@ag_accent, 0.5);
+}
+.keylane-result-shell.failed { border-color: alpha(@ag_danger, 0.7); }
+
+.canvas-title {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.012em;
   color: @ag_text;
 }
+.canvas-summary { color: @ag_muted; font-size: 13px; }
+.canvas-heading {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: @ag_muted;
+  margin-top: 4px;
+}
+.canvas-text { color: @ag_text; font-size: 13.5px; }
+.canvas-bullet { color: @ag_accent; font-size: 13.5px; }
+.canvas-source { color: alpha(@ag_muted, 0.8); font-size: 11px; }
 
-label.dim-label, .dim-label {
+.canvas-stat {
+  background-color: @ag_surface;
+  border: 1px solid @ag_border;
+  border-radius: 12px;
+  padding: 8px 10px;
+}
+.canvas-stat-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
   color: @ag_muted;
 }
+.canvas-stat-value { font-size: 17px; font-weight: 700; color: @ag_text; }
+.canvas-stat-detail { font-size: 11px; color: @ag_muted; }
 
-button {
+.canvas-th {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: @ag_muted;
+}
+.canvas-td { font-size: 12.5px; color: @ag_text; }
+
+.canvas-code-view {
   background-color: @ag_surface;
+  border: 1px solid @ag_border;
+  border-radius: 12px;
+}
+.canvas-code {
+  font-family: monospace;
+  font-size: 12px;
   color: @ag_text;
-  border-color: @ag_border;
+  padding: 8px 10px;
 }
 
-button:hover {
-  background-color: mix(@ag_surface, @ag_accent, 0.12);
+.canvas-note {
+  border-radius: 12px;
+  padding: 8px 11px;
+  background-color: alpha(@ag_accent, 0.12);
+  border-left: 3px solid @ag_accent;
+}
+.canvas-note.success {
+  background-color: alpha(@ag_accent, 0.12);
+  border-left-color: @ag_accent;
+}
+.canvas-note.warning {
+  background-color: alpha(#d97706, 0.14);
+  border-left-color: #d97706;
+}
+.canvas-note.danger {
+  background-color: alpha(@ag_danger, 0.14);
+  border-left-color: @ag_danger;
 }
 
-button.suggested-action, button.suggested-action:hover {
-  background-color: @ag_accent;
-  color: @ag_surface;
-  border-color: @ag_accent;
-}
-
-button.destructive-action {
-  color: @ag_danger;
-  border-color: mix(@ag_danger, @ag_border, 0.5);
-}
-
-checkbutton, checkbutton label {
-  color: @ag_text;
-}
-
-dropdown, popover, popover.menu, popover > contents {
-  background-color: @ag_surface;
-  color: @ag_text;
-  border-color: @ag_border;
-}
-
-listview, listview row {
-  background-color: @ag_surface;
-  color: @ag_text;
-}
-
-scrollbar {
-  background-color: transparent;
+.canvas-link {
+  color: @ag_accent;
+  padding: 2px 0;
+  min-height: 0;
 }

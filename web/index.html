@@ -4,115 +4,712 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Keylane</title>
+  <meta name="description" content="Control panel for the Keylane local AI gateway." />
   <link rel="icon" type="image/png" href="/assets/favicon.png" />
   <link rel="stylesheet" href="/assets/app.css" />
   <link rel="stylesheet" id="theme-css" href="/theme.css" />
 </head>
 <body>
+  <!-- Icon sprite: referenced with <use>, so no emoji and no icon font. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <defs>
+      <g id="i-status" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12h4l3 7 4-14 3 7h4" />
+      </g>
+      <g id="i-assistant" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3.2" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.2 2.2M16.9 16.9l2.2 2.2M19.1 4.9l-2.2 2.2M7.1 16.9l-2.2 2.2" />
+      </g>
+      <g id="i-plugins" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 3v4M15 3v4M5 7h14v6a7 7 0 0 1-14 0z" /><path d="M12 20v2" />
+      </g>
+      <g id="i-skills" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5z" /><path d="M8 7h7M8 11h5" />
+      </g>
+      <g id="i-models" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3 3 7.5 12 12l9-4.5z" /><path d="M3 12.5 12 17l9-4.5M3 17 12 21.5 21 17" />
+      </g>
+      <g id="i-themes" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3a9 9 0 1 0 0 18c1.4 0 2-.9 2-1.8 0-1.4-1.2-1.8-1.2-3 0-.8.7-1.4 1.6-1.4H16a5 5 0 0 0 5-5c0-3.9-4-6.8-9-6.8z" /><circle cx="7.5" cy="11" r="1.1" /><circle cx="11" cy="7" r="1.1" /><circle cx="15.5" cy="9" r="1.1" />
+      </g>
+      <g id="i-gateway" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="7" rx="2" /><rect x="3" y="13" width="18" height="7" rx="2" /><path d="M7 7.5h.01M7 16.5h.01" />
+      </g>
+      <g id="i-docs" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M9 13h6M9 17h4" />
+      </g>
+      <g id="i-external" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 4h6v6M20 4l-9 9" /><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+      </g>
+      <g id="i-refresh" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 11A8 8 0 0 0 6.3 6.3L4 8.5" /><path d="M4 4v4.5h4.5" /><path d="M4 13a8 8 0 0 0 13.7 4.7L20 15.5" /><path d="M20 20v-4.5h-4.5" />
+      </g>
+      <g id="i-alert" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 8v5M12 16.5h.01" /><circle cx="12" cy="12" r="9" />
+      </g>
+    </defs>
+  </svg>
+
   <div class="shell">
     <aside class="rail" aria-label="Sections">
       <div class="brand">
-        <img class="brand-mark" src="/assets/logo.png" width="32" height="32" alt="" />
+        <img class="brand-mark" src="/assets/logo.svg" width="30" height="30" alt="" />
         <div>
           <strong>Keylane</strong>
           <span class="muted">Local AI gateway</span>
         </div>
       </div>
-      <nav class="nav">
-        <button type="button" class="nav-item is-active" data-tab="status">Status</button>
-        <button type="button" class="nav-item" data-tab="config">Gateway</button>
-        <button type="button" class="nav-item" data-tab="plugins">Plugins</button>
-        <button type="button" class="nav-item" data-tab="themes">Themes</button>
+
+      <nav class="nav" aria-label="Control panel sections">
+        <button type="button" class="nav-item is-active" data-tab="status">
+          <svg viewBox="0 0 24 24"><use href="#i-status" /></svg> Status
+        </button>
+        <button type="button" class="nav-item" data-tab="assistant">
+          <svg viewBox="0 0 24 24"><use href="#i-assistant" /></svg> Assistant
+          <span class="nav-count" id="count-tools"></span>
+        </button>
+        <button type="button" class="nav-item" data-tab="plugins">
+          <svg viewBox="0 0 24 24"><use href="#i-plugins" /></svg> Plugins
+          <span class="nav-count" id="count-plugins"></span>
+        </button>
+        <button type="button" class="nav-item" data-tab="skills">
+          <svg viewBox="0 0 24 24"><use href="#i-skills" /></svg> Skills
+          <span class="nav-count" id="count-skills"></span>
+        </button>
+        <button type="button" class="nav-item" data-tab="models">
+          <svg viewBox="0 0 24 24"><use href="#i-models" /></svg> Models
+        </button>
+        <button type="button" class="nav-item" data-tab="themes">
+          <svg viewBox="0 0 24 24"><use href="#i-themes" /></svg> Themes
+        </button>
+        <button type="button" class="nav-item" data-tab="config">
+          <svg viewBox="0 0 24 24"><use href="#i-gateway" /></svg> Gateway
+        </button>
       </nav>
-      <p class="rail-foot muted">Bound to 127.0.0.1 only</p>
+
+      <div class="rail-foot muted">
+        <span id="rail-activity"><span class="dot"></span>Connecting…</span>
+        <span>Bound to 127.0.0.1 only</span>
+      </div>
     </aside>
 
     <main class="main">
       <header class="top">
         <div>
           <h1 id="page-title">Status</h1>
-          <p class="lede" id="page-lede">Worker health and NPU readiness.</p>
+          <p class="lede" id="page-lede">Worker health, NPU readiness and what the assistant is doing.</p>
         </div>
-        <button type="button" class="btn ghost" id="refresh-btn">Refresh</button>
+        <div class="top-actions">
+          <a class="btn ghost" id="docs-link" href="/docs/" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24"><use href="#i-docs" /></svg>
+            Docs
+            <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#i-external" /></svg>
+          </a>
+          <button type="button" class="btn ghost" id="refresh-btn">
+            <svg viewBox="0 0 24 24"><use href="#i-refresh" /></svg> Refresh
+          </button>
+        </div>
       </header>
 
+      <!-- ============================================================ Status -->
       <section id="tab-status" class="panel is-active">
+        <div id="status-banner"></div>
+
         <div class="status-grid" id="status-grid"></div>
-        <p class="hint muted">Port 9000 is often Lemonade (<code>lemond</code>). This gateway defaults to <code>9100</code>.</p>
+
+        <div class="card">
+          <div class="section-head">
+            <h3>Running now</h3>
+            <span class="muted hint" id="activity-meta">Live</span>
+          </div>
+          <div class="activity-list" id="activity-active"></div>
+        </div>
+
+        <div class="card">
+          <h3>Recent</h3>
+          <div class="activity-list" id="activity-recent"></div>
+        </div>
+
+        <p class="hint muted">
+          Port 9000 is usually Lemonade's <code>lemond</code>. Keylane defaults to <code>9100</code>.
+        </p>
       </section>
 
-      <section id="tab-config" class="panel">
-        <form id="config-form" class="form-stack">
-          <label>
-            <span>Host</span>
-            <input name="host" autocomplete="off" />
-          </label>
-          <label>
-            <span>Port</span>
-            <input name="port" type="number" min="1024" max="65535" />
-          </label>
-          <label>
-            <span>Max retries</span>
-            <input name="max_retries" type="number" min="0" max="10" />
+      <!-- ========================================================= Assistant -->
+      <section id="tab-assistant" class="panel">
+        <div id="assistant-banner"></div>
+
+        <form id="assistant-form" class="card form-stack">
+          <div class="section-head">
+            <h3>Behaviour</h3>
+            <span class="badge mono" id="assistant-device">—</span>
+          </div>
+          <p class="muted hint">
+            The NPU model tries each request itself first, delegates what it cannot
+            do to a configured worker, then checks the result before answering.
+          </p>
+
+          <label class="check">
+            <input name="tools_enabled" type="checkbox" />
+            <span>Let the assistant use tools</span>
           </label>
           <label class="check">
-            <input name="local_only" type="checkbox" />
-            <span>Local only (block Claude / Cursor)</span>
-          </label>
-          <label>
-            <span>Allowed project roots (one per line)</span>
-            <textarea name="allowed_project_roots" rows="4"></textarea>
+            <input name="delegation_enabled" type="checkbox" />
+            <span>Allow delegation to other AI tools (Claude Code, Cursor, ComfyUI…)</span>
           </label>
           <label class="check">
-            <input name="require_confirmation_for_modifications" type="checkbox" />
-            <span>Confirm file modifications</span>
+            <input name="delegation_follow_up" type="checkbox" />
+            <span>Verify delegated results against the original request</span>
           </label>
-          <div class="row">
-            <button type="submit" class="btn primary">Save settings</button>
-            <p class="muted" id="config-note"></p>
+
+          <div class="row wrap">
+            <label class="grow">
+              <span>Ask before running</span>
+              <select name="confirm_danger_at">
+                <option value="safe">Everything — confirm every tool call</option>
+                <option value="sensitive">Anything that changes something (recommended)</option>
+                <option value="dangerous">Only shell commands</option>
+              </select>
+            </label>
+            <label class="grow">
+              <span>Max tool steps per request</span>
+              <input name="max_steps" type="number" min="1" max="12" />
+            </label>
+            <label class="grow">
+              <span>Max delegations per request</span>
+              <input name="max_delegations" type="number" min="0" max="5" />
+            </label>
+          </div>
+
+          <label>
+            <span>House rules</span>
+            <textarea name="persona" rows="3" placeholder="Extra instructions appended to the assistant's system prompt."></textarea>
+          </label>
+
+          <fieldset>
+            <legend>Web search</legend>
+            <div class="row wrap">
+              <label class="grow">
+                <span>Engine</span>
+                <select name="search_engine">
+                  <option value="duckduckgo">DuckDuckGo</option>
+                  <option value="searxng">SearXNG (self-hosted)</option>
+                  <option value="none">Disabled</option>
+                </select>
+              </label>
+              <label class="grow">
+                <span>SearXNG URL</span>
+                <input name="searxng_url" placeholder="http://127.0.0.1:8888" />
+              </label>
+              <label class="grow">
+                <span>Results</span>
+                <input name="search_max_results" type="number" min="1" max="15" />
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Shell commands</legend>
+            <label class="check">
+              <input name="shell_enabled" type="checkbox" />
+              <span>Allow <code>run_command</code></span>
+            </label>
+            <label>
+              <span>Allowlist <span class="field-help">one program per line — nothing outside this list can run</span></span>
+              <textarea name="shell_allowlist" rows="4"></textarea>
+            </label>
+            <label>
+              <span>Working directory</span>
+              <input name="shell_working_directory" placeholder="~" />
+            </label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Email</legend>
+            <label class="check">
+              <input name="email_enabled" type="checkbox" />
+              <span>Let the assistant send email from your account</span>
+            </label>
+            <div class="row wrap">
+              <label class="grow"><span>SMTP host</span><input name="smtp_host" placeholder="smtp.gmail.com" /></label>
+              <label><span>Port</span><input name="smtp_port" type="number" min="1" max="65535" /></label>
+              <label class="check"><input name="use_tls" type="checkbox" /><span>STARTTLS</span></label>
+            </div>
+            <div class="row wrap">
+              <label class="grow"><span>Username</span><input name="email_username" autocomplete="username" /></label>
+              <label class="grow">
+                <span>Password <span class="field-help">or <code>env:VAR_NAME</code></span></span>
+                <input name="email_password" type="password" autocomplete="new-password" placeholder="••••••••" />
+              </label>
+            </div>
+            <div class="row wrap">
+              <label class="grow"><span>From address</span><input name="from_address" type="email" /></label>
+              <label class="grow"><span>From name</span><input name="from_name" /></label>
+            </div>
+            <label>
+              <span>Allowed recipients <span class="field-help">one per line; <code>@example.com</code> allows a whole domain. Empty means anyone.</span></span>
+              <textarea name="allowed_recipients" rows="2"></textarea>
+            </label>
+          </fieldset>
+
+          <div class="row wrap">
+            <button type="submit" class="btn primary">Save assistant settings</button>
+            <p class="muted hint" id="assistant-note"></p>
           </div>
         </form>
-      </section>
 
-      <section id="tab-plugins" class="panel">
-        <div class="row between">
-          <p class="muted">Enable workers and MCP servers. ComfyUI uses <code>comfy-mcp</code> by default.</p>
-          <button type="button" class="btn ghost" id="reload-plugins">Reload</button>
+        <div class="card">
+          <div class="section-head">
+            <h3>Tools</h3>
+            <div class="tool-toolbar">
+              <input class="tool-search" id="tool-search" type="text" placeholder="Filter tools…" aria-label="Filter tools" />
+              <button type="button" class="btn ghost small" id="refresh-tools">
+                <svg viewBox="0 0 24 24"><use href="#i-refresh" /></svg> Rediscover
+              </button>
+            </div>
+          </div>
+          <p class="muted hint">
+            Everything the assistant can do. Plugins add to this list — an MCP server's
+            tools appear here automatically once the plugin is enabled. Switch a tool
+            off to put it out of reach, or let a trusted one run without asking.
+          </p>
+          <div class="tool-grid" id="tool-grid"></div>
         </div>
-        <div id="plugin-list" class="card-list"></div>
 
         <details class="installer">
-          <summary>Install MCP plugin</summary>
-          <form id="mcp-install-form" class="form-stack compact">
-            <label><span>ID</span><input name="id" placeholder="my-mcp" required /></label>
-            <label><span>Name</span><input name="name" placeholder="My MCP" /></label>
-            <label><span>Command</span><input name="command" placeholder="comfy-mcp" required /></label>
-            <label><span>Args (JSON array)</span><input name="args" value="[]" /></label>
-            <label><span>Health tool</span><input name="health_tool" value="server_info" /></label>
-            <label><span>Run tool</span><input name="run_tool" value="generate_image" /></label>
-            <label><span>Worker ID</span><input name="worker_id" placeholder="same as id if routing" /></label>
-            <label class="check"><input name="cloud" type="checkbox" /><span>Cloud service</span></label>
-            <button type="submit" class="btn primary">Install MCP plugin</button>
-          </form>
-          <p class="hint muted">See <code>docs/PLUGINS.md</code> for manifests and community packaging.</p>
+          <summary>System prompt</summary>
+          <p class="muted hint">Exactly what the NPU model is told, including your house rules and the live tool catalogue.</p>
+          <pre id="system-prompt" class="skill-card"></pre>
         </details>
       </section>
 
-      <section id="tab-themes" class="panel">
-        <div id="theme-list" class="theme-grid"></div>
-        <form id="theme-install-form" class="form-stack compact">
-          <label>
-            <span>Install community theme (.zip with theme.toml)</span>
-            <input type="file" name="file" accept=".zip,application/zip" required />
-          </label>
-          <button type="submit" class="btn primary">Install theme</button>
-        </form>
-        <p class="hint muted">Active theme styles this page and the GTK launcher popup. See <code>docs/THEMES.md</code>.</p>
+      <!-- =========================================================== Plugins -->
+      <section id="tab-plugins" class="panel">
+        <div class="section-head">
+          <p class="muted">
+            Workers, MCP servers and tool providers. Everything here can be switched
+            on or off without restarting the gateway.
+          </p>
+          <button type="button" class="btn ghost" id="reload-plugins">
+            <svg viewBox="0 0 24 24"><use href="#i-refresh" /></svg> Reload
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="section-head">
+            <h3>Catalog</h3>
+            <span class="muted hint" id="catalog-meta"></span>
+          </div>
+          <p class="muted hint">
+            Nothing is installed by default — Keylane talks to nothing until you
+            say so. Install what you use; remove it and it stops being loaded.
+          </p>
+          <div class="tool-grid" id="catalog-grid"></div>
+        </div>
+
+        <div class="section-head"><h3>Installed</h3></div>
+        <div id="plugin-list" class="card-list"></div>
+
+        <details class="installer">
+          <summary>Install an MCP plugin</summary>
+          <form id="mcp-install-form" class="form-stack compact">
+            <div class="row wrap">
+              <label class="grow"><span>ID</span><input name="id" placeholder="my-mcp" required /></label>
+              <label class="grow"><span>Name</span><input name="name" placeholder="My MCP" /></label>
+            </div>
+            <div class="row wrap">
+              <label class="grow"><span>Command</span><input name="command" placeholder="comfy-mcp" required /></label>
+              <label class="grow"><span>Args (JSON array)</span><input name="args" value="[]" /></label>
+            </div>
+            <div class="row wrap">
+              <label class="grow"><span>Health tool</span><input name="health_tool" value="server_info" /></label>
+              <label class="grow"><span>Run tool</span><input name="run_tool" value="generate_image" /></label>
+              <label class="grow"><span>Worker ID <span class="field-help">blank = tools only</span></span><input name="worker_id" placeholder="same as id" /></label>
+            </div>
+            <label class="check"><input name="cloud" type="checkbox" /><span>Talks to a cloud service (blocked in local-only mode)</span></label>
+            <button type="submit" class="btn primary">Install MCP plugin</button>
+          </form>
+          <p class="hint muted">
+            Writing your own? See <a href="/docs/plugins.html" target="_blank" rel="noopener">the plugin guide</a>.
+          </p>
+        </details>
       </section>
 
-      <div id="toast" class="toast" hidden></div>
+      <!-- ============================================================ Skills -->
+      <section id="tab-skills" class="panel">
+        <div class="section-head">
+          <p class="muted">
+            Markdown instruction packs added to the assistant's prompt when their
+            trigger words appear in your request.
+          </p>
+          <div class="row">
+            <button type="button" class="btn primary" id="new-skill">New skill</button>
+            <button type="button" class="btn ghost" id="reload-skills">
+              <svg viewBox="0 0 24 24"><use href="#i-refresh" /></svg> Reload
+            </button>
+          </div>
+        </div>
+        <p class="hint muted">Stored as <code>.md</code> files in <code id="skills-dir">skills/</code>.</p>
+
+        <form id="skill-form" class="card form-stack" hidden>
+          <div class="section-head">
+            <h3 id="skill-form-title">New skill</h3>
+            <span class="badge mono" id="skill-form-source">user</span>
+          </div>
+          <input type="hidden" name="original" value="" />
+          <div class="row wrap">
+            <label class="grow"><span>Name</span><input name="name" required placeholder="deploy" /></label>
+            <label class="grow"><span>Description</span><input name="description" placeholder="How this machine deploys things." /></label>
+          </div>
+          <label>
+            <span>Triggers <span class="field-help">comma separated; the skill activates when one appears in the request</span></span>
+            <input name="triggers" placeholder="deploy, ship, release" />
+          </label>
+          <div class="row wrap">
+            <label class="check"><input name="always" type="checkbox" /><span>Always apply, whatever the request</span></label>
+            <label class="check"><input name="enabled" type="checkbox" checked /><span>Enabled</span></label>
+          </div>
+          <label>
+            <span>Instructions</span>
+            <textarea name="content" rows="8" placeholder="Deployments always go through `make release`, never a direct push."></textarea>
+          </label>
+          <div class="row wrap">
+            <button type="submit" class="btn primary">Save skill</button>
+            <button type="button" class="btn ghost" id="cancel-skill">Cancel</button>
+            <p class="muted hint" id="skill-note"></p>
+          </div>
+        </form>
+
+        <details class="installer" id="skill-import">
+          <summary>Import skills from GitHub</summary>
+          <form id="skill-discover-form" class="form-stack compact">
+            <label>
+              <span>Repository <span class="field-help">owner/repo, a URL, or owner/repo@branch</span></span>
+              <input name="repo" placeholder="anthropics/skills" required />
+            </label>
+            <div class="row wrap">
+              <button type="submit" class="btn primary" id="discover-btn">Find skills</button>
+              <p class="muted hint" id="discover-note"></p>
+            </div>
+          </form>
+          <div id="discover-results" class="card-list"></div>
+          <div class="row wrap" id="import-actions" hidden>
+            <button type="button" class="btn primary" id="import-selected">Import selected</button>
+            <button type="button" class="btn ghost" id="select-all-skills">Select all</button>
+            <p class="muted hint">Imported skills arrive switched off.</p>
+          </div>
+        </details>
+
+        <div class="card-list" id="skill-list"></div>
+      </section>
+
+      <!-- ============================================================ Models -->
+      <section id="tab-models" class="panel">
+        <div class="models-layout">
+          <article class="card" id="hardware-card">
+            <h3>This machine</h3>
+            <p class="muted" id="hardware-summary">Detecting…</p>
+            <div class="chip-row" id="hardware-chips"></div>
+            <ul class="tips" id="hardware-tips"></ul>
+          </article>
+
+          <form id="models-form" class="form-stack card">
+            <h3>Primary compute</h3>
+            <p class="muted hint">Routing runs on the NPU when available. Large chat models stay on the GPU (LM Studio).</p>
+            <label>
+              <span>Primary device</span>
+              <select name="primary_device">
+                <option value="auto">Auto — prefer NPU, then GPU, then CPU</option>
+                <option value="npu">NPU (Intel AI Boost)</option>
+                <option value="gpu">GPU (OpenVINO / discrete)</option>
+                <option value="cpu">CPU only</option>
+              </select>
+            </label>
+            <div class="row wrap">
+              <label class="grow"><span>NPU device id</span><input name="npu_device" value="NPU" /></label>
+              <label class="grow"><span>GPU device id</span><input name="gpu_device" value="GPU" /></label>
+              <label class="grow"><span>Fallback</span><input name="fallback_device" value="CPU" /></label>
+            </div>
+            <p class="hint muted">Resolved OpenVINO device: <code id="resolved-device">—</code></p>
+
+            <h3>Control-plane models</h3>
+            <label>
+              <span>Router model</span>
+              <select name="router_model_id" id="router-model-id"></select>
+            </label>
+            <label><span>Router model path</span><input name="router_model_path" placeholder="./models/router/…" /></label>
+            <label><span>Verifier model id <span class="field-help">blank shares the router</span></span><input name="verifier_model_id" /></label>
+            <label><span>Verifier model path</span><input name="verifier_model_path" /></label>
+
+            <h3>Worker defaults</h3>
+            <p class="muted hint">Pin a model, or leave it on <strong>Auto</strong> so the router picks per job.</p>
+
+            <label>
+              <span>Preferred chat worker</span>
+              <select name="preferred_chat_worker">
+                <option value="auto">Auto — router chooses</option>
+                <option value="lmstudio">Prefer LM Studio</option>
+                <option value="lemonade">Prefer Lemonade</option>
+              </select>
+            </label>
+
+            <fieldset class="worker-model">
+              <legend>LM Studio</legend>
+              <label>
+                <span>Mode</span>
+                <select name="lmstudio_mode">
+                  <option value="auto">Auto — router picks per request</option>
+                  <option value="fixed">Fixed — always the model below</option>
+                </select>
+              </label>
+              <label><span>Model</span><select name="lmstudio_model" id="lmstudio-model"></select></label>
+              <input type="hidden" name="chat_model_id" value="" />
+            </fieldset>
+
+            <fieldset class="worker-model">
+              <legend>Lemonade Server</legend>
+              <label>
+                <span>Mode</span>
+                <select name="lemonade_mode">
+                  <option value="auto">Auto — router picks per request</option>
+                  <option value="fixed">Fixed — always the model below</option>
+                </select>
+              </label>
+              <label><span>Model</span><select name="lemonade_model" id="lemonade-model"></select></label>
+              <label><span>Base URL</span><input name="lemonade_base_url" placeholder="http://127.0.0.1:13305/api/v1" /></label>
+            </fieldset>
+
+            <fieldset class="worker-model">
+              <legend>ComfyUI</legend>
+              <label>
+                <span>Mode</span>
+                <select name="comfyui_mode">
+                  <option value="auto">Auto — router picks the checkpoint</option>
+                  <option value="fixed">Fixed — always the model below</option>
+                </select>
+              </label>
+              <label><span>Checkpoint / UNET</span><select name="comfyui_model" id="comfyui-model"></select></label>
+            </fieldset>
+
+            <label>
+              <span>Whisper size (dictation)</span>
+              <select name="whisper_model">
+                <option value="tiny">tiny — fastest</option>
+                <option value="base">base</option>
+                <option value="small">small — most accurate</option>
+              </select>
+            </label>
+
+            <h3>Startup</h3>
+            <label class="check"><input name="autostart_gateway" type="checkbox" /><span>Start the gateway on login</span></label>
+            <label class="check"><input name="autostart_launcher" type="checkbox" /><span>Start the Super+Space popup and tray on login</span></label>
+            <label class="check"><input name="open_panel_on_login" type="checkbox" /><span>Open this control panel on login</span></label>
+            <p class="hint muted" id="autostart-status"></p>
+
+            <div class="row wrap">
+              <button type="submit" class="btn primary">Save model settings</button>
+              <button type="button" class="btn ghost" id="reload-models-btn">Reload models now</button>
+              <p class="muted hint" id="models-note"></p>
+            </div>
+          </form>
+
+          <div class="card" id="hf-search-card">
+            <h3>Search Hugging Face</h3>
+            <p class="muted hint">Find models that suit this machine and download them into the right Keylane folder.</p>
+            <form id="hf-search-form" class="form-stack compact">
+              <div class="row wrap">
+                <label class="grow">
+                  <span>Target</span>
+                  <select name="target" id="hf-target">
+                    <option value="router">Router — OpenVINO → models/router</option>
+                    <option value="chat">Chat — GGUF → models/chat</option>
+                    <option value="comfy">ComfyUI → models/comfyui</option>
+                  </select>
+                </label>
+                <label class="grow" style="flex:2">
+                  <span>Search</span>
+                  <input name="q" id="hf-query" placeholder="qwen2.5 instruct int4" autocomplete="off" />
+                </label>
+                <div class="row" style="align-items:flex-end">
+                  <button type="submit" class="btn primary" id="hf-search-btn">Search</button>
+                </div>
+              </div>
+              <p class="hint muted" id="hf-search-meta"></p>
+            </form>
+            <div id="hf-results" class="rec-list"></div>
+            <div id="hf-downloads" class="hf-downloads"></div>
+          </div>
+
+          <div class="card">
+            <div class="section-head">
+              <h3>Recommended for your hardware</h3>
+              <button type="button" class="btn ghost small" id="apply-top-recs">Apply top picks</button>
+            </div>
+            <div class="rec-grid">
+              <div>
+                <h4>NPU / router</h4>
+                <div id="rec-router" class="rec-list"></div>
+              </div>
+              <div>
+                <h4>GPU / chat</h4>
+                <div id="rec-chat" class="rec-list"></div>
+              </div>
+            </div>
+            <h4>Installed under <code>models/</code></h4>
+            <div id="installed-models" class="rec-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================================================ Themes -->
+      <section id="tab-themes" class="panel">
+        <p class="muted">
+          A theme styles this page <em>and</em> decides the shape of the Super+Space
+          popup — a Spotlight bar, a panel, a full window or a corner orb.
+        </p>
+        <div id="theme-list" class="theme-grid"></div>
+
+        <details class="installer">
+          <summary>Install a community theme</summary>
+          <form id="theme-install-form" class="form-stack compact">
+            <label>
+              <span>Theme archive <span class="field-help">a .zip containing theme.toml</span></span>
+              <input type="file" name="file" accept=".zip,application/zip" required />
+            </label>
+            <button type="submit" class="btn primary">Install theme</button>
+          </form>
+          <p class="hint muted">
+            Making one? See <a href="/docs/themes.html" target="_blank" rel="noopener">the theme guide</a>.
+          </p>
+        </details>
+      </section>
+
+      <!-- =========================================================== Gateway -->
+      <section id="tab-config" class="panel">
+        <form id="config-form" class="card form-stack">
+          <h3>Server</h3>
+          <div class="row wrap">
+            <label class="grow"><span>Host</span><input name="host" autocomplete="off" /></label>
+            <label class="grow"><span>Port</span><input name="port" type="number" min="1024" max="65535" /></label>
+            <label class="grow"><span>Max retries</span><input name="max_retries" type="number" min="0" max="10" /></label>
+          </div>
+          <label>
+            <span>Result panel corner <span class="field-help">where the working orb and answer appear after you press Enter</span></span>
+            <select name="result_corner">
+              <option value="top-right">Top right</option>
+              <option value="top-left">Top left</option>
+              <option value="bottom-right">Bottom right</option>
+              <option value="bottom-left">Bottom left</option>
+              <option value="center">Centre</option>
+            </select>
+          </label>
+          <label>
+            <span>Docs URL <span class="field-help">where the Docs button points — use your docs subdomain to send people there instead of the built-in handbook</span></span>
+            <input name="docs_url" placeholder="/docs  or  https://docs.example.com" />
+          </label>
+
+          <h3>Safety</h3>
+          <label class="check">
+            <input name="local_only" type="checkbox" />
+            <span>Local only — block Claude Code and Cursor</span>
+          </label>
+          <label class="check">
+            <input name="require_confirmation_for_modifications" type="checkbox" />
+            <span>Confirm before any worker modifies files</span>
+          </label>
+          <label>
+            <span>Allowed project roots <span class="field-help">one per line; coding workers and file tools cannot leave these</span></span>
+            <textarea name="allowed_project_roots" rows="4"></textarea>
+          </label>
+
+          <div class="row wrap">
+            <button type="submit" class="btn primary">Save settings</button>
+            <p class="muted hint" id="config-note"></p>
+          </div>
+        </form>
+
+        <div class="card">
+          <div class="section-head">
+            <h3>Projects</h3>
+            <button type="button" class="btn ghost small" id="add-project">Add project</button>
+          </div>
+          <p class="muted hint">
+            Offered in the popup's picker and passed to coding workers. Each path
+            must sit inside an allowed root above.
+          </p>
+          <div id="project-rows" class="form-stack compact"></div>
+          <div class="row wrap">
+            <button type="button" class="btn primary" id="save-projects">Save projects</button>
+            <p class="muted hint" id="projects-note"></p>
+          </div>
+        </div>
+
+        <form id="workers-form" class="card form-stack">
+          <h3>Worker endpoints</h3>
+          <p class="muted hint">Where each worker lives, and how long to wait for it.</p>
+
+          <fieldset class="worker-model">
+            <legend>LM Studio</legend>
+            <div class="row wrap">
+              <label class="grow"><span>Base URL</span><input name="lmstudio_base_url" /></label>
+              <label class="grow"><span>Default model</span><input name="lmstudio_default_model" /></label>
+              <label><span>Timeout (s)</span><input name="lmstudio_timeout_seconds" type="number" min="5" max="3600" /></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="worker-model">
+            <legend>Lemonade</legend>
+            <div class="row wrap">
+              <label class="grow"><span>Base URL</span><input name="lemonade_base_url" /></label>
+              <label class="grow"><span>Default model</span><input name="lemonade_default_model" /></label>
+              <label><span>Timeout (s)</span><input name="lemonade_timeout_seconds" type="number" min="5" max="3600" /></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="worker-model">
+            <legend>ComfyUI</legend>
+            <div class="row wrap">
+              <label class="grow"><span>Base URL</span><input name="comfyui_base_url" /></label>
+              <label class="grow"><span>Output directory</span><input name="comfyui_output_dir" /></label>
+              <label><span>Timeout (s)</span><input name="comfyui_timeout_seconds" type="number" min="5" max="7200" /></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="worker-model">
+            <legend>Coding agents</legend>
+            <div class="row wrap">
+              <label class="grow"><span>Claude Code command</span><input name="claude_command" /></label>
+              <label><span>Timeout (s)</span><input name="claude_timeout_seconds" type="number" min="5" max="7200" /></label>
+            </div>
+            <div class="row wrap">
+              <label class="grow"><span>Cursor command</span><input name="cursor_command" /></label>
+              <label><span>Timeout (s)</span><input name="cursor_timeout_seconds" type="number" min="5" max="7200" /></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="worker-model">
+            <legend>Microphone</legend>
+            <div class="row wrap">
+              <label class="grow"><span>Sample rate</span><input name="audio_sample_rate" type="number" min="8000" max="48000" /></label>
+              <label class="grow"><span>Channels</span><input name="audio_channels" type="number" min="1" max="2" /></label>
+            </div>
+          </fieldset>
+
+          <div class="row wrap">
+            <button type="submit" class="btn primary">Save worker endpoints</button>
+            <p class="muted hint" id="workers-note"></p>
+          </div>
+        </form>
+
+        <div class="card">
+          <h3>This install</h3>
+          <div id="system-info" class="form-stack compact"></div>
+        </div>
+      </section>
+
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     </main>
   </div>
+
   <script src="/assets/app.js" type="module"></script>
 </body>
 </html>

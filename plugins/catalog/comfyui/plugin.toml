@@ -1,0 +1,15 @@
+# Keylane catalog entry. Present in the repository but not installed
+# until the user asks for it, so a fresh install ships with nothing
+# reaching out to a worker or the network.
+id = "comfyui"
+name = "ComfyUI (MCP)"
+kind = "mcp"
+description = "Official comfy-mcp stdio server. Image generation, editing and upscaling, and it contributes its whole tool set to the assistant."
+homepage = "https://docs.comfy.org/agent-tools/mcp"
+worker_id = "comfyui"
+cloud = false
+tags = "worker, local, images, mcp"
+
+# "builtin:<id>" means the implementation ships inside Keylane; the
+# catalog entry only decides whether it is registered at all.
+entry = "builtin:comfyui"

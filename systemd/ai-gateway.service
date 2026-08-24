@@ -6,10 +6,18 @@ StartLimitBurst=5
 
 [Service]
 WorkingDirectory=%h/.local/share/ai-gateway
-ExecStart=%h/.local/share/ai-gateway/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9100
+# `python -m uvicorn` rather than the console script: a venv built with
+# --system-site-packages skips installing a package pip already sees
+# system-wide, so .venv/bin/uvicorn may never be created.
+ExecStart=%h/.local/share/ai-gateway/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 9100 --timeout-graceful-shutdown 10
 Restart=on-failure
 RestartSec=3
+# Backstop: a wedged worker must not need a SIGABRT to die.
+TimeoutStopSec=20
 Environment=PYTHONUNBUFFERED=1
+# MCP clients (comfy-mcp) need user bin + comfy-cli; see docs.comfy.org/agent-tools/mcp
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=COMFY_BIN=%h/.local/bin/comfy
 
 [Install]
 WantedBy=default.target

@@ -12,6 +12,8 @@ tomli-w
 # PyGObject: install via dnf (python3-gobject), not pip — see scripts/install.sh
 sounddevice
 numpy
+openai-whisper
 tomli; python_version < "3.11"
+huggingface_hub
 pytest
 pytest-asyncio

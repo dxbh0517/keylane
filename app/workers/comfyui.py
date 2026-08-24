@@ -36,6 +36,11 @@ WHITELISTED_FIELDS = frozenset(
         "steps",
         "cfg",
         "denoise",
+        "model",
+        "ckpt_name",
+        "unet_name",
+        "clip_name",
+        "vae_name",
     }
 )
 
@@ -71,6 +76,11 @@ class ComfyUiWorker:
         width = arguments.get("width")
         height = arguments.get("height")
         seed = arguments.get("seed")
+        model_name = (
+            arguments.get("unet_name")
+            or arguments.get("ckpt_name")
+            or arguments.get("model")
+        )
 
         for _node_id, node in graph.items():
             if not isinstance(node, dict):
@@ -103,6 +113,12 @@ class ComfyUiWorker:
             if seed is not None and "seed" in inputs:
                 inputs["seed"] = int(seed)
 
+            if model_name:
+                if "unet_name" in inputs:
+                    inputs["unet_name"] = model_name
+                if "ckpt_name" in inputs:
+                    inputs["ckpt_name"] = model_name
+
         # Ensure positive prompt nodes get the prompt when class detection missed.
         if prompt is not None:
             for _node_id, node in graph.items():
@@ -119,9 +135,14 @@ class ComfyUiWorker:
 
     async def run(self, decision: RouteDecision) -> WorkerResult:
         workflow_name = decision.workflow or decision.arguments.get("workflow") or "flux_txt2img"
+        arguments = dict(decision.arguments or {})
+        if decision.model:
+            arguments.setdefault("model", decision.model)
+            arguments.setdefault("unet_name", decision.model)
+            arguments.setdefault("ckpt_name", decision.model)
         try:
             template = self._load_workflow(str(workflow_name))
-            graph = self._apply_arguments(template, decision.arguments)
+            graph = self._apply_arguments(template, arguments)
         except Exception as exc:  # noqa: BLE001
             evidence = WorkerEvidence(
                 worker="comfyui",

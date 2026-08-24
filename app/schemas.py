@@ -10,7 +10,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator
 
 
-ALLOWED_WORKERS = frozenset({"lmstudio", "claude", "cursor", "comfyui"})
+ALLOWED_WORKERS = frozenset({"lmstudio", "claude", "cursor", "comfyui", "lemonade"})
 
 
 def register_worker(worker_id: str) -> None:
@@ -21,7 +21,7 @@ def register_worker(worker_id: str) -> None:
 
 def sync_allowed_workers(worker_ids: set[str]) -> None:
     global ALLOWED_WORKERS
-    base = {"lmstudio", "claude", "cursor", "comfyui"}
+    base = {"lmstudio", "claude", "cursor", "comfyui", "lemonade"}
     ALLOWED_WORKERS = frozenset(base | {w.strip().lower() for w in worker_ids})
 ALLOWED_INTENTS = frozenset(
     {
@@ -72,6 +72,7 @@ class RouteDecision(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     requires_confirmation: bool = False
     workflow: str | None = None
+    model: str | None = None
 
     @field_validator("worker")
     @classmethod
@@ -171,6 +172,13 @@ class TaskRecord(BaseModel):
     attempt: int = 0
     max_retries: int = 3
     error: str | None = None
+    local_only: bool = False
+    # Assistant-loop bookkeeping
+    assistant_steps: list[dict[str, Any]] = Field(default_factory=list)
+    canvas: dict[str, Any] | None = None
+    pending_tool: str | None = None
+    pending_arguments: dict[str, Any] = Field(default_factory=dict)
+    confirmed_tools: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -188,6 +196,20 @@ class TaskResponse(BaseModel):
     requires_confirmation: bool = False
     error: str | None = None
     attempt: int = 0
+    assistant_steps: list[dict[str, Any]] = Field(default_factory=list)
+    canvas: dict[str, Any] | None = None
+    """Structured answer, rendered by the popup and the control panel."""
+
+    pending_tool: str | None = None
+    pending_arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolCallRequest(BaseModel):
+    """Direct tool invocation from the control panel or an integration."""
+
+    tool: str = Field(min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    confirmed: bool = False
 
 
 class StatusResponse(BaseModel):
@@ -204,6 +226,12 @@ class StatusResponse(BaseModel):
     gateway: bool = True
     local_only: bool = False
     plugins: dict[str, bool] = Field(default_factory=dict)
+    assistant: bool = False
+    assistant_device: str | None = None
+    assistant_note: str | None = None
+    tools_enabled: bool = True
+    tool_count: int = 0
+    busy: bool = False
 
 
 class ProjectInfo(BaseModel):

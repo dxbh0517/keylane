@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from app.config import AppConfig, get_config
+from app.npu.pipeline import get_pipeline
 from app.schemas import RouteDecision, VerificationResult, WorkerEvidence
 
 logger = logging.getLogger(__name__)
@@ -67,36 +68,19 @@ def _sanitize_evidence(evidence: WorkerEvidence) -> dict[str, Any]:
 class VerifierModel:
     def __init__(self, config: AppConfig | None = None) -> None:
         self.config = config or get_config()
-        self._pipeline = None
-        self._device: str | None = None
-        self._init_pipeline()
+        # Uses verifier_model_path when set, else shares the router model.
+        self.pipeline = get_pipeline("verifier", self.config)
 
-    def _init_pipeline(self) -> None:
-        # Reuse the same small model directory for the first prototype.
-        from app.npu.router_model import RouterModel
+    def reload(self) -> None:
+        self.pipeline.reload()
 
-        model_path = self.config.npu_model_path
-        if not RouterModel._model_ready(model_path):
-            logger.warning("Verifier model missing — using heuristic verifier.")
-            return
-        try:
-            import openvino as ov
-            import openvino_genai as ov_genai
+    @property
+    def device(self) -> str | None:
+        return self.pipeline.device
 
-            core = ov.Core()
-            devices = list(core.available_devices)
-            preferred = self.config.npu.device
-            fallback = self.config.npu.fallback_device
-            device = preferred if preferred in devices else (
-                fallback if fallback in devices else None
-            )
-            if device is None:
-                return
-            self._pipeline = ov_genai.LLMPipeline(str(model_path), device)
-            self._device = device
-            logger.info("Verifier model loaded on %s", device)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to load verifier model: %s", exc)
+    @property
+    def model_loaded(self) -> bool:
+        return self.pipeline.loaded
 
     def verify(
         self,
@@ -106,7 +90,7 @@ class VerifierModel:
         evidence: WorkerEvidence,
         attempt: int = 0,
     ) -> VerificationResult:
-        if self._pipeline is not None:
+        if self.pipeline.loaded:
             try:
                 return self._verify_with_model(
                     original_request=original_request,
@@ -130,7 +114,6 @@ class VerifierModel:
         evidence: WorkerEvidence,
         attempt: int,
     ) -> VerificationResult:
-        assert self._pipeline is not None
         payload = {
             "original_request": original_request,
             "task": task.model_dump(),
@@ -138,8 +121,7 @@ class VerifierModel:
             "attempt": attempt,
         }
         prompt = f"{VERIFIER_SYSTEM_PROMPT}\n\nINPUT:\n{json.dumps(payload, indent=2)}\n"
-        raw = self._pipeline.generate(prompt, max_new_tokens=256)
-        text = raw.texts[0] if hasattr(raw, "texts") and raw.texts else str(raw)
+        text = self.pipeline.generate(prompt, max_new_tokens=256)
         data = _extract_json(text)
         return VerificationResult(**data)
 

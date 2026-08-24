@@ -19,7 +19,11 @@ def _get_whisper():
     try:
         import whisper  # type: ignore
 
-        _whisper_model = whisper.load_model("base")
+        # tiny is fast enough for push-to-talk on CPU; upgrade via KEYLANE_WHISPER_MODEL
+        import os
+
+        model_name = os.environ.get("KEYLANE_WHISPER_MODEL", "tiny")
+        _whisper_model = whisper.load_model(model_name)
         return _whisper_model
     except Exception as exc:  # noqa: BLE001
         logger.warning("openai-whisper unavailable: %s", exc)
@@ -33,10 +37,9 @@ async def transcribe_wav_bytes(data: bytes, language: str | None = "en") -> str:
 
     model = _get_whisper()
     if model is None:
-        # Soft fallback: try ffmpeg+stub message so the API remains callable.
         raise RuntimeError(
-            "Transcription unavailable. Install openai-whisper "
-            "(`pip install openai-whisper`) for voice input."
+            "Transcription unavailable. Install openai-whisper in the gateway "
+            "venv (`pip install openai-whisper`) and ensure ffmpeg is installed."
         )
 
     suffix = ".wav"

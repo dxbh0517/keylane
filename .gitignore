@@ -8,11 +8,22 @@ outputs/
 *.egg-info/
 .mypy_cache/
 .ruff_cache/
-models/router/*
-!models/router/.gitkeep
+.cursor/
+
+# Downloaded weights — large, and specific to each machine.
+models/*/*
+!models/*/.gitkeep
+
+# Generated at runtime by the theme manager.
+themes/active-*.css
+themes/active-*.json
+
+# Community plugins are installed by the user, not shipped.
+plugins/community/*
+!plugins/community/.gitkeep
+
 *.wav
 *.png
 !assets/**
 !launcher/assets/**
 !web/assets/**
-.cursor/

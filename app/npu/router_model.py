@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import AppConfig, get_config
+from app.npu.pipeline import get_pipeline, model_ready
 from app.schemas import RouteDecision
 
 logger = logging.getLogger(__name__)
@@ -22,8 +23,12 @@ Determine which available worker should handle the request.
 Available workers:
 
 lmstudio:
-General-purpose local AI. Use for questions, brainstorming,
+General-purpose local AI (LM Studio). Use for questions, brainstorming,
 summarization, analysis and privacy-sensitive tasks.
+
+lemonade:
+Local Lemonade Server LLM (OpenAI-compatible). Use like lmstudio when preferred
+or when the user asks for Lemonade.
 
 claude:
 Advanced coding and repository tasks.
@@ -54,8 +59,14 @@ Return:
   "instruction": "...",
   "working_directory": "...",
   "arguments": {},
-  "requires_confirmation": false
+  "requires_confirmation": false,
+  "model": null
 }
+
+When available_models is provided and a worker's mode is auto, set "model" to the
+best matching model id from that worker's list (coding → coder models; images →
+flux/diffusion checkpoints). When mode is fixed, leave model null — the gateway
+applies the pinned default.
 """
 
 
@@ -72,63 +83,23 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 class RouterModel:
-    """NPU-backed router with CPU/heuristic fallback."""
+    """NPU-backed router with a CPU/heuristic fallback."""
 
     def __init__(self, config: AppConfig | None = None) -> None:
         self.config = config or get_config()
-        self._pipeline = None
-        self._device: str | None = None
-        self._init_pipeline()
+        self.pipeline = get_pipeline("router", self.config)
 
-    def _init_pipeline(self) -> None:
-        model_path = self.config.npu_model_path
-        if not self._model_ready(model_path):
-            logger.warning(
-                "Router model not found at %s — using heuristic router.",
-                model_path,
-            )
-            return
+    def reload(self) -> None:
+        """Drop and rebuild the OpenVINO pipeline after a settings change."""
+        self.pipeline.reload()
 
-        try:
-            import openvino as ov
-            import openvino_genai as ov_genai
-
-            core = ov.Core()
-            devices = list(core.available_devices)
-            preferred = self.config.npu.device
-            fallback = self.config.npu.fallback_device
-            if preferred in devices:
-                device = preferred
-            elif fallback in devices:
-                logger.warning(
-                    "NPU unavailable (%s); falling back to %s.", preferred, fallback
-                )
-                device = fallback
-            else:
-                logger.warning("No suitable OpenVINO device; using heuristic router.")
-                return
-
-            self._pipeline = ov_genai.LLMPipeline(str(model_path), device)
-            self._device = device
-            logger.info("Router model loaded on %s from %s", device, model_path)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to load OpenVINO router model: %s", exc)
-            self._pipeline = None
-            self._device = None
+    @property
+    def device(self) -> str | None:
+        return self.pipeline.device
 
     @staticmethod
     def _model_ready(path: Path) -> bool:
-        if not path.exists():
-            return False
-        # OpenVINO IR or GenAI export typically has xml/bin or openvino_model.xml
-        markers = (
-            "openvino_model.xml",
-            "openvino.xml",
-            "config.json",
-        )
-        if any((path / m).exists() for m in markers):
-            return True
-        return any(path.glob("*.xml"))
+        return model_ready(path)
 
     @property
     def npu_available(self) -> bool:
@@ -141,7 +112,7 @@ class RouterModel:
 
     @property
     def model_loaded(self) -> bool:
-        return self._pipeline is not None
+        return self.pipeline.loaded
 
     def route(
         self,
@@ -150,14 +121,20 @@ class RouterModel:
         project: str | None = None,
         local_only: bool = False,
         available_workers: set[str] | None = None,
+        available_models: dict[str, list[dict[str, str]]] | None = None,
+        model_modes: dict[str, str] | None = None,
+        preferred_chat_worker: str = "auto",
     ) -> RouteDecision:
-        if self._pipeline is not None:
+        if self.pipeline.loaded:
             try:
                 return self._route_with_model(
                     message,
                     project=project,
                     local_only=local_only,
                     available_workers=available_workers,
+                    available_models=available_models,
+                    model_modes=model_modes,
+                    preferred_chat_worker=preferred_chat_worker,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("NPU router failed (%s); using heuristic.", exc)
@@ -166,6 +143,8 @@ class RouterModel:
             project=project,
             local_only=local_only,
             available_workers=available_workers,
+            available_models=available_models,
+            preferred_chat_worker=preferred_chat_worker,
         )
 
     def _route_with_model(
@@ -175,21 +154,29 @@ class RouterModel:
         project: str | None,
         local_only: bool,
         available_workers: set[str] | None,
+        available_models: dict[str, list[dict[str, str]]] | None = None,
+        model_modes: dict[str, str] | None = None,
+        preferred_chat_worker: str = "auto",
     ) -> RouteDecision:
-        assert self._pipeline is not None
-        workers = sorted(available_workers or {"lmstudio", "claude", "cursor", "comfyui"})
+        workers = sorted(available_workers or {"lmstudio", "claude", "cursor", "comfyui", "lemonade"})
+        # Compact model lists for the prompt (ids only, capped)
+        model_snip: dict[str, list[str]] = {}
+        for worker, items in (available_models or {}).items():
+            ids = [m["id"] for m in items if m.get("id")][:12]
+            if ids:
+                model_snip[worker] = ids
+        modes = model_modes or {}
         prompt = (
             f"{ROUTER_SYSTEM_PROMPT}\n\n"
             f"local_only={local_only}\n"
             f"available_workers={workers}\n"
+            f"preferred_chat_worker={preferred_chat_worker}\n"
+            f"model_modes={modes}\n"
+            f"available_models={model_snip}\n"
             f"project={project or 'none'}\n"
             f"user_request={message}\n"
         )
-        raw = self._pipeline.generate(prompt, max_new_tokens=256)
-        if hasattr(raw, "texts"):
-            text = raw.texts[0] if raw.texts else str(raw)
-        else:
-            text = str(raw)
+        text = self.pipeline.generate(prompt, max_new_tokens=320)
         data = _extract_json(text)
         if project and not data.get("working_directory"):
             data["working_directory"] = project
@@ -204,9 +191,11 @@ class RouterModel:
         project: str | None,
         local_only: bool,
         available_workers: set[str] | None,
+        available_models: dict[str, list[dict[str, str]]] | None = None,
+        preferred_chat_worker: str = "auto",
     ) -> RouteDecision:
         text = message.lower()
-        available = available_workers or {"lmstudio", "claude", "cursor", "comfyui"}
+        available = available_workers or {"lmstudio", "claude", "cursor", "comfyui", "lemonade"}
         if local_only:
             available = available - {"claude", "cursor"}
 
@@ -216,52 +205,95 @@ class RouterModel:
                     return name
             if "lmstudio" in available:
                 return "lmstudio"
+            if "lemonade" in available:
+                return "lemonade"
             if available:
                 return next(iter(sorted(available)))
             raise RuntimeError("No workers available for routing.")
 
+        def chat_pick() -> str:
+            if preferred_chat_worker in {"lmstudio", "lemonade"} and preferred_chat_worker in available:
+                return preferred_chat_worker
+            if re.search(r"\blemonade\b", text):
+                return pick("lemonade", "lmstudio")
+            if re.search(r"\blm\s*studio\b", text):
+                return pick("lmstudio", "lemonade")
+            return pick("lmstudio", "lemonade")
+
+        def with_model(decision: RouteDecision) -> RouteDecision:
+            from app.worker_models import heuristic_pick
+
+            if decision.worker not in {"lmstudio", "lemonade", "comfyui"}:
+                return decision
+            models = (available_models or {}).get(decision.worker) or []
+            chosen = heuristic_pick(
+                decision.worker,
+                models,
+                intent=decision.intent,
+                instruction=decision.instruction,
+            )
+            if not chosen:
+                return decision
+            data = decision.model_dump()
+            data["model"] = chosen
+            args = dict(data.get("arguments") or {})
+            args.setdefault("model", chosen)
+            if decision.worker == "comfyui":
+                args.setdefault("unet_name", chosen)
+                args.setdefault("ckpt_name", chosen)
+            data["arguments"] = args
+            return RouteDecision(**data)
+
         # Explicit worker requests
         if re.search(r"\b(use\s+)?claude\b", text):
-            worker = pick("claude", "cursor", "lmstudio")
-            return RouteDecision(
-                intent="coding",
-                worker=worker,
-                action="modify_project",
-                instruction=message,
-                working_directory=project,
-                requires_confirmation=True,
-            )
-        if re.search(r"\b(use\s+)?cursor\b", text):
-            worker = pick("cursor", "claude", "lmstudio")
-            return RouteDecision(
-                intent="coding",
-                worker=worker,
-                action="modify_project",
-                instruction=message,
-                working_directory=project,
-                requires_confirmation=True,
-            )
-        if re.search(r"\b(local only|do this locally|locally only)\b", text):
-            worker = pick("lmstudio", "comfyui")
-            if any(k in text for k in ("image", "picture", "generate", "flux")):
-                worker = pick("comfyui", "lmstudio")
-                return RouteDecision(
-                    intent="image_generation",
+            worker = pick("claude", "cursor", "lmstudio", "lemonade")
+            return with_model(
+                RouteDecision(
+                    intent="coding",
                     worker=worker,
-                    action="generate_image",
+                    action="modify_project",
                     instruction=message,
                     working_directory=project,
-                    workflow="flux_txt2img",
-                    arguments={"prompt": message},
+                    requires_confirmation=True,
+                )
+            )
+        if re.search(r"\b(use\s+)?cursor\b", text):
+            worker = pick("cursor", "claude", "lmstudio", "lemonade")
+            return with_model(
+                RouteDecision(
+                    intent="coding",
+                    worker=worker,
+                    action="modify_project",
+                    instruction=message,
+                    working_directory=project,
+                    requires_confirmation=True,
+                )
+            )
+        if re.search(r"\b(local only|do this locally|locally only)\b", text):
+            worker = chat_pick()
+            if any(k in text for k in ("image", "picture", "generate", "flux")):
+                worker = pick("comfyui", "lmstudio", "lemonade")
+                return with_model(
+                    RouteDecision(
+                        intent="image_generation",
+                        worker=worker,
+                        action="generate_image",
+                        instruction=message,
+                        working_directory=project,
+                        workflow="flux_txt2img",
+                        arguments={"prompt": message},
+                        requires_confirmation=False,
+                    )
+                )
+            return with_model(
+                RouteDecision(
+                    intent="general_question",
+                    worker=worker,
+                    action="answer",
+                    instruction=message,
+                    working_directory=project,
                     requires_confirmation=False,
                 )
-            return RouteDecision(
-                intent="general_question",
-                worker=worker,
-                action="answer",
-                instruction=message,
-                working_directory=project,
-                requires_confirmation=False,
             )
 
         image_tokens = (
@@ -291,15 +323,17 @@ class RouterModel:
                 action, workflow = "inpaint_image", "flux_inpaint"
             elif "img2img" in text or "edit image" in text:
                 action, workflow = "edit_image", "flux_img2img"
-            return RouteDecision(
-                intent="image_generation" if action == "generate_image" else "image_edit",
-                worker=worker,
-                action=action,
-                instruction=message,
-                working_directory=project,
-                workflow=workflow,
-                arguments={"prompt": message},
-                requires_confirmation=False,
+            return with_model(
+                RouteDecision(
+                    intent="image_generation" if action == "generate_image" else "image_edit",
+                    worker=worker,
+                    action=action,
+                    instruction=message,
+                    working_directory=project,
+                    workflow=workflow,
+                    arguments={"prompt": message},
+                    requires_confirmation=False,
+                )
             )
 
         coding_tokens = (
@@ -323,29 +357,32 @@ class RouterModel:
             "project",
         )
         if any(tok in text for tok in coding_tokens) and project:
-            worker = pick("cursor", "claude", "lmstudio")
-            return RouteDecision(
-                intent="coding",
-                worker=worker,
-                action="modify_project",
-                instruction=message,
-                working_directory=project,
-                requires_confirmation=True,
+            worker = pick("cursor", "claude", "lmstudio", "lemonade")
+            return with_model(
+                RouteDecision(
+                    intent="coding",
+                    worker=worker,
+                    action="modify_project",
+                    instruction=message,
+                    working_directory=project,
+                    requires_confirmation=True,
+                )
             )
         if any(tok in text for tok in coding_tokens):
-            # Coding without project — prefer local read-only analysis if available
-            worker = pick("lmstudio", "cursor", "claude")
-            action = "answer" if worker == "lmstudio" else "inspect_project"
-            return RouteDecision(
-                intent="coding",
-                worker=worker,
-                action=action,
-                instruction=message,
-                working_directory=project,
-                requires_confirmation=action == "modify_project",
+            worker = pick(chat_pick(), "cursor", "claude")
+            action = "answer" if worker in {"lmstudio", "lemonade"} else "inspect_project"
+            return with_model(
+                RouteDecision(
+                    intent="coding",
+                    worker=worker,
+                    action=action,
+                    instruction=message,
+                    working_directory=project,
+                    requires_confirmation=action == "modify_project",
+                )
             )
 
-        worker = pick("lmstudio", "claude", "cursor")
+        worker = chat_pick()
         action = "answer"
         intent = "general_question"
         if "summar" in text:
@@ -355,13 +392,15 @@ class RouterModel:
         elif "analy" in text:
             action, intent = "analyze", "analysis"
 
-        return RouteDecision(
-            intent=intent,
-            worker=worker,
-            action=action,
-            instruction=message,
-            working_directory=project,
-            requires_confirmation=False,
+        return with_model(
+            RouteDecision(
+                intent=intent,
+                worker=worker,
+                action=action,
+                instruction=message,
+                working_directory=project,
+                requires_confirmation=False,
+            )
         )
 
 

@@ -1,4 +1,8 @@
-"""Unit tests for routing, permissions, and verification heuristics."""
+"""Unit tests for routing, permissions, and verification heuristics.
+
+These exercise the fallback paths directly, so the models are built with
+``__new__`` to skip loading an OpenVINO pipeline.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +16,6 @@ from app.schemas import RouteDecision, WorkerEvidence
 
 def test_heuristic_routes_coding_to_cursor_or_claude():
     model = RouterModel.__new__(RouterModel)
-    model._pipeline = None
     decision = model._heuristic_route(
         "Fix the authentication bug in my project",
         project="/home/emul/Documents/Code/aurora",
@@ -26,7 +29,6 @@ def test_heuristic_routes_coding_to_cursor_or_claude():
 
 def test_heuristic_routes_image_to_comfyui():
     model = RouterModel.__new__(RouterModel)
-    model._pipeline = None
     decision = model._heuristic_route(
         "Generate a 1536x1024 cyberpunk city background",
         project=None,
@@ -39,7 +41,6 @@ def test_heuristic_routes_image_to_comfyui():
 
 def test_heuristic_respects_local_only():
     model = RouterModel.__new__(RouterModel)
-    model._pipeline = None
     decision = model._heuristic_route(
         "Use Claude to fix this",
         project="/home/emul/Documents/Code/aurora",
@@ -86,7 +87,6 @@ def test_validate_route_rejects_path_outside_roots():
 
 def test_verifier_detects_build_failure():
     verifier = VerifierModel.__new__(VerifierModel)
-    verifier._pipeline = None
     evidence = WorkerEvidence(
         worker="cursor",
         action="modify_project",
@@ -113,7 +113,6 @@ def test_verifier_detects_build_failure():
 
 def test_verifier_accepts_image_output(tmp_path):
     verifier = VerifierModel.__new__(VerifierModel)
-    verifier._pipeline = None
     out = tmp_path / "out.png"
     out.write_bytes(b"fake")
     evidence = WorkerEvidence(

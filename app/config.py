@@ -19,6 +19,18 @@ class GatewaySettings(BaseModel):
     port: int = 9100
     max_retries: int = 3
     local_only: bool = False
+    result_corner: str = "top-right"
+    """Where the working orb and result panel appear.
+
+    top-right | top-left | bottom-right | bottom-left | center
+    """
+
+    docs_url: str = "/docs"
+    """Where the control panel's Docs button points.
+
+    Defaults to the handbook served by this gateway. Set it to your docs
+    subdomain (``https://docs.example.com``) to send people there instead.
+    """
 
 
 class NpuSettings(BaseModel):
@@ -33,10 +45,19 @@ class LmStudioSettings(BaseModel):
     timeout_seconds: int = 120
 
 
+class LemonadeSettings(BaseModel):
+    """Lemonade Server (OpenAI-compatible LLM), not the clipboard lemond utility."""
+
+    base_url: str = "http://127.0.0.1:13305/api/v1"
+    default_model: str = "auto"
+    timeout_seconds: int = 120
+
+
 class ComfyUiSettings(BaseModel):
     base_url: str = "http://127.0.0.1:8188"
     timeout_seconds: int = 600
     output_dir: str = "./outputs"
+    default_model: str = "auto"
 
 
 class ClaudeSettings(BaseModel):
@@ -68,6 +89,7 @@ class AppConfig(BaseModel):
     gateway: GatewaySettings = Field(default_factory=GatewaySettings)
     npu: NpuSettings = Field(default_factory=NpuSettings)
     lmstudio: LmStudioSettings = Field(default_factory=LmStudioSettings)
+    lemonade: LemonadeSettings = Field(default_factory=LemonadeSettings)
     comfyui: ComfyUiSettings = Field(default_factory=ComfyUiSettings)
     claude: ClaudeSettings = Field(default_factory=ClaudeSettings)
     cursor: CursorSettings = Field(default_factory=CursorSettings)
@@ -142,6 +164,7 @@ def get_config() -> AppConfig:
         gateway=GatewaySettings(**raw.get("gateway", {})),
         npu=NpuSettings(**raw.get("npu", {})),
         lmstudio=LmStudioSettings(**raw.get("lmstudio", {})),
+        lemonade=LemonadeSettings(**raw.get("lemonade", {})),
         comfyui=ComfyUiSettings(**raw.get("comfyui", {})),
         claude=ClaudeSettings(**raw.get("claude", {})),
         cursor=CursorSettings(**cursor_cfg),

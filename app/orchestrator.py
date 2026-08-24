@@ -6,8 +6,11 @@ import asyncio
 import logging
 from typing import Any
 
+from app.activity import get_activity_bus
+from app.assistant import AssistantOutcome, get_assistant
+from app.assistant_settings import load_assistant_settings
 from app.config import AppConfig, get_config
-from app.permissions import PermissionError_, validate_route
+from app.permissions import PermissionError_, is_local_only, validate_route
 from app.planner import build_plan, needs_multi_step
 from app.plugins.registry import get_plugin_registry
 from app.router import RouterService
@@ -17,6 +20,7 @@ from app.schemas import (
     TaskRecord,
     TaskResponse,
     TaskStatus,
+    WorkerEvidence,
     WorkerResult,
 )
 from app.verifier import VerifierService
@@ -49,6 +53,8 @@ class GatewayOrchestrator:
         self.registry = get_plugin_registry(self.config)
         self.router = RouterService(self.config, self.registry)
         self.verifier = VerifierService(self.config)
+        self.assistant = get_assistant(self.config)
+        self.activity = get_activity_bus()
         self.store = TaskStore()
         self._cancel: set[str] = set()
 
@@ -60,12 +66,13 @@ class GatewayOrchestrator:
             result=task.result,
             route=task.route,
             verification=task.verification,
-            requires_confirmation=bool(
-                task.route and task.route.requires_confirmation
-                and task.status == TaskStatus.WAITING_CONFIRMATION
-            ),
+            requires_confirmation=task.status == TaskStatus.WAITING_CONFIRMATION,
             error=task.error,
             attempt=task.attempt,
+            assistant_steps=task.assistant_steps,
+            canvas=task.canvas,
+            pending_tool=task.pending_tool,
+            pending_arguments=task.pending_arguments,
         )
 
     async def route_only(
@@ -91,6 +98,8 @@ class GatewayOrchestrator:
                 )
             if task.status != TaskStatus.WAITING_CONFIRMATION:
                 return self._to_response(task)
+            if task.pending_tool:
+                return await self._resume_assistant(task)
             return await self._execute_with_retries(task)
 
         task = TaskRecord(
@@ -100,6 +109,15 @@ class GatewayOrchestrator:
             status=TaskStatus.ROUTING,
         )
         await self.store.put(task)
+        await self.activity.start_task(task.task_id, request.message)
+
+        local_only = is_local_only(self.config, request.local_only)
+
+        # The NPU assistant gets first refusal: it may finish the job with its
+        # own tools, or delegate to a worker and follow up on the result.
+        assistant_response = await self._try_assistant(task, local_only=local_only)
+        if assistant_response is not None:
+            return assistant_response
 
         try:
             if needs_multi_step(request.message) and request.project:
@@ -114,6 +132,12 @@ class GatewayOrchestrator:
                         if step.decision.requires_confirmation:
                             decision = step.decision
                             break
+                # A plan is built locally, so its steps still have to clear the
+                # same policy gate a routed decision does.
+                for step in plan.steps:
+                    validate_route(
+                        step.decision, local_only=local_only, config=self.config
+                    )
             else:
                 decision = await self.router.route(
                     request.message,
@@ -124,17 +148,28 @@ class GatewayOrchestrator:
 
             task.route = decision
             task.worker = decision.worker
+            task.local_only = local_only
         except PermissionError_ as exc:
             task.status = TaskStatus.FAILED
             task.error = str(exc)
             await self.store.update(task)
+            await self.activity.update_task(
+                task.task_id, status="failed", error=str(exc)
+            )
             return self._to_response(task)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Routing failed")
             task.status = TaskStatus.FAILED
             task.error = str(exc)
             await self.store.update(task)
+            await self.activity.update_task(
+                task.task_id, status="failed", error=str(exc)
+            )
             return self._to_response(task)
+
+        await self.activity.update_task(
+            task.task_id, status="routing", worker=decision.worker
+        )
 
         if decision.requires_confirmation and not request.confirmed:
             task.status = TaskStatus.WAITING_CONFIRMATION
@@ -143,12 +178,180 @@ class GatewayOrchestrator:
                 f"on {decision.working_directory or 'no project'}."
             )
             await self.store.update(task)
+            await self.activity.update_task(
+                task.task_id, status="waiting_confirmation", worker=decision.worker
+            )
             return self._to_response(task)
 
         return await self._execute_with_retries(task)
 
+    # ------------------------------------------------------------- assistant
+
+    async def _try_assistant(
+        self, task: TaskRecord, *, local_only: bool
+    ) -> TaskResponse | None:
+        """Give the NPU assistant a shot. ``None`` means "fall through to routing"."""
+        settings = load_assistant_settings()
+        if not settings.tools.enabled:
+            return None
+
+        await self.activity.update_task(task.task_id, status="thinking")
+
+        async def on_step(step) -> None:
+            await self.activity.note(
+                "step",
+                f"{step.tool}: {'ok' if step.ok else 'failed'}",
+                detail=step.observation[:200],
+                task_id=task.task_id,
+                tool=step.tool,
+            )
+
+        try:
+            outcome = await self.assistant.run(
+                task.message,
+                project=task.project,
+                local_only=local_only,
+                confirmed_tools=set(task.confirmed_tools),
+                on_step=on_step,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Assistant loop failed; falling back to worker routing")
+            await self.activity.note(
+                "notice", "Assistant failed, routing directly", detail=str(exc)[:200],
+                task_id=task.task_id,
+            )
+            return None
+
+        # Nothing happened — let the ordinary worker router handle it.
+        if not outcome.steps and not outcome.answer and not outcome.question:
+            return None
+
+        return await self._finish_assistant(task, outcome)
+
+    async def _finish_assistant(
+        self, task: TaskRecord, outcome: AssistantOutcome
+    ) -> TaskResponse:
+        # The "needs approval" placeholder is bookkeeping, not work that
+        # happened — drop it so a resume does not replay it as history.
+        task.assistant_steps = [
+            step.model_dump() for step in outcome.steps if step.action != "confirm"
+        ]
+        task.worker = outcome.delegated[-1] if outcome.delegated else "assistant"
+
+        if outcome.needs_confirmation and outcome.pending_tool:
+            task.status = TaskStatus.WAITING_CONFIRMATION
+            task.pending_tool = outcome.pending_tool
+            task.pending_arguments = outcome.pending_arguments
+            task.result = (
+                f"Keylane wants to run '{outcome.pending_tool}'"
+                + (
+                    f" with {outcome.pending_arguments}"
+                    if outcome.pending_arguments
+                    else ""
+                )
+                + "."
+            )
+            await self.store.update(task)
+            await self.activity.update_task(
+                task.task_id, status="waiting_confirmation", worker="assistant"
+            )
+            return self._to_response(task)
+
+        task.result = outcome.answer or "Done."
+        task.canvas = outcome.canvas
+        task.error = outcome.error
+        task.evidence = WorkerEvidence(
+            worker=task.worker or "assistant",
+            action="assist",
+            response=task.result,
+            stdout="\n\n".join(
+                f"{s.tool}: {s.observation}" for s in outcome.steps if s.observation
+            )[:8000],
+            exit_code=0 if not outcome.error else 1,
+        )
+        task.status = TaskStatus.FAILED if outcome.error else TaskStatus.COMPLETED
+        await self.store.update(task)
+        await self.activity.update_task(
+            task.task_id,
+            status="failed" if outcome.error else "completed",
+            worker=task.worker,
+            error=outcome.error,
+        )
+        return self._to_response(task)
+
+    async def _resume_assistant(self, task: TaskRecord) -> TaskResponse:
+        """Run the approved tool, then let the assistant carry on from there."""
+        from app.assistant import AssistantStep
+
+        pending = task.pending_tool
+        arguments = dict(task.pending_arguments)
+        if not pending:
+            return self._to_response(task)
+        if pending not in task.confirmed_tools:
+            task.confirmed_tools.append(pending)
+        task.pending_tool = None
+        task.pending_arguments = {}
+        task.status = TaskStatus.RUNNING
+        await self.store.update(task)
+        await self.activity.update_task(
+            task.task_id, status="running", step=f"approved {pending}"
+        )
+
+        # Replay what already happened so the model does not start over, then
+        # execute the step the user just approved.
+        prior = [AssistantStep(**step) for step in task.assistant_steps]
+        try:
+            executed = await self.assistant.run_confirmed_tool(
+                pending, arguments, index=len(prior) + 1
+            )
+            prior.append(executed)
+
+            outcome = await self.assistant.run(
+                task.message,
+                project=task.project,
+                local_only=task.local_only,
+                confirmed_tools=set(task.confirmed_tools),
+                prior_steps=prior,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Assistant resume failed")
+            task.status = TaskStatus.FAILED
+            task.error = str(exc)
+            await self.store.update(task)
+            await self.activity.update_task(
+                task.task_id, status="failed", error=str(exc)
+            )
+            return self._to_response(task)
+        return await self._finish_assistant(task, outcome)
+
     async def _execute_worker(self, decision: RouteDecision) -> WorkerResult:
         return await self.registry.run_worker(decision)
+
+    @staticmethod
+    def _worker_canvas(task: TaskRecord, decision: RouteDecision) -> dict[str, Any]:
+        """Wrap a worker's output so it renders like an assistant answer."""
+        from app.canvas import Block, Link, canvas_from_text
+
+        canvas = canvas_from_text(
+            task.result or "", source=f"via {decision.worker}"
+        )
+        evidence = task.evidence
+        if evidence is not None:
+            if evidence.output_path:
+                canvas.blocks.append(
+                    Block(
+                        type="links",
+                        links=[Link(label="Output", href=evidence.output_path)],
+                    )
+                )
+            if evidence.changed_files:
+                canvas.blocks.append(
+                    Block(
+                        type="list",
+                        entries=evidence.changed_files[:30],
+                    )
+                )
+        return canvas.cleaned().model_dump()
 
     async def _execute_with_retries(self, task: TaskRecord) -> TaskResponse:
         assert task.route is not None
@@ -169,6 +372,12 @@ class GatewayOrchestrator:
             task.attempt = attempt
             task.status = TaskStatus.RETRYING if attempt else TaskStatus.RUNNING
             await self.store.update(task)
+            await self.activity.update_task(
+                task.task_id,
+                status=task.status.value,
+                worker=decision.worker,
+                step=f"attempt {attempt + 1}",
+            )
 
             # Inject verifier next_action / prior context
             run_decision = decision
@@ -199,7 +408,11 @@ class GatewayOrchestrator:
 
             if verification.complete:
                 task.status = TaskStatus.COMPLETED
+                task.canvas = self._worker_canvas(task, decision)
                 await self.store.update(task)
+                await self.activity.update_task(
+                    task.task_id, status="completed", worker=decision.worker
+                )
                 return self._to_response(task)
 
             if not verification.retry or attempt >= task.max_retries:
@@ -208,6 +421,9 @@ class GatewayOrchestrator:
                 if attempt >= task.max_retries:
                     task.error = f"Maximum retries reached. {verification.reason}"
                 await self.store.update(task)
+                await self.activity.update_task(
+                    task.task_id, status="failed", error=task.error
+                )
                 return self._to_response(task)
 
             context_extras["next_action"] = verification.next_action or verification.reason
@@ -215,6 +431,9 @@ class GatewayOrchestrator:
         task.status = TaskStatus.FAILED
         task.error = "Maximum retries reached."
         await self.store.update(task)
+        await self.activity.update_task(
+            task.task_id, status="failed", error=task.error
+        )
         return self._to_response(task)
 
     async def _execute_plan(self, task: TaskRecord) -> TaskResponse:
@@ -243,7 +462,9 @@ class GatewayOrchestrator:
                         )
 
             try:
-                decision = validate_route(decision, config=self.config)
+                decision = validate_route(
+                    decision, local_only=task.local_only, config=self.config
+                )
             except PermissionError_ as exc:
                 task.status = TaskStatus.FAILED
                 task.error = str(exc)
@@ -303,6 +524,7 @@ class GatewayOrchestrator:
         summaries = [r.summary for r in outputs.values()]
         task.result = "\n\n".join(summaries)
         await self.store.update(task)
+        await self.activity.update_task(task.task_id, status="completed")
         return self._to_response(task)
 
     async def cancel(self, task_id: str) -> TaskResponse | None:
@@ -318,6 +540,7 @@ class GatewayOrchestrator:
             task.status = TaskStatus.CANCELLED
             task.error = "Cancelled"
             await self.store.update(task)
+            await self.activity.update_task(task.task_id, status="cancelled")
         return self._to_response(task)
 
     async def get_task(self, task_id: str) -> TaskResponse | None:

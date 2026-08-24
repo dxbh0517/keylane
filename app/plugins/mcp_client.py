@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
@@ -11,6 +12,19 @@ logger = logging.getLogger(__name__)
 
 class McpError(RuntimeError):
     pass
+
+
+def _merged_env(extra: dict[str, str] | None) -> dict[str, str] | None:
+    """Merge extra vars into the current process env.
+
+    StdioServerParameters replaces the whole environment when ``env`` is set,
+    so we must start from ``os.environ`` (PATH, HOME, COMFY_*, etc.).
+    """
+    if not extra:
+        return None
+    merged = {str(k): str(v) for k, v in os.environ.items()}
+    merged.update({str(k): str(v) for k, v in extra.items()})
+    return merged
 
 
 @asynccontextmanager
@@ -32,7 +46,7 @@ async def mcp_stdio_session(
     params = StdioServerParameters(
         command=command,
         args=args or [],
-        env=env,
+        env=_merged_env(env),
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -40,16 +54,26 @@ async def mcp_stdio_session(
             yield session
 
 
-async def mcp_list_tools(command: str, args: list[str] | None = None) -> list[dict[str, Any]]:
-    async with mcp_stdio_session(command, args) as session:
+async def mcp_list_tools(
+    command: str,
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    async with mcp_stdio_session(command, args, env) as session:
         result = await session.list_tools()
         tools = getattr(result, "tools", result) or []
         out: list[dict[str, Any]] = []
         for tool in tools:
+            schema = getattr(tool, "inputSchema", None) or getattr(
+                tool, "input_schema", None
+            )
+            if hasattr(schema, "model_dump"):
+                schema = schema.model_dump()
             out.append(
                 {
                     "name": getattr(tool, "name", None),
                     "description": getattr(tool, "description", "") or "",
+                    "input_schema": schema if isinstance(schema, dict) else None,
                 }
             )
         return out

@@ -132,7 +132,14 @@ class McpPlugin(BasePlugin):
         cmd = str(self.settings.get("command") or "").strip()
         if not cmd:
             raise McpError("MCP command is not configured")
-        resolved = shutil.which(cmd) or (cmd if Path(cmd).exists() else None)
+        resolved = shutil.which(cmd)
+        if not resolved and not Path(cmd).is_absolute():
+            # systemd / GUI clients often omit ~/.local/bin from PATH
+            local = Path.home() / ".local" / "bin" / cmd
+            if local.is_file():
+                resolved = str(local)
+        if not resolved and Path(cmd).exists():
+            resolved = str(Path(cmd).resolve())
         if not resolved:
             raise McpError(f"MCP command not found on PATH: {cmd}")
         return resolved
@@ -143,9 +150,21 @@ class McpPlugin(BasePlugin):
 
     def _env(self) -> dict[str, str] | None:
         raw = self._parse_json(self.settings.get("env"), {})
-        if not isinstance(raw, dict) or not raw:
-            return None
-        return {str(k): str(v) for k, v in raw.items()}
+        env: dict[str, str] = {}
+        if isinstance(raw, dict):
+            env = {str(k): str(v) for k, v in raw.items()}
+        # https://docs.comfy.org/agent-tools/mcp#local-comfy-mcp-connection
+        # Clients often lack shell PATH — set COMFY_BIN to the absolute comfy binary.
+        cmd = str(self.settings.get("command") or "").lower()
+        if "comfy" in cmd and "COMFY_BIN" not in env:
+            comfy = shutil.which("comfy")
+            if not comfy:
+                candidate = Path.home() / ".local" / "bin" / "comfy"
+                if candidate.is_file():
+                    comfy = str(candidate)
+            if comfy:
+                env["COMFY_BIN"] = comfy
+        return env or None
 
     async def health(self) -> PluginHealth:
         try:
@@ -162,7 +181,7 @@ class McpPlugin(BasePlugin):
                     metadata={"result": _short(payload)},
                 )
             except Exception as tool_exc:  # noqa: BLE001
-                tools = await mcp_list_tools(cmd, self._args())
+                tools = await mcp_list_tools(cmd, self._args(), env=self._env())
                 names = [t.get("name") for t in tools]
                 return PluginHealth(
                     ok=True,
@@ -209,19 +228,49 @@ class McpPlugin(BasePlugin):
             return WorkerResult(success=False, evidence=evidence, summary=str(exc))
 
     def _build_arguments(self, decision: RouteDecision, tool: str) -> dict[str, Any]:
-        args = dict(decision.arguments or {})
-        # Common Comfy MCP generate_image shape
-        if tool in {"generate_image", "run_template"}:
-            if "prompt" not in args:
+        raw = dict(decision.arguments or {})
+        # Local comfy-mcp tools (docs): generate_image(prompt, checkpoint?), run_workflow(workflow_path)
+        if tool == "generate_image":
+            args: dict[str, Any] = {
+                "prompt": raw.get("prompt") or decision.instruction,
+            }
+            checkpoint = (
+                raw.get("checkpoint")
+                or raw.get("ckpt_name")
+                or raw.get("model")
+                or decision.model
+            )
+            if checkpoint:
+                args["checkpoint"] = checkpoint
+            if "wait" in raw:
+                args["wait"] = raw["wait"]
+            if "timeout_seconds" in raw:
+                args["timeout_seconds"] = raw["timeout_seconds"]
+            return args
+        if tool == "run_workflow":
+            args = {}
+            workflow = (
+                raw.get("workflow_path")
+                or raw.get("workflow")
+                or decision.workflow
+            )
+            if workflow:
+                args["workflow_path"] = workflow
+            if "wait" in raw:
+                args["wait"] = raw["wait"]
+            elif "wait" not in args:
+                args["wait"] = True
+            return args
+        if tool in {"run_template", "search_templates"}:
+            args = dict(raw)
+            if "prompt" not in args and decision.instruction:
                 args["prompt"] = decision.instruction
-            if decision.workflow and "workflow" not in args:
-                args["workflow"] = decision.workflow
-        elif tool == "run_workflow":
-            if "prompt" not in args and "workflow" not in args:
-                args["prompt"] = decision.instruction
-        else:
-            args.setdefault("instruction", decision.instruction)
-            args.setdefault("prompt", decision.instruction)
+            return args
+        args = dict(raw)
+        if decision.model:
+            args.setdefault("model", decision.model)
+        args.setdefault("instruction", decision.instruction)
+        args.setdefault("prompt", decision.instruction)
         return args
 
 

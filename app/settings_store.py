@@ -17,6 +17,8 @@ class GatewaySettingsUpdate(BaseModel):
     port: int | None = Field(default=None, ge=1024, le=65535)
     max_retries: int | None = Field(default=None, ge=0, le=10)
     local_only: bool | None = None
+    docs_url: str | None = None
+    result_corner: str | None = None
     allowed_project_roots: list[str] | None = None
     require_confirmation_for_modifications: bool | None = None
 
@@ -26,6 +28,8 @@ class GatewaySettingsView(BaseModel):
     port: int
     max_retries: int
     local_only: bool
+    docs_url: str
+    result_corner: str
     allowed_project_roots: list[str]
     require_confirmation_for_modifications: bool
     restart_required: bool = False
@@ -39,6 +43,8 @@ def current_gateway_settings() -> GatewaySettingsView:
         port=cfg.gateway.port,
         max_retries=cfg.gateway.max_retries,
         local_only=cfg.gateway.local_only,
+        docs_url=cfg.gateway.docs_url,
+        result_corner=cfg.gateway.result_corner,
         allowed_project_roots=list(cfg.security.allowed_project_roots),
         require_confirmation_for_modifications=cfg.security.require_confirmation_for_modifications,
         restart_required=False,
@@ -46,53 +52,78 @@ def current_gateway_settings() -> GatewaySettingsView:
     )
 
 
+# Which TOML table each editable key belongs to. Writes are scoped to the
+# section so a new key is appended in the right place rather than at EOF, where
+# it would silently join whichever table happens to be last.
+KEY_SECTIONS = {
+    "host": "gateway",
+    "port": "gateway",
+    "max_retries": "gateway",
+    "local_only": "gateway",
+    "docs_url": "gateway",
+    "result_corner": "gateway",
+    "require_confirmation_for_modifications": "security",
+    "allowed_project_roots": "security",
+}
+
+
+def _toml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _section_bounds(text: str, section: str) -> tuple[int, int] | None:
+    """Character range of a TOML table's body, excluding its header line."""
+    header = re.search(rf"(?m)^\[{re.escape(section)}\]\s*$", text)
+    if header is None:
+        return None
+    start = header.end()
+    following = re.search(r"(?m)^\[", text[start:])
+    end = start + following.start() if following else len(text)
+    return start, end
+
+
+def set_toml_key(text: str, section: str, key: str, rendered: str) -> str:
+    """Set ``key = rendered`` inside ``[section]``, creating either if needed."""
+    bounds = _section_bounds(text, section)
+    if bounds is None:
+        separator = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+        return f"{text}{separator}[{section}]\n{key} = {rendered}\n"
+
+    start, end = bounds
+    body = text[start:end]
+    # Match a scalar assignment or a multi-line array for this key.
+    pattern = rf"(?ms)^{re.escape(key)}\s*=\s*(?:\[.*?\]|[^\n]*)$"
+    if re.search(pattern, body):
+        body = re.sub(pattern, f"{key} = {rendered}", body, count=1)
+    else:
+        body = body.rstrip("\n") + f"\n{key} = {rendered}\n"
+        if not body.startswith("\n"):
+            body = "\n" + body.lstrip("\n")
+    return text[:start] + body + text[end:]
+
+
 def update_gateway_settings(update: GatewaySettingsUpdate) -> GatewaySettingsView:
     path = ROOT / "config" / "workers.toml"
     text = path.read_text(encoding="utf-8")
     restart = False
 
-    def replace_bool(section_key: str, key: str, value: bool) -> str:
-        nonlocal text
-        pattern = rf"(?m)^({key}\s*=\s*)(true|false)\s*$"
-        # Only within rough whole-file replace is fine for our flat sections
-        text, n = re.subn(pattern, rf"\g<1>{'true' if value else 'false'}", text, count=1)
-        if n == 0:
-            text += f"\n{key} = {'true' if value else 'false'}\n"
-        return text
-
-    def replace_scalar(key: str, value: Any) -> None:
-        nonlocal text, restart
-        if key in {"host", "port"}:
-            restart = True
-        if isinstance(value, bool):
-            replace_bool("", key, value)
-            return
-        if isinstance(value, int):
-            pattern = rf"(?m)^({key}\s*=\s*)\d+\s*$"
-            text2, n = re.subn(pattern, rf"\g<1>{value}", text, count=1)
-            text = text2 if n else text + f"\n{key} = {value}\n"
-            return
-        if isinstance(value, str):
-            pattern = rf'(?m)^({key}\s*=\s*)"[^"]*"\s*$'
-            text2, n = re.subn(pattern, rf'\g<1>"{value}"', text, count=1)
-            text = text2 if n else text + f'\n{key} = "{value}"\n'
-            return
-
     data = update.model_dump(exclude_none=True)
     roots = data.pop("allowed_project_roots", None)
+
     for key, value in data.items():
-        replace_scalar(key, value)
+        if key in {"host", "port"}:
+            restart = True
+        section = KEY_SECTIONS.get(key, "gateway")
+        text = set_toml_key(text, section, key, _toml_scalar(value))
 
     if roots is not None:
-        # Rewrite the allowed_project_roots array block
-        block = "allowed_project_roots = [\n" + "".join(
-            f'  "{r}",\n' for r in roots
-        ) + "]"
-        pattern = r"(?ms)^allowed_project_roots\s*=\s*\[.*?\]"
-        if re.search(pattern, text):
-            text = re.sub(pattern, block, text, count=1)
-        else:
-            text += "\n" + block + "\n"
+        rendered = "[\n" + "".join(f'  "{r}",\n' for r in roots) + "]"
+        text = set_toml_key(text, "security", "allowed_project_roots", rendered)
 
     path.write_text(text, encoding="utf-8")
     reload_config()

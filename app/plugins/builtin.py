@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import socket
 from typing import Any
 
 from app.config import AppConfig, get_config
@@ -20,6 +19,7 @@ from app.schemas import RouteDecision, WorkerResult
 from app.workers.claude import ClaudeWorker
 from app.workers.comfyui import ComfyUiWorker
 from app.workers.cursor import CursorWorker
+from app.workers.lemonade import LemonadeWorker
 from app.workers.lmstudio import LmStudioWorker
 
 logger = logging.getLogger(__name__)
@@ -209,39 +209,63 @@ class ComfyUiHttpPlugin(BasePlugin):
 
 
 class LemonadePlugin(BasePlugin):
-    """Clipboard bridge via Lemonade (lemond), which typically binds 127.0.0.1:9000."""
+    """Lemonade Server — OpenAI-compatible local LLM (default http://127.0.0.1:13305/api/v1)."""
 
     id = "lemonade"
     name = "Lemonade"
-    description = "Clipboard over TCP (lemond). Often occupies port 9000 — keep the gateway on 9100."
-    kind = PluginKind.UTILITY
-    worker_id = None
+    description = (
+        "Lemonade Server OpenAI-compatible LLM. "
+        "Note: clipboard lemond often uses port 9000 — keep the gateway on 9100."
+    )
+    kind = PluginKind.NATIVE
+    worker_id = "lemonade"
     cloud = False
-    homepage = "https://github.com/lemonade-sdk/lemonade"
+    homepage = "https://lemonade-server.ai"
+
+    def __init__(self, settings: dict[str, Any] | None = None, config: AppConfig | None = None) -> None:
+        self._config = config or get_config()
+        super().__init__(settings)
+        self._worker = LemonadeWorker(self._config)
 
     def settings_schema(self) -> list[SettingField]:
+        from app.models_settings import load_models_settings
+
+        models = load_models_settings()
         return [
-            SettingField(key="host", label="Host", type=SettingType.STRING, default="127.0.0.1"),
-            SettingField(key="port", label="Port", type=SettingType.INTEGER, default=9000),
+            SettingField(
+                key="base_url",
+                label="Base URL",
+                type=SettingType.STRING,
+                default=models.lemonade_base_url or self._config.lemonade.base_url,
+            ),
+            SettingField(
+                key="default_model",
+                label="Default model id",
+                type=SettingType.STRING,
+                default=models.lemonade_model or self._config.lemonade.default_model,
+                description="Use 'auto' to let the NPU router pick per request.",
+            ),
         ]
 
-    async def health(self) -> PluginHealth:
-        host = str(self.settings.get("host") or "127.0.0.1")
-        port = int(self.settings.get("port") or 9000)
-        try:
-            await asyncio.to_thread(self._probe, host, port)
-            return PluginHealth(
-                ok=True,
-                detail=f"lemond listening on {host}:{port}",
-                metadata={"host": host, "port": port},
-            )
-        except OSError as exc:
-            return PluginHealth(ok=False, detail=str(exc), metadata={"host": host, "port": port})
+    def update_settings(self, data: dict[str, Any]) -> dict[str, Any]:
+        settings = super().update_settings(data)
+        if "base_url" in settings:
+            self._config.lemonade.base_url = str(settings["base_url"])
+        if "default_model" in settings:
+            self._config.lemonade.default_model = str(settings["default_model"])
+        self._worker = LemonadeWorker(self._config)
+        return settings
 
-    @staticmethod
-    def _probe(host: str, port: int) -> None:
-        with socket.create_connection((host, port), timeout=1.5):
-            return None
+    async def health(self) -> PluginHealth:
+        ok = await self._worker.health()
+        return PluginHealth(
+            ok=ok,
+            detail=f"Lemonade reachable at {self._worker.base_url}" if ok else "Lemonade Server not reachable",
+            metadata={"base_url": self._worker.base_url},
+        )
+
+    async def run(self, decision: RouteDecision) -> WorkerResult:
+        return await self._worker.run(decision)
 
 
 def builtin_comfy_mcp(settings: dict[str, Any] | None = None) -> McpPlugin:
@@ -276,5 +300,5 @@ def create_builtin_plugins(config: AppConfig | None = None) -> dict[str, BasePlu
         "cursor": CursorPlugin(config=cfg),
         "comfyui": builtin_comfy_mcp(),
         "comfyui-http": ComfyUiHttpPlugin(config=cfg),
-        "lemonade": LemonadePlugin(),
+        "lemonade": LemonadePlugin(config=cfg),
     }

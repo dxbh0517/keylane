@@ -28,8 +28,11 @@ class LmStudioWorker:
         except Exception:  # noqa: BLE001
             return False
 
-    async def _resolve_model(self, client: httpx.AsyncClient) -> str:
-        configured = self.config.lmstudio.default_model
+    async def _resolve_model(self, client: httpx.AsyncClient, decision: RouteDecision) -> str:
+        preferred = (decision.model or "").strip()
+        if not preferred:
+            preferred = str((decision.arguments or {}).get("model") or "").strip()
+        configured = preferred or self.config.lmstudio.default_model
         try:
             response = await client.get(f"{self.base_url}/models")
             response.raise_for_status()
@@ -40,8 +43,8 @@ class LmStudioWorker:
             return configured
         if configured in models:
             return configured
-        # "local-model" is a placeholder — use whatever LM Studio has loaded.
-        if configured in {"", "local-model", "local"}:
+        # "local-model" / auto placeholders — use whatever LM Studio has loaded.
+        if configured in {"", "local-model", "local", "auto"}:
             return models[0]
         return configured
 
@@ -61,7 +64,7 @@ class LmStudioWorker:
             async with httpx.AsyncClient(
                 timeout=self.config.lmstudio.timeout_seconds
             ) as client:
-                model = await self._resolve_model(client)
+                model = await self._resolve_model(client, decision)
                 payload = {
                     "model": model,
                     "messages": messages,

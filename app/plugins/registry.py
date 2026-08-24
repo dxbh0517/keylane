@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import shutil
+import sys
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from app.config import ROOT, AppConfig, get_config, reload_config
 from app.plugins.base import BasePlugin, PluginHealth, PluginInfo, PluginKind
@@ -23,14 +25,10 @@ except ImportError:  # pragma: no cover
     tomli_w = None  # type: ignore
 
 
-DEFAULT_ENABLED = {
-    "lmstudio": True,
-    "claude": True,
-    "cursor": True,
-    "comfyui": True,
-    "comfyui-http": False,
-    "lemonade": True,
-}
+# Nothing ships installed. A fresh Keylane reaches out to nothing until the
+# user installs a plugin from the catalog. Existing installs are migrated in
+# _load_state(): anything already in plugins.toml counts as installed.
+DEFAULT_ENABLED: dict[str, bool] = {}
 
 
 class PluginRegistry:
@@ -39,8 +37,10 @@ class PluginRegistry:
         self.state_path = self.config.root / "config" / "plugins.toml"
         self.community_dir = self.config.root / "plugins" / "community"
         self.community_dir.mkdir(parents=True, exist_ok=True)
+        self.catalog_dir = self.config.root / "plugins" / "catalog"
         self._plugins: dict[str, BasePlugin] = {}
         self._enabled: dict[str, bool] = dict(DEFAULT_ENABLED)
+        self._installed: set[str] = set()
         self._settings: dict[str, dict[str, Any]] = {}
         self._load_state()
         self._discover()
@@ -55,6 +55,10 @@ class PluginRegistry:
         for pid, entry in plugins.items():
             if isinstance(entry, dict):
                 self._enabled[pid] = bool(entry.get("enabled", True))
+                # Anything already recorded is installed — this is what carries
+                # an upgrade from the old always-on built-ins to the catalog.
+                if bool(entry.get("installed", True)):
+                    self._installed.add(pid)
                 settings = entry.get("settings") or {}
                 if isinstance(settings, dict):
                     self._settings[pid] = settings
@@ -74,11 +78,13 @@ class PluginRegistry:
         ):
             if isinstance(plugin, BasePlugin):
                 data["plugins"][pid] = {
+                    "installed": True,
                     "enabled": self._enabled.get(pid, True),
                     "settings": plugin.settings,
                 }
             else:
                 data["plugins"][pid] = {
+                    "installed": pid in self._installed,
                     "enabled": self._enabled.get(pid, True),
                     "settings": self._settings.get(pid, {}),
                 }
@@ -112,10 +118,12 @@ class PluginRegistry:
     def _discover(self) -> None:
         builtins = create_builtin_plugins(self.config)
         for pid, plugin in builtins.items():
+            if pid not in self._installed:
+                continue  # in the catalog, not installed
             if pid in self._settings:
                 plugin.update_settings(self._settings[pid])
             self._plugins[pid] = plugin
-            self._enabled.setdefault(pid, DEFAULT_ENABLED.get(pid, True))
+            self._enabled.setdefault(pid, True)
 
         for manifest in sorted(self.community_dir.glob("*/plugin.toml")):
             try:
@@ -127,12 +135,69 @@ class PluginRegistry:
                 if kind == "mcp":
                     plugin = mcp_plugin_from_manifest(data, settings)
                 else:
-                    logger.warning("Skipping non-MCP community plugin %s (native community plugins need a Python entry).", pid)
-                    continue
+                    plugin = self._load_python_plugin(manifest.parent, data, settings)
+                    if plugin is None:
+                        continue
                 self._plugins[pid] = plugin
                 self._enabled.setdefault(pid, bool(data.get("enabled", True)))
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Failed to load community plugin %s: %s", manifest, exc)
+
+    def _load_python_plugin(
+        self,
+        folder: Path,
+        data: dict[str, Any],
+        settings: dict[str, Any],
+    ) -> BasePlugin | None:
+        """Import ``plugin.py`` from a community folder and build its plugin.
+
+        The module must expose ``create_plugin(settings) -> BasePlugin`` or a
+        ``Plugin`` class deriving from ``BasePlugin``. Community Python runs in
+        this process, so it carries the same trust as any local script.
+        """
+        pid = str(data.get("id") or folder.name)
+        entry = str(data.get("entry") or "plugin.py")
+        module_path = folder / entry
+        if not module_path.is_file():
+            logger.warning(
+                "Community plugin %s declares kind=%s but %s is missing.",
+                pid,
+                data.get("kind"),
+                module_path,
+            )
+            return None
+
+        module_name = f"keylane_community_{pid.replace('-', '_')}"
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        if spec is None or spec.loader is None:
+            logger.warning("Could not build an import spec for %s", module_path)
+            return None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:  # noqa: BLE001
+            sys.modules.pop(module_name, None)
+            logger.exception("Community plugin %s failed to import: %s", pid, exc)
+            return None
+
+        factory = getattr(module, "create_plugin", None)
+        if callable(factory):
+            plugin = factory(settings)
+        else:
+            plugin_cls = getattr(module, "Plugin", None)
+            if plugin_cls is None or not isinstance(plugin_cls, type):
+                logger.warning(
+                    "Community plugin %s exposes neither create_plugin() nor Plugin.", pid
+                )
+                return None
+            plugin = plugin_cls(settings)
+
+        if not isinstance(plugin, BasePlugin):
+            logger.warning("Community plugin %s did not return a BasePlugin.", pid)
+            return None
+        plugin.removable = True
+        return plugin
 
     def reload(self) -> None:
         self._plugins.clear()
@@ -159,6 +224,106 @@ class PluginRegistry:
 
     def get(self, plugin_id: str) -> BasePlugin | None:
         return self._plugins.get(plugin_id)
+
+    # ------------------------------------------------------------- catalog
+
+    def catalog(self) -> list[dict[str, Any]]:
+        """Everything installable, with whether it is installed already."""
+        entries: list[dict[str, Any]] = []
+        if not self.catalog_dir.is_dir():
+            return entries
+        for manifest in sorted(self.catalog_dir.glob("*/plugin.toml")):
+            try:
+                with manifest.open("rb") as fh:
+                    data = tomllib.load(fh)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Bad catalog entry %s: %s", manifest, exc)
+                continue
+            pid = str(data.get("id") or manifest.parent.name)
+            entries.append(
+                {
+                    "id": pid,
+                    "name": str(data.get("name") or pid),
+                    "description": str(data.get("description") or ""),
+                    "kind": str(data.get("kind") or "native"),
+                    "worker_id": data.get("worker_id"),
+                    "cloud": bool(data.get("cloud", False)),
+                    "homepage": data.get("homepage"),
+                    "tags": [
+                        tag.strip()
+                        for tag in str(data.get("tags") or "").split(",")
+                        if tag.strip()
+                    ],
+                    "installed": pid in self._installed,
+                    "enabled": bool(self._enabled.get(pid, False)),
+                }
+            )
+        return entries
+
+    def install_from_catalog(self, plugin_id: str) -> PluginInfo:
+        """Register a catalog plugin and switch it on."""
+        manifest = self.catalog_dir / plugin_id / "plugin.toml"
+        if not manifest.exists():
+            raise KeyError(f"'{plugin_id}' is not in the catalog")
+        with manifest.open("rb") as fh:
+            data = tomllib.load(fh)
+
+        entry = str(data.get("entry") or "")
+        if entry.startswith("builtin:"):
+            builtin_id = entry.split(":", 1)[1]
+            builtins = create_builtin_plugins(self.config)
+            plugin = builtins.get(builtin_id)
+            if plugin is None:
+                raise KeyError(f"No built-in implementation named '{builtin_id}'")
+            if plugin_id in self._settings:
+                plugin.update_settings(self._settings[plugin_id])
+        elif (data.get("kind") or "mcp").lower() == "mcp":
+            plugin = mcp_plugin_from_manifest(data, self._settings.get(plugin_id))
+        else:
+            plugin = self._load_python_plugin(
+                manifest.parent, data, self._settings.get(plugin_id, {})
+            )
+            if plugin is None:
+                raise ValueError(f"'{plugin_id}' could not be loaded")
+
+        self._plugins[plugin_id] = plugin
+        self._installed.add(plugin_id)
+        self._enabled[plugin_id] = True
+        self._write_state()
+        return plugin.info(enabled=True)
+
+    def uninstall_from_catalog(self, plugin_id: str, *, purge: bool = False) -> None:
+        """Unregister a plugin, keeping its settings unless purging."""
+        if plugin_id not in self._installed:
+            raise KeyError(f"'{plugin_id}' is not installed")
+        self._plugins.pop(plugin_id, None)
+        self._installed.discard(plugin_id)
+        self._enabled.pop(plugin_id, None)
+        if purge:
+            self._settings.pop(plugin_id, None)
+        self._write_state()
+
+    def is_installed(self, plugin_id: str) -> bool:
+        return plugin_id in self._installed
+
+    def items(self) -> Iterator[tuple[str, BasePlugin]]:
+        """Iterate ``(plugin_id, plugin)`` for every discovered plugin."""
+        return iter(sorted(self._plugins.items()))
+
+    def contributed_skills(self) -> dict[str, list[Any]]:
+        """Skills contributed by enabled plugins, keyed by plugin id."""
+        out: dict[str, list[Any]] = {}
+        for pid, plugin in self._plugins.items():
+            if not self._enabled.get(pid, False):
+                continue
+            try:
+                skills = plugin.skills() or []
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Plugin %s failed to list skills: %s", pid, exc)
+                continue
+            if skills:
+                out[pid] = skills
+        return out
 
     def is_enabled(self, plugin_id: str) -> bool:
         return bool(self._enabled.get(plugin_id, False))
@@ -276,19 +441,27 @@ class PluginRegistry:
         return await candidates[0][1].run(decision)
 
     async def status_map(self) -> dict[str, bool]:
+        """Aggregate health by worker_id.
+
+        Multiple plugins can share a worker_id (e.g. comfyui MCP + HTTP).
+        A disabled/unhealthy sibling must not overwrite a healthy enabled one.
+        """
         status: dict[str, bool] = {}
         for pid, plugin in self._plugins.items():
             if plugin.worker_id is None and plugin.kind != PluginKind.UTILITY:
                 continue
             key = plugin.worker_id or pid
             if not self._enabled.get(pid, False):
-                status[key] = False
+                status.setdefault(key, False)
                 continue
             try:
                 health = await plugin.health()
-                status[key] = health.ok
+                if health.ok:
+                    status[key] = True
+                else:
+                    status.setdefault(key, False)
             except Exception:  # noqa: BLE001
-                status[key] = False
+                status.setdefault(key, False)
         return status
 
 

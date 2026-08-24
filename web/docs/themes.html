@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Writing themes · Keylane docs</title>
+  <meta name="description" content="Restyle the panel and reshape the popup — bar, panel, window or orb." />
+  <link rel="icon" type="image/png" href="/assets/favicon.png" />
+  <link rel="stylesheet" href="assets/docs.css" />
+</head>
+<body>
+  <div class="docs">
+    <aside class="sidebar">
+      <a class="docs-brand" href="index.html">
+        <img src="/assets/logo.svg" width="30" height="30" alt="" />
+        <span>
+          <strong>Keylane</strong>
+          <span>Handbook</span>
+        </span>
+      </a>
+      <nav class="side-nav" aria-label="Documentation"><div><p class="side-group-title">Start here</p><div class="side-links"><a href="index.html">Keylane handbook</a><a href="install.html">Install, update, uninstall</a><a href="popup.html">The popup and the tray</a></div></div><div><p class="side-group-title">The assistant</p><div class="side-links"><a href="assistant.html">How the assistant thinks</a><a href="tools.html">Tools</a><a href="skills.html">Skills</a><a href="canvas.html">Canvas answers</a></div></div><div><p class="side-group-title">Extending</p><div class="side-links"><a href="plugins.html">Writing plugins</a><a href="themes.html" aria-current="page">Writing themes</a><a href="api.html">HTTP API</a><a href="roadmap.html">What it still needs</a></div></div></nav>
+      <div class="side-foot">
+        <a href="/">← Control panel</a>
+        <span>Local-first · 127.0.0.1</span>
+      </div>
+    </aside>
+
+    <main class="content">
+      <article class="article">
+        <p class="eyebrow">Guide</p>
+        <h1>Writing themes</h1>
+<p>A Keylane theme controls three surfaces:</p>
+<div class="table-wrap"><table><thead><tr><th>File / section</th><th>Controls</th></tr></thead><tbody><tr><td><code>[popup]</code> in <code>theme.toml</code></td><td><strong>The shape of the popup</strong> — bar, panel, window or orb, plus size, position and what it shows</td></tr><tr><td><code>launcher.css</code></td><td>GTK styling for the popup</td></tr><tr><td><code>web.css</code></td><td>The control panel</td></tr></tbody></table></div>
+<p>The <code>[popup]</code> section is the important one. It is what lets a theme turn the same launcher into a macOS-Spotlight bar, a full assistant window, or a small orb parked in the corner of the screen — without touching any code.</p>
+<h2>Package layout</h2>
+<span class="code-label">text</span><pre><code>my-theme/
+  theme.toml       required
+  launcher.css     optional — generated from [colors] if absent
+  web.css          optional — generated from [colors] if absent
+  popup.css        optional — extra GTK CSS layered on top of launcher.css</code></pre>
+<p>Zip the folder (with <code>theme.toml</code> inside the archive) and install it from</p>
+<p><strong>Control panel → Themes</strong>, or drop the folder into <code>themes/&lt;id&gt;/</code>.</p>
+<h2>theme.toml</h2>
+<span class="code-label">toml</span><pre><code>id = &quot;aurora&quot;
+name = &quot;Aurora&quot;
+author = &quot;you&quot;
+version = &quot;1.0.0&quot;
+description = &quot;Cool slate with an emerald accent, as a floating bar.&quot;
+
+[colors]
+bg      = &quot;#0b1220&quot;
+surface = &quot;#121a2b&quot;
+text    = &quot;#e8eefc&quot;
+muted   = &quot;#9aa8c7&quot;
+accent  = &quot;#34d399&quot;
+border  = &quot;#243047&quot;
+danger  = &quot;#fb7185&quot;
+
+[popup]
+preset  = &quot;spotlight&quot;
+width   = 720
+offset_y = -160
+font_size = 20</code></pre>
+<h3>Colours</h3>
+<p>Seven roles, all required if you want generated CSS:</p>
+<div class="table-wrap"><table><thead><tr><th>Key</th><th>Used for</th></tr></thead><tbody><tr><td><code>bg</code></td><td>The popup shell and the panel background</td></tr><tr><td><code>surface</code></td><td>Cards, the entry field, results</td></tr><tr><td><code>text</code></td><td>Primary text</td></tr><tr><td><code>muted</code></td><td>Secondary text, hints, inactive chips</td></tr><tr><td><code>accent</code></td><td>Focus rings, active states, the orb, primary buttons</td></tr><tr><td><code>border</code></td><td>Hairlines and outlines</td></tr><tr><td><code>danger</code></td><td>Errors and destructive actions</td></tr></tbody></table></div>
+<p>Keep text on <code>bg</code> and on <code>surface</code> above 4.5:1 contrast. One theme is one mode — ship a light theme and a dark theme as two ids rather than trying to do both.</p>
+<h2>The <code>[popup]</code> section</h2>
+<h3>Presets</h3>
+<p>Start from a preset, then override anything:</p>
+<div class="table-wrap"><table><thead><tr><th>Preset</th><th>Shape</th></tr></thead><tbody><tr><td><code>spotlight</code></td><td>One chromeless search bar, centred, floating above the middle of the screen. Grows downward as results arrive.</td></tr><tr><td><code>panel</code></td><td>The bar plus status chips, a project picker and hints.</td></tr><tr><td><code>window</code></td><td>A conventional decorated window with a title bar and scrollback. Does not dismiss on focus loss.</td></tr><tr><td><code>orb</code></td><td>A small circle in a screen corner that expands into a panel when clicked or when the hotkey fires.</td></tr></tbody></table></div>
+<span class="code-label">toml</span><pre><code>[popup]
+preset = &quot;window&quot;
+width = 900</code></pre>
+<h3>Every key</h3>
+<div class="table-wrap"><table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>What it does</th></tr></thead><tbody><tr><td><code>mode</code></td><td><code>bar</code> \</td><td><code>panel</code> \</td><td><code>window</code> \</td><td><code>orb</code></td><td><code>panel</code></td><td>The overall shape</td></tr><tr><td><code>preset</code></td><td>string</td><td>—</td><td>Load a preset&#x27;s values first, then apply your overrides</td></tr><tr><td><code>width</code></td><td>int</td><td><code>720</code></td><td>Popup width in pixels</td></tr><tr><td><code>height</code></td><td>int</td><td><code>0</code></td><td>Fixed height; <code>0</code> sizes to content</td></tr><tr><td><code>max_height</code></td><td>int</td><td><code>560</code></td><td>Ceiling once results appear</td></tr><tr><td><code>position</code></td><td>see below</td><td><code>center</code></td><td>Anchor on screen</td></tr><tr><td><code>offset_x</code></td><td>int</td><td><code>0</code></td><td>Horizontal nudge from the anchor</td></tr><tr><td><code>offset_y</code></td><td>int</td><td><code>0</code></td><td>Vertical nudge; negative lifts the popup above centre</td></tr><tr><td><code>corner_radius</code></td><td>int</td><td><code>16</code></td><td>Corner rounding</td></tr><tr><td><code>padding</code></td><td>int</td><td><code>14</code></td><td>Padding inside the shell</td></tr><tr><td><code>opacity</code></td><td>float</td><td><code>1.0</code></td><td><code>0.3</code>–<code>1.0</code></td></tr><tr><td><code>blur_background</code></td><td>bool</td><td><code>true</code></td><td>Ask the compositor for a translucent backdrop</td></tr><tr><td><code>shadow</code></td><td>bool</td><td><code>true</code></td><td>Drop shadow</td></tr><tr><td><code>decorated</code></td><td>bool</td><td><code>false</code></td><td><code>true</code> gives a real title bar; <code>false</code> is the chromeless Spotlight look</td></tr><tr><td><code>show_logo</code></td><td>bool</td><td><code>true</code></td><td>The Keylane mark</td></tr><tr><td><code>show_title</code></td><td>bool</td><td><code>false</code></td><td>&quot;Keylane / Ask your computer&quot; heading</td></tr><tr><td><code>show_status_chips</code></td><td>bool</td><td><code>true</code></td><td>NPU / worker health chips</td></tr><tr><td><code>show_project_picker</code></td><td>bool</td><td><code>true</code></td><td>Project dropdown and local-only toggle</td></tr><tr><td><code>show_hints</code></td><td>bool</td><td><code>true</code></td><td>Keyboard hint line</td></tr><tr><td><code>show_results</code></td><td>bool</td><td><code>true</code></td><td>The result area</td></tr><tr><td><code>dismiss_on_focus_loss</code></td><td>bool</td><td><code>true</code></td><td>Close when you click away</td></tr><tr><td><code>animation</code></td><td><code>none</code> \</td><td><code>fade</code> \</td><td><code>scale</code> \</td><td><code>slide</code></td><td><code>scale</code></td><td>Entry animation</td></tr><tr><td><code>animation_ms</code></td><td>int</td><td><code>140</code></td><td>Its duration</td></tr><tr><td><code>input_placeholder</code></td><td>string</td><td><code>Ask anything…</code></td><td>Entry placeholder</td></tr><tr><td><code>orb_size</code></td><td>int</td><td><code>72</code></td><td>Diameter of the collapsed orb</td></tr><tr><td><code>font_family</code></td><td>string</td><td><code>&quot;&quot;</code></td><td>Font for the popup; empty uses the system font</td></tr><tr><td><code>font_size</code></td><td>int</td><td><code>15</code></td><td>Base size for the prompt entry. The entry&#x27;s height is derived from it (<code>font_size × 2.2</code>, floor 40px), so this is what sets how tall the bar is.</td></tr></tbody></table></div>
+<p><code>position</code> accepts <code>center</code>, <code>top</code>, <code>bottom</code>, <code>left</code>, <code>right</code>, <code>top-left</code>, <code>top-right</code>, <code>bottom-left</code>, <code>bottom-right</code>.</p>
+<div class="note "><span class="note-title">Note</span><p>Precise positioning needs <code>gtk4-layer-shell</code>, which wlroots compositors (sway, Hyprland) provide. GNOME&#x27;s Mutter has no layer-shell protocol, so there Keylane centres an undecorated window and reproduces <code>offset_y</code> with transparent padding — the bar still floats above centre, but corner anchoring falls back to centred.</p></div>
+<h3>Four shapes, four recipes</h3>
+<p><strong>A Spotlight bar</strong> — the default:</p>
+<span class="code-label">toml</span><pre><code>[popup]
+mode = &quot;bar&quot;
+width = 720
+position = &quot;center&quot;
+offset_y = -150
+corner_radius = 18
+padding = 10
+decorated = false
+show_status_chips = false
+show_project_picker = false
+show_hints = false
+font_size = 20</code></pre>
+<p>That gives a 720 x 64 bar — a 44px entry with 10px of padding either side. Width to height of roughly 11:1 is what makes it read as a search field; much below 6:1 and it starts to look like a dialog. In <code>bar</code> mode the entry is drawn frameless and transparent so the bar itself is the only surface — a bordered box inside a bordered bar is the usual reason a Spotlight clone looks like a form.</p>
+<p><strong>A full assistant window:</strong></p>
+<span class="code-label">toml</span><pre><code>[popup]
+mode = &quot;window&quot;
+width = 880
+height = 640
+decorated = true
+show_title = true
+show_status_chips = true
+show_project_picker = true
+dismiss_on_focus_loss = false</code></pre>
+<p><strong>A corner orb:</strong></p>
+<span class="code-label">toml</span><pre><code>[popup]
+mode = &quot;orb&quot;
+position = &quot;bottom-right&quot;
+offset_x = -32
+offset_y = -32
+orb_size = 64
+width = 420
+show_hints = false</code></pre>
+<p><strong>A top-edge command strip:</strong></p>
+<span class="code-label">toml</span><pre><code>[popup]
+mode = &quot;bar&quot;
+position = &quot;top&quot;
+offset_y = 12
+width = 900
+corner_radius = 0
+opacity = 0.96</code></pre>
+<h2>launcher.css</h2>
+<p>Plain GTK 4 CSS. If you omit it, Keylane generates one from <code>[colors]</code> and <code>[popup]</code>. Ship your own when you want more than colours.</p>
+<p>Use <code>@define-color</code> aliases so the rest of the generated styling still resolves:</p>
+<span class="code-label">css</span><pre><code>@define-color ag_bg #0b1220;
+@define-color ag_surface #121a2b;
+@define-color ag_text #e8eefc;
+@define-color ag_muted #9aa8c7;
+@define-color ag_accent #34d399;
+@define-color ag_border #243047;
+@define-color ag_danger #fb7185;
+
+/* The window itself must stay transparent — the shell paints the surface. */
+window.keylane-popup { background-color: transparent; }
+
+.keylane-shell {
+  background-color: alpha(@ag_bg, 0.94);
+  color: @ag_text;
+  border: 1px solid @ag_border;
+  border-radius: 18px;
+  padding: 10px;
+}
+
+.keylane-prompt {
+  background-color: transparent;
+  border: none;
+  font-size: 20px;
+  caret-color: @ag_accent;
+}
+
+.keylane-orb {
+  background-image: linear-gradient(135deg, @ag_accent, shade(@ag_accent, 0.7));
+  border-radius: 999px;
+}</code></pre>
+<h3>Classes you can style</h3>
+<div class="table-wrap"><table><thead><tr><th>Class</th><th>Element</th></tr></thead><tbody><tr><td><code>window.keylane-popup</code></td><td>The window; keep it transparent</td></tr><tr><td><code>.keylane-shell</code></td><td>The visible container — this is your &quot;popup&quot;</td></tr><tr><td><code>.keylane-card</code></td><td>Inner grouping in panel/window modes</td></tr><tr><td><code>.keylane-prompt</code></td><td>The text entry</td></tr><tr><td><code>.keylane-icon-btn</code></td><td>Microphone and other icon buttons</td></tr><tr><td><code>.keylane-icon-btn.recording</code></td><td>Microphone while dictating</td></tr><tr><td><code>.keylane-send</code></td><td>The send button</td></tr><tr><td><code>.keylane-title</code>, <code>.keylane-subtitle</code></td><td>Header text</td></tr><tr><td><code>.keylane-chip</code>, <code>.keylane-chip.on</code>, <code>.keylane-chip.warn</code></td><td>Status chips</td></tr><tr><td><code>.keylane-result</code>, <code>.keylane-result-view</code></td><td>The result area</td></tr><tr><td><code>.keylane-progress</code></td><td>Progress and result text</td></tr><tr><td><code>.keylane-hint</code></td><td>The keyboard hint line</td></tr><tr><td><code>.keylane-orb</code></td><td>The collapsed orb</td></tr></tbody></table></div>
+<p><code>popup.css</code>, if present, is appended after <code>launcher.css</code> — handy for keeping your overrides separate from generated colours.</p>
+<h2>web.css</h2>
+<p>CSS custom properties consumed by the control panel. The panel derives every other colour it needs from these seven:</p>
+<span class="code-label">css</span><pre><code>:root {
+  --ag-bg: #0b1220;
+  --ag-surface: #121a2b;
+  --ag-text: #e8eefc;
+  --ag-muted: #9aa8c7;
+  --ag-accent: #34d399;
+  --ag-border: #243047;
+  --ag-danger: #fb7185;
+}</code></pre>
+<h2>Testing your theme</h2>
+<span class="code-label">bash</span><pre><code># Install and activate
+curl -F file=@my-theme.zip http://127.0.0.1:9100/api/themes/install
+curl -X PUT http://127.0.0.1:9100/api/themes/active \
+     -H &#x27;Content-Type: application/json&#x27; -d &#x27;{&quot;id&quot;:&quot;aurora&quot;}&#x27;
+
+# Check the shape the gateway resolved
+curl -s http://127.0.0.1:9100/api/themes/active/popup.json</code></pre>
+<p>Then press <kbd>Super</kbd>+<kbd>Space</kbd>. The popup re-reads the active theme every time it opens, so there is nothing to restart.</p>
+<h2>API</h2>
+<span class="code-label">http</span><pre><code>GET    /api/themes                       list, with each theme&#x27;s popup spec
+GET    /api/themes/active                active id + popup spec + colours
+GET    /api/themes/active/popup.json     just the popup spec
+GET    /api/themes/active/launcher.css   GTK CSS, launcher.css + popup.css
+GET    /api/themes/presets               the built-in popup presets
+GET    /theme.css                        control-panel CSS
+PUT    /api/themes/active                {&quot;id&quot;: &quot;aurora&quot;}
+POST   /api/themes/install               multipart zip
+DELETE /api/themes/{id}</code></pre>
+<p>The active id lives in <code>config/themes.toml</code>.</p>
+<h2>Built-in themes</h2>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Mode</th><th>Look</th></tr></thead><tbody><tr><td><code>default</code></td><td>bar</td><td>Light Spotlight bar, blue accent</td></tr><tr><td><code>midnight</code></td><td>bar</td><td>Dark Spotlight bar, cyan accent</td></tr><tr><td><code>panel</code></td><td>panel</td><td>Centred panel with chips and a project picker</td></tr><tr><td><code>paper</code></td><td>panel</td><td>Warm paper light, brick accent</td></tr><tr><td><code>studio</code></td><td>window</td><td>Full dark assistant window, violet accent</td></tr><tr><td><code>orb</code></td><td>orb</td><td>Corner orb, sky accent</td></tr></tbody></table></div>
+<div class="note warn"><span class="note-title">Warning</span><p>Built-in themes regenerate their <code>theme.toml</code> and CSS on every gateway start, so edits to them are overwritten. To customise one, copy its folder to a new id and edit that.</p></div>
+<h2>Guidelines</h2>
+<ul>
+<li>Keep text contrast at WCAG AA or better on both <code>bg</code> and <code>surface</code>.</li>
+<li>Do not reference remote fonts — Keylane is local-first and may be offline.</li>
+</ul>
+<p>Use a system stack, or a font the user has installed.</p>
+<ul>
+<li>Respect <code>animation_ms</code> at 120–200 ms; the popup should feel instant.</li>
+<li>Test at least <code>bar</code> and <code>panel</code>; those are what most people use.</li>
+</ul>
+        <nav class="page-nav"><a href="plugins.html"><span class="dir">Previous</span><span class="name">Writing plugins</span></a><a class="next" href="api.html"><span class="dir">Next</span><span class="name">HTTP API</span></a></nav>
+      </article>
+    </main>
+
+    <aside class="toc" aria-label="On this page"></aside>
+  </div>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

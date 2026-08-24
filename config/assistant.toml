@@ -1,0 +1,43 @@
+# Keylane assistant configuration.
+# Tool policy, delegation, web search and outgoing mail.
+# Secrets may be written as "env:VAR_NAME" to read from the environment.
+
+persona = ""
+
+[tools]
+enabled = true
+allow = []
+deny = []
+confirm_danger_at = "sensitive"
+auto_confirm = []
+max_steps = 6
+
+[shell]
+enabled = true
+allowlist = ["ls", "cat", "head", "tail", "grep", "rg", "find", "wc", "df", "du", "free", "uptime", "date", "whoami", "hostname", "uname", "ps", "systemctl", "journalctl", "git", "python3", "pip", "nmcli", "ip", "lsblk", "sensors", "playerctl", "wpctl", "pactl", "notify-send", "xdg-open", "gio", "flatpak"]
+timeout_seconds = 60
+working_directory = "~"
+
+[search]
+engine = "duckduckgo"
+searxng_url = "http://127.0.0.1:8888"
+max_results = 5
+timeout_seconds = 15
+
+[email]
+enabled = false
+smtp_host = ""
+smtp_port = 587
+use_tls = true
+username = ""
+password = ""
+from_address = ""
+from_name = ""
+allowed_recipients = []
+timeout_seconds = 30
+
+[delegation]
+enabled = true
+follow_up = true
+max_delegations = 2
+prefer = []
