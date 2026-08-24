@@ -30,23 +30,23 @@ to GPU, which works but is not the product's premise.
   GenAI's LLM pipeline. The router emits one small JSON object; it does not need
   a full chat pipeline, and a plain IR compile is far more likely to load.
 
-## 2. Model downloads are opaque and fragile
+## 2. Model downloads are still fragile
 
-**The problem.** A download reports 5% and 0 bytes for its entire life, so a
-stall is indistinguishable from progress — that is exactly what made a
-half-finished model look like a broken NPU for an hour. Nothing resumes
-automatically, and a job whose thread dies stays "running" forever.
+**Fixed since v0.2-beta.** Progress is real — the destination is polled against
+the expected size of the files actually being fetched — and GGUF downloads take
+exactly one quantisation rather than every variant in the repository.
+Recommendations have working Download buttons, and chat models land in LM
+Studio's own directory so it can see them.
 
-**What to do.**
+**Still missing.**
 
-- Real progress: poll the destination size against the expected total from
-  `HfApi.model_info(files_metadata=True)`.
-- A watchdog that marks a job failed when its worker is gone, and a **Resume**
-  button — `huggingface_hub` already resumes from the `.incomplete` file, so
-  this is UI, not plumbing.
-- Verify after download: check the `.bin` sizes against the manifest before
-  declaring success.
-- Free-space check before starting. A 9B model on a full disk fails late and
+- A watchdog that marks a job failed when its worker thread is gone. One that
+  dies still reads "running" forever.
+- A **Resume** button. `huggingface_hub` already resumes from the
+  `.incomplete` file, so this is UI, not plumbing.
+- Verify after download: check file sizes against the manifest before
+  declaring success, rather than finding out at load time.
+- A free-space check before starting. A 9B model on a full disk fails late and
   confusingly.
 
 ## 3. The assistant needs a bigger model to be reliable

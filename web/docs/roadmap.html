@@ -51,23 +51,23 @@
 <li>Consider <strong>OpenVINO plain <code>Core.compile_model</code></strong> for the router instead of</li>
 </ul>
 <p>GenAI&#x27;s LLM pipeline. The router emits one small JSON object; it does not need a full chat pipeline, and a plain IR compile is far more likely to load.</p>
-<h2>2. Model downloads are opaque and fragile</h2>
-<p><strong>The problem.</strong> A download reports 5% and 0 bytes for its entire life, so a stall is indistinguishable from progress — that is exactly what made a half-finished model look like a broken NPU for an hour. Nothing resumes automatically, and a job whose thread dies stays &quot;running&quot; forever.</p>
-<p><strong>What to do.</strong></p>
+<h2>2. Model downloads are still fragile</h2>
+<p><strong>Fixed since v0.2-beta.</strong> Progress is real — the destination is polled against the expected size of the files actually being fetched — and GGUF downloads take exactly one quantisation rather than every variant in the repository. Recommendations have working Download buttons, and chat models land in LM Studio&#x27;s own directory so it can see them.</p>
+<p><strong>Still missing.</strong></p>
 <ul>
-<li>Real progress: poll the destination size against the expected total from</li>
+<li>A watchdog that marks a job failed when its worker thread is gone. One that</li>
 </ul>
-<p><code>HfApi.model_info(files_metadata=True)</code>.</p>
+<p>dies still reads &quot;running&quot; forever.</p>
 <ul>
-<li>A watchdog that marks a job failed when its worker is gone, and a <strong>Resume</strong></li>
+<li>A <strong>Resume</strong> button. <code>huggingface_hub</code> already resumes from the</li>
 </ul>
-<p>button — <code>huggingface_hub</code> already resumes from the <code>.incomplete</code> file, so this is UI, not plumbing.</p>
+<p><code>.incomplete</code> file, so this is UI, not plumbing.</p>
 <ul>
-<li>Verify after download: check the <code>.bin</code> sizes against the manifest before</li>
+<li>Verify after download: check file sizes against the manifest before</li>
 </ul>
-<p>declaring success.</p>
+<p>declaring success, rather than finding out at load time.</p>
 <ul>
-<li>Free-space check before starting. A 9B model on a full disk fails late and</li>
+<li>A free-space check before starting. A 9B model on a full disk fails late and</li>
 </ul>
 <p>confusingly.</p>
 <h2>3. The assistant needs a bigger model to be reliable</h2>

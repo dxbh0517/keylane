@@ -1286,8 +1286,14 @@ function fillSelect(sel, items, selected, valueKey = "id", labelFn = null, empty
   else sel.selectedIndex = 0;
 }
 
+function repoFromUrl(url) {
+  const match = String(url || "").match(/huggingface\.co\/([^/]+\/[^/?#]+)/);
+  return match ? match[1] : "";
+}
+
 function recCard(item, kind) {
   const ready = kind === "router" ? !!item.installed : !!item.available;
+  const repo = repoFromUrl(item.hf_url);
   const badge = ready
     ? `<span class="badge ok">downloaded</span>`
     : item.recommended
@@ -1296,16 +1302,31 @@ function recCard(item, kind) {
   const link = item.hf_url
     ? `<a class="muted hint" href="${esc(item.hf_url)}" target="_blank" rel="noopener">Hugging Face</a>`
     : "";
-  const useBtn = ready
-    ? `<button type="button" class="btn ghost small use-rec" data-kind="${kind}" data-id="${esc(item.id)}">Use</button>`
-    : `<button type="button" class="btn ghost small" disabled title="Download this model first">Not downloaded</button>`;
-  return `<article class="rec-card ${ready ? "is-rec" : ""}">
+
+  // The button says what it will actually do. A dead "Not downloaded" told
+  // the user the problem and gave them no way to fix it.
+  let action;
+  if (ready) {
+    action = `<button type="button" class="btn ghost small use-rec" data-kind="${kind}" data-id="${esc(item.id)}">Use</button>`;
+  } else if (item.gated) {
+    action = `<a class="btn ghost small" href="${esc(item.hf_url)}" target="_blank" rel="noopener"
+                 title="This repository needs its licence accepted on Hugging Face first">Get access</a>`;
+  } else if (repo) {
+    action = `<button type="button" class="btn primary small rec-download"
+                data-repo="${esc(repo)}" data-target="${kind === "router" ? "router" : "chat"}"
+                data-id="${esc(item.id)}">Download</button>`;
+  } else {
+    action = `<button type="button" class="btn ghost small" disabled
+                title="No download source for this model">Load it in LM Studio</button>`;
+  }
+
+  return `<article class="rec-card ${ready ? "is-rec" : ""}" data-rec="${esc(item.id)}">
     <div class="row between"><strong>${esc(item.name)}</strong>${badge}</div>
     <p class="muted meta">${esc(item.size_hint || "")} ${item.quant ? `· ${esc(item.quant)}` : ""}</p>
     <p class="notes">${esc(item.notes || item.reason || "")}</p>
     <div class="row between actions">
       <span class="muted reason">${esc(item.reason || "")}</span>
-      <div class="row">${link}${useBtn}</div>
+      <div class="row">${link}${action}</div>
     </div>
   </article>`;
 }
@@ -1668,6 +1689,30 @@ $("#hf-search-form")?.addEventListener("submit", async (e) => {
     toast(err.message || "Search failed");
   } finally {
     btn.disabled = false;
+  }
+});
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".rec-download");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = "Starting…";
+  try {
+    const job = await api("/api/models/hf/download", {
+      method: "POST",
+      body: JSON.stringify({ repo_id: btn.dataset.repo, target: btn.dataset.target }),
+    });
+    toast(
+      btn.dataset.target === "chat"
+        ? `Downloading ${job.repo_id} into LM Studio`
+        : `Downloading ${job.repo_id}`
+    );
+    setTab("models");
+    await refreshHfJobs();
+  } catch (err) {
+    toast(err.message || "Download failed to start");
+    btn.disabled = false;
+    btn.textContent = "Download";
   }
 });
 

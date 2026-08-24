@@ -738,3 +738,51 @@ def test_state_colours_are_distinguishable():
         for b in values[i + 1 :]:
             distance = sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
             assert distance > 0.12, f"{a} and {b} are too close to tell apart"
+
+
+# ------------------------------------------------------ gguf quant choice
+
+from app.hardware import HardwareProfile  # noqa: E402
+from app.hf_hub import _gguf_allow_patterns  # noqa: E402
+
+_REPO = [
+    "Model-Q2_K.gguf",
+    "Model-Q4_K_M.gguf",
+    "Model-Q5_K_M.gguf",
+    "Model-Q8_0.gguf",
+    "mmproj-F16.gguf",
+    "README.md",
+]
+
+
+def _hw(vram: int) -> HardwareProfile:
+    profile = HardwareProfile()
+    profile.nvidia_vram_mb = vram
+    return profile
+
+
+@pytest.mark.parametrize(
+    "vram,expected",
+    [(24000, "Model-Q5_K_M.gguf"), (12000, "Model-Q4_K_M.gguf"), (4000, "Model-Q2_K.gguf")],
+)
+def test_one_quant_is_chosen_for_the_hardware(vram, expected):
+    patterns = _gguf_allow_patterns(_hw(vram), None, _REPO)
+    weights = [p for p in patterns if p.endswith(".gguf") and "mmproj" not in p]
+    # Passing several globs downloads several copies of the same model.
+    assert weights == [expected]
+
+
+def test_the_projector_travels_with_its_model():
+    patterns = _gguf_allow_patterns(_hw(24000), None, _REPO)
+    assert "mmproj-F16.gguf" in patterns
+
+
+def test_an_explicit_filename_wins():
+    patterns = _gguf_allow_patterns(_hw(24000), "Model-Q8_0.gguf", _REPO)
+    assert patterns[0] == "Model-Q8_0.gguf"
+
+
+def test_without_a_listing_it_still_picks_one_pattern():
+    patterns = _gguf_allow_patterns(_hw(24000), None, None)
+    globs = [p for p in patterns if p.endswith(".gguf")]
+    assert len(globs) == 1

@@ -100,13 +100,15 @@ curl -s http://127.0.0.1:9100/api/status | python -m json.tool</code></pre>
 <p><code>&quot;npu&quot;: true</code> with <code>&quot;openvino_devices&quot;: [&quot;CPU&quot;, &quot;GPU&quot;, &quot;NPU&quot;]</code> means you are set. Anything else, the <code>npu_detail</code> field says exactly what is missing.</p>
 <h2>Download a router model</h2>
 <p>Until an OpenVINO export is loaded, the assistant recognises only a handful of obvious requests. To get the real plan–act–verify loop:</p>
-<p><strong>Control panel → Models → Search Hugging Face</strong>, target <strong>Router</strong>. Search for something like <code>qwen2.5 1.5b instruct int4 openvino</code>. Pick a result marked</p>
-<p><em>compatible</em>, download it, then choose it under <strong>Router model</strong> and press</p>
-<p><strong>Save</strong>, then <strong>Reload models now</strong>.</p>
+<p><strong>Control panel → Models</strong>. The <em>Recommended for your hardware</em> list has a</p>
+<p><strong>Download</strong> button on anything you do not already have — it fetches straight into the right folder and shows live progress. Then choose it under <strong>Router model</strong>, press <strong>Save</strong>, and <strong>Reload models now</strong>.</p>
+<p>Some repositories are marked <strong>Get access</strong> instead: those are gated on Hugging Face and need their licence accepted on the model page first. A download button there would only return a 401.</p>
+<p>For anything not on the list, use <strong>Search Hugging Face</strong> with target</p>
+<p><strong>Router</strong> — something like <code>qwen2.5 1.5b instruct int4 openvino</code>.</p>
 <p>An INT4 OpenVINO export of a 1.5B–3B instruct model is the sweet spot: small enough for the NPU to run in well under a second, capable enough to plan.</p>
 <h2>Connect your AI tools</h2>
 <p>Everything is a <a href="plugins.html">plugin</a>, and each one is optional.</p>
-<div class="table-wrap"><table><thead><tr><th>Tool</th><th>How to make it work</th></tr></thead><tbody><tr><td><strong>LM Studio</strong></td><td>Start the local server; Keylane finds it on <code>127.0.0.1:1234</code></td></tr><tr><td><strong>Lemonade</strong></td><td>Start Lemonade Server; default <code>127.0.0.1:13305</code></td></tr><tr><td><strong>Claude Code</strong></td><td><code>npm i -g @anthropic-ai/claude-code</code>, then <code>claude</code> once to sign in</td></tr><tr><td><strong>Cursor</strong></td><td>Install the Cursor Agent CLI and sign in</td></tr><tr><td><strong>ComfyUI</strong></td><td><code>pip install &quot;comfy-cli&gt;=1.14.0&quot; comfy-mcp</code>, <code>comfy install</code>, <code>comfy launch</code></td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>Tool</th><th>How to make it work</th></tr></thead><tbody><tr><td><strong>LM Studio</strong></td><td>Start the local server; Keylane finds it on <code>127.0.0.1:1234</code>. Chat models downloaded from the Models tab land in LM Studio&#x27;s own folder, so they appear there without extra setup.</td></tr><tr><td><strong>Lemonade</strong></td><td>Start Lemonade Server; default <code>127.0.0.1:13305</code></td></tr><tr><td><strong>Claude Code</strong></td><td><code>npm i -g @anthropic-ai/claude-code</code>, then <code>claude</code> once to sign in</td></tr><tr><td><strong>Cursor</strong></td><td>Install the Cursor Agent CLI and sign in</td></tr><tr><td><strong>ComfyUI</strong></td><td><code>pip install &quot;comfy-cli&gt;=1.14.0&quot; comfy-mcp</code>, <code>comfy install</code>, <code>comfy launch</code></td></tr></tbody></table></div>
 <p>Check <strong>Status</strong> — each one turns green when Keylane can reach it. Anything you do not use, disable on the <strong>Plugins</strong> tab.</p>
 <h2>Set the project sandbox</h2>
 <p>Coding workers and the file tools can only touch directories you list. Under</p>

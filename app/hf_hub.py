@@ -109,13 +109,38 @@ def _hf_token() -> str | None:
     return os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 
 
+# LM Studio scans its own directory, laid out <publisher>/<repo>/*.gguf. A
+# GGUF anywhere else is invisible to it, so chat models go there rather than
+# into Keylane's tree where nothing could load them.
+LMSTUDIO_MODEL_DIRS = [
+    Path.home() / ".lmstudio" / "models",
+    Path.home() / ".cache" / "lm-studio" / "models",
+]
+
+
+def lmstudio_models_dir() -> Path | None:
+    for directory in LMSTUDIO_MODEL_DIRS:
+        if directory.is_dir():
+            return directory
+    return None
+
+
 def target_dir(target: Target, repo_id: str) -> Path:
     meta = TARGET_META[target]
     slug = re.sub(r"[^A-Za-z0-9._+-]+", "_", repo_id.replace("/", "__"))
     base = ROOT / meta["folder"]
     if target == "comfy":
         return base / "diffusion_models" / slug
+    if target == "chat":
+        lmstudio = lmstudio_models_dir()
+        if lmstudio is not None and "/" in repo_id:
+            publisher, name = repo_id.split("/", 1)
+            return lmstudio / _safe(publisher) / _safe(name)
     return base / slug
+
+
+def _safe(part: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._+-]+", "_", part)
 
 
 def _parse_param_b(text: str) -> float | None:
@@ -240,17 +265,61 @@ def _score_comfy(repo_id: str, tags: list[str], hw: HardwareProfile) -> tuple[in
     return score, ", ".join(reasons) or "compatible"
 
 
-def _gguf_allow_patterns(hw: HardwareProfile, filename: str | None) -> list[str]:
-    if filename:
-        return [filename, "*.md", "*.json", "LICENSE*"]
+def _quant_preferences(hw: HardwareProfile) -> list[str]:
+    """Quantisations to prefer, best first, for this machine's VRAM."""
     vram = hw.nvidia_vram_mb or 0
     if vram >= 20000:
-        prefs = ["*Q5_K_M*.gguf", "*Q5_K_S*.gguf", "*Q4_K_M*.gguf", "*Q6_K*.gguf"]
-    elif vram >= 10000:
-        prefs = ["*Q4_K_M*.gguf", "*Q4_K_S*.gguf", "*Q5_K_M*.gguf", "*Q3_K_M*.gguf"]
-    else:
-        prefs = ["*Q4_K_S*.gguf", "*Q3_K_M*.gguf", "*Q4_0*.gguf", "*Q2_K*.gguf", "*IQ4*.gguf"]
-    return prefs + ["*.md", "*.json", "LICENSE*", "config.json"]
+        return ["Q5_K_M", "Q5_K_S", "Q4_K_M", "Q6_K"]
+    if vram >= 10000:
+        return ["Q4_K_M", "Q4_K_S", "Q5_K_M", "Q3_K_M"]
+    return ["Q4_K_S", "Q3_K_M", "Q4_0", "Q2_K", "IQ4"]
+
+
+def _gguf_allow_patterns(
+    hw: HardwareProfile, filename: str | None, repo_files: list[str] | None = None
+) -> list[str]:
+    """Which files to fetch — exactly one weight file, plus metadata.
+
+    Passing several quant globs downloads several copies of the same model.
+    When the repository listing is available the best *available* quant is
+    picked and everything else is left behind.
+    """
+    metadata = ["*.md", "*.json", "LICENSE*"]
+    if filename:
+        return [filename, *metadata]
+
+    prefs = _quant_preferences(hw)
+    if repo_files:
+        ggufs = [f for f in repo_files if f.lower().endswith(".gguf")]
+        # A projector file belongs with its model, so keep any mmproj.
+        projectors = [f for f in ggufs if "mmproj" in f.lower()]
+        for quant in prefs:
+            match = next(
+                (f for f in ggufs if quant.lower() in f.lower() and "mmproj" not in f.lower()),
+                None,
+            )
+            if match:
+                return [match, *projectors, *metadata]
+        # No preferred quant in this repo: take the smallest weight file.
+        weights = [f for f in ggufs if "mmproj" not in f.lower()]
+        if weights:
+            return [sorted(weights, key=len)[0], *projectors, *metadata]
+
+    # No listing available; fall back to the single best pattern.
+    return [f"*{prefs[0]}*.gguf", *metadata]
+
+
+def _repo_files(repo_id: str, token: str | None) -> list[str]:
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(repo_id, token=token)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Could not list %s: %s", repo_id, exc)
+        return []
+    return [
+        str(getattr(s, "rfilename", "")) for s in (getattr(info, "siblings", None) or [])
+    ]
 
 
 async def search_models(
@@ -380,6 +449,51 @@ def start_download(req: HfDownloadRequest) -> dict[str, Any]:
     return job.to_dict()
 
 
+def _dir_size(path: Path) -> int:
+    """Bytes on disk, including partial files still being written."""
+    total = 0
+    try:
+        for entry in path.rglob("*"):
+            if entry.is_file():
+                try:
+                    total += entry.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return 0
+    return total
+
+
+def _expected_size(
+    repo_id: str, token: str | None, patterns: list[str] | None = None
+) -> int:
+    """Size of the files this download will actually fetch.
+
+    Counting the whole repository makes the percentage meaningless for a GGUF
+    repo holding a dozen quantisations of the same model.
+    """
+    import fnmatch
+
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(repo_id, files_metadata=True, token=token)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Could not size %s: %s", repo_id, exc)
+        return 0
+
+    total = 0
+    for sibling in getattr(info, "siblings", None) or []:
+        size = getattr(sibling, "size", None)
+        if not isinstance(size, int):
+            continue
+        name = str(getattr(sibling, "rfilename", ""))
+        if patterns and not any(fnmatch.fnmatch(name, p) for p in patterns):
+            continue
+        total += size
+    return total
+
+
 def _run_download(
     job_id: str,
     repo_id: str,
@@ -413,6 +527,37 @@ def _run_download(
 
         progress(0.05, f"Fetching {repo_id}…")
 
+        # snapshot_download gives no callback, so watch the destination grow.
+        # Reporting 5% and 0 bytes for the whole download makes a stall look
+        # exactly like progress — which is how a half-finished model once
+        # looked like a broken NPU.
+        listing = _repo_files(repo_id, token) if target == "chat" else []
+        size_patterns = (
+            _gguf_allow_patterns(hw, filename, listing) if target == "chat" else None
+        )
+        expected = _expected_size(repo_id, token, size_patterns)
+        watcher_stop = threading.Event()
+
+        def watch() -> None:
+            while not watcher_stop.wait(1.5):
+                fetched = _dir_size(dest)
+                with _jobs_lock:
+                    job = _jobs.get(job_id)
+                    if job is None or job.status != "running":
+                        return
+                    job.bytes_downloaded = fetched
+                    if expected:
+                        # Cap below 1.0: completion is declared by the worker.
+                        job.progress = min(0.05 + 0.9 * fetched / expected, 0.95)
+                        job.message = (
+                            f"{fetched / 1e6:.0f} of {expected / 1e6:.0f} MB"
+                        )
+                    else:
+                        job.message = f"{fetched / 1e6:.0f} MB fetched"
+
+        watcher = threading.Thread(target=watch, daemon=True, name=f"hf-watch-{job_id}")
+        watcher.start()
+
         if target == "chat" and filename:
             saved = hf_hub_download(
                 repo_id=repo_id,
@@ -423,7 +568,7 @@ def _run_download(
             progress(0.95, f"Saved {filename}")
             local_path = Path(saved).parent
         elif target == "chat":
-            patterns = _gguf_allow_patterns(hw, None)
+            patterns = _gguf_allow_patterns(hw, None, listing)
             try:
                 local_path = Path(
                     snapshot_download(
@@ -472,6 +617,8 @@ def _run_download(
             )
             progress(0.95, "ComfyUI assets download complete")
 
+        watcher_stop.set()
+
         total = 0
         for path in Path(local_path).rglob("*"):
             if path.is_file():
@@ -498,6 +645,10 @@ def _run_download(
             _maybe_set_router_path(rel)
 
     except Exception as exc:
+        try:
+            watcher_stop.set()
+        except NameError:
+            pass
         logger.exception("HF download failed for %s", repo_id)
         with _jobs_lock:
             job = _jobs[job_id]

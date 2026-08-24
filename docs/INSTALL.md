@@ -158,10 +158,17 @@ Anything else, the `npu_detail` field says exactly what is missing.
 Until an OpenVINO export is loaded, the assistant recognises only a handful of
 obvious requests. To get the real plan–act–verify loop:
 
-**Control panel → Models → Search Hugging Face**, target **Router**. Search for
-something like `qwen2.5 1.5b instruct int4 openvino`. Pick a result marked
-*compatible*, download it, then choose it under **Router model** and press
-**Save**, then **Reload models now**.
+**Control panel → Models**. The *Recommended for your hardware* list has a
+**Download** button on anything you do not already have — it fetches straight
+into the right folder and shows live progress. Then choose it under **Router
+model**, press **Save**, and **Reload models now**.
+
+Some repositories are marked **Get access** instead: those are gated on Hugging
+Face and need their licence accepted on the model page first. A download button
+there would only return a 401.
+
+For anything not on the list, use **Search Hugging Face** with target
+**Router** — something like `qwen2.5 1.5b instruct int4 openvino`.
 
 An INT4 OpenVINO export of a 1.5B–3B instruct model is the sweet spot: small
 enough for the NPU to run in well under a second, capable enough to plan.
@@ -172,7 +179,7 @@ Everything is a [plugin](PLUGINS.md), and each one is optional.
 
 | Tool | How to make it work |
 | --- | --- |
-| **LM Studio** | Start the local server; Keylane finds it on `127.0.0.1:1234` |
+| **LM Studio** | Start the local server; Keylane finds it on `127.0.0.1:1234`. Chat models downloaded from the Models tab land in LM Studio's own folder, so they appear there without extra setup. |
 | **Lemonade** | Start Lemonade Server; default `127.0.0.1:13305` |
 | **Claude Code** | `npm i -g @anthropic-ai/claude-code`, then `claude` once to sign in |
 | **Cursor** | Install the Cursor Agent CLI and sign in |

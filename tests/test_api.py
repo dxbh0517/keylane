@@ -314,3 +314,52 @@ def test_projects_reject_paths_outside_the_sandbox(client):
         assert result["rejected"] and "outside" in result["rejected"][0]["reason"].lower()
     finally:
         client.put("/api/projects", json={"projects": original})
+
+
+# ---------------------------------------------- recommended model downloads
+
+
+def test_every_recommendation_offers_an_action(client):
+    """No card may be a dead end.
+
+    A recommendation must be usable: already installed, downloadable, or
+    explicitly gated with a link. "Not downloaded" with no way forward is the
+    bug this guards.
+    """
+    import re
+
+    data = client.get("/api/models").json()
+    recommendations = data.get("recommendations") or {}
+    seen = 0
+    for kind in ("router", "chat"):
+        for model in recommendations.get(kind) or []:
+            seen += 1
+            installed = model.get("installed") or model.get("available")
+            repo = re.search(r"huggingface\.co/([^/]+/[^/?#]+)", model.get("hf_url") or "")
+            assert installed or repo or model.get("gated"), (
+                f"{model['id']} offers no action: not installed, no repo, not gated"
+            )
+    assert seen, "no recommendations to check"
+
+
+def test_gated_models_are_marked_rather_than_offered(client):
+    data = client.get("/api/models").json()
+    router = (data.get("recommendations") or {}).get("router") or []
+    gated = [m for m in router if m.get("gated")]
+    # These repositories 401 without an accepted licence; a download button
+    # would fail with no explanation.
+    for model in gated:
+        assert model.get("hf_url"), f"{model['id']} is gated but has nowhere to send the user"
+
+
+def test_chat_downloads_target_lm_studio(client):
+    from app.hf_hub import lmstudio_models_dir, target_dir
+
+    destination = target_dir("chat", "lmstudio-community/Some-Model-GGUF")
+    lmstudio = lmstudio_models_dir()
+    if lmstudio is None:
+        return  # no LM Studio on this machine; the fallback path is fine
+    # LM Studio only scans its own tree, laid out publisher/repo.
+    assert str(destination).startswith(str(lmstudio))
+    assert destination.name == "Some-Model-GGUF"
+    assert destination.parent.name == "lmstudio-community"

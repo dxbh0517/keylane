@@ -26,6 +26,12 @@ class CatalogModel:
     needs_gpu: bool = False
     path_hint: str = ""
     hf_url: str = ""
+    gated: bool = False
+    """The repository needs a licence accepted on Hugging Face first.
+
+    Offering a download button for one of these gets a 401 and no
+    explanation, so the panel links to the model page instead.
+    """
     notes: str = ""
     tags: list[str] = field(default_factory=list)
 
@@ -54,6 +60,7 @@ ROUTER_MODELS: list[CatalogModel] = [
         quant="INT4",
         path_hint="./models/router/llama-3.2-1b-instruct-int4",
         hf_url="https://huggingface.co/OpenVINO/Llama-3.2-1B-Instruct-int4-ov",
+        gated=True,
         notes="Ultra-light router for lowest latency on NPU.",
         tags=["npu", "fast"],
     ),
@@ -66,6 +73,7 @@ ROUTER_MODELS: list[CatalogModel] = [
         quant="INT4",
         path_hint="./models/router/llama-3.2-3b-instruct-int4",
         hf_url="https://huggingface.co/OpenVINO/Llama-3.2-3B-Instruct-int4-ov",
+        gated=True,
         notes="Higher-quality routing/verification when NPU has headroom.",
         tags=["npu", "quality"],
     ),
@@ -90,6 +98,7 @@ ROUTER_MODELS: list[CatalogModel] = [
         quant="INT4",
         path_hint="./models/router/qwen2.5-3b-instruct-int4",
         hf_url="https://huggingface.co/OpenVINO/Qwen2.5-3B-Instruct-int4-ov",
+        gated=True,
         notes="Good NPU/GPU OpenVINO option if 1.5B is too weak.",
         tags=["npu", "gpu"],
     ),
@@ -105,6 +114,7 @@ CHAT_MODELS: list[CatalogModel] = [
         quant="Q4_K_M",
         min_vram_mb=10000,
         needs_gpu=True,
+        hf_url="https://huggingface.co/lmstudio-community/Qwen2.5-Coder-14B-Instruct-GGUF",
         notes="Excellent local coding model for RTX-class GPUs.",
         tags=["coding", "recommended"],
     ),
@@ -117,6 +127,7 @@ CHAT_MODELS: list[CatalogModel] = [
         quant="Q4_K_M",
         min_vram_mb=18000,
         needs_gpu=True,
+        hf_url="https://huggingface.co/lmstudio-community/Qwen2.5-32B-Instruct-GGUF",
         notes="High-quality general chat on 20GB+ VRAM.",
         tags=["chat", "quality"],
     ),
@@ -129,6 +140,7 @@ CHAT_MODELS: list[CatalogModel] = [
         quant="Q3_K_M / Q4_K_S",
         min_vram_mb=20000,
         needs_gpu=True,
+        hf_url="https://huggingface.co/lmstudio-community/Meta-Llama-3.1-70B-Instruct-GGUF",
         notes="Fits a 24GB laptop GPU at aggressive quant — flagship local chat.",
         tags=["chat", "flagship", "recommended"],
     ),
@@ -141,6 +153,7 @@ CHAT_MODELS: list[CatalogModel] = [
         quant="Q4_K_M",
         min_vram_mb=10000,
         needs_gpu=True,
+        hf_url="https://huggingface.co/lmstudio-community/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
         notes="Strong coding specialist; good LM Studio companion.",
         tags=["coding"],
     ),
@@ -153,6 +166,7 @@ CHAT_MODELS: list[CatalogModel] = [
         quant="Q4_K_M",
         min_vram_mb=12000,
         needs_gpu=True,
+        hf_url="https://huggingface.co/lmstudio-community/Mistral-Small-3.1-24B-Instruct-2503-GGUF",
         notes="Balanced speed/quality general assistant.",
         tags=["chat"],
     ),
@@ -165,6 +179,7 @@ CHAT_MODELS: list[CatalogModel] = [
         quant="Q4_K_M",
         min_vram_mb=9000,
         needs_gpu=True,
+        hf_url="https://huggingface.co/lmstudio-community/gemma-3-12b-it-GGUF",
         notes="Fast mid-size chat model for everyday use.",
         tags=["chat", "fast"],
     ),
@@ -176,6 +191,7 @@ CHAT_MODELS: list[CatalogModel] = [
         size_hint="~4–5 GB Q4 / INT4",
         quant="Q4 / INT4",
         min_vram_mb=5000,
+        hf_url="https://huggingface.co/lmstudio-community/Qwen2.5-7B-Instruct-GGUF",
         notes="Works on lighter GPUs; OpenVINO INT4 can also run on Intel GPU.",
         tags=["chat", "light"],
     ),
