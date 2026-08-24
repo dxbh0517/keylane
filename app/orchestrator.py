@@ -330,9 +330,12 @@ class GatewayOrchestrator:
     @staticmethod
     def _worker_canvas(task: TaskRecord, decision: RouteDecision) -> dict[str, Any]:
         """Wrap a worker's output so it renders like an assistant answer."""
-        from app.canvas import Block, Link, canvas_from_text
+        from app.canvas import Block, Link
+        from app.canvas_build import markdown_to_canvas
 
-        canvas = canvas_from_text(
+        # Workers answer in prose and markdown, so parse it into blocks rather
+        # than showing the raw characters.
+        canvas = markdown_to_canvas(
             task.result or "", source=f"via {decision.worker}"
         )
         evidence = task.evidence

@@ -472,18 +472,65 @@ class AssistantService:
         get a readable result — so prose is wrapped in a minimal canvas rather
         than shown raw.
         """
-        from app.canvas import canvas_from_text, parse_canvas
+        from app.canvas import parse_canvas
+        from app.canvas_build import markdown_to_canvas, output_to_canvas
 
+        # 1. The model emitted a canvas outright — best case, rare in practice.
         canvas = parse_canvas(decision.get("canvas"))
-        if canvas is None:
-            answer = str(decision.get("answer") or decision.get("text") or "").strip()
+
+        answer = str(decision.get("answer") or decision.get("text") or "").strip()
+        if canvas is None and answer:
+            # 2. A canvas hiding inside the answer string.
             canvas = parse_canvas(answer)
-            if canvas is None:
-                answer = answer or self._summarize(steps)
-                canvas = canvas_from_text(answer)
-        return (canvas.model_dump() if canvas else None), (
-            canvas.to_text() if canvas else self._summarize(steps)
+        if canvas is None and answer:
+            # 3. Prose or markdown: parse it into real blocks rather than
+            #    showing "## Heading" and "|---|" as literal characters.
+            canvas = markdown_to_canvas(answer)
+
+        if canvas is None or canvas.is_empty():
+            # 4. No usable answer, so build one from what the tools produced.
+            #    A 1.5B model often will not finalise at all, and raw command
+            #    output is far more useful laid out than dumped as text.
+            canvas = self._canvas_from_steps(steps)
+
+        if canvas is None or canvas.is_empty():
+            return None, self._summarize(steps)
+        return canvas.model_dump(), canvas.to_text()
+
+    @staticmethod
+    def _canvas_from_steps(steps: list[AssistantStep]) -> Any:
+        """Derive a canvas from the tool results, deterministically."""
+        from app.canvas import Block, Canvas
+        from app.canvas_build import markdown_to_canvas, output_to_canvas
+
+        useful = [s for s in steps if s.ok and s.observation.strip()]
+        if not useful:
+            failed = [s for s in steps if not s.ok and s.observation.strip()]
+            if not failed:
+                return None
+            last = failed[-1]
+            return Canvas(
+                blocks=[Block(type="note", style="danger", text=last.observation[:600])],
+                source=f"via {last.tool}",
+            ).cleaned()
+
+        last = useful[-1]
+        command = " ".join(
+            str(part) for part in (
+                last.arguments.get("command", ""),
+                *(last.arguments.get("args") or []),
+            ) if part
         )
+
+        if last.tool == "run_command":
+            return output_to_canvas(
+                last.observation, command=command, source=f"via {command or last.tool}"
+            )
+        if last.tool == "delegate_to_worker":
+            return markdown_to_canvas(
+                last.observation, source=f"via {last.delegated_to or 'worker'}"
+            )
+        return markdown_to_canvas(last.observation, source=f"via {last.tool}")
 
     @staticmethod
     def _summarize(steps: list[AssistantStep]) -> str:

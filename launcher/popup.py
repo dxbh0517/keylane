@@ -115,6 +115,7 @@ class KeylanePopup(Gtk.ApplicationWindow):
         self._layer_shell_active = False
         self._orb_expanded = False
         self._closing = False
+        self._skills: list[dict[str, Any]] = []
         self._recording = False
         self._audio_stop: threading.Event | None = None
         self._audio_thread: threading.Thread | None = None
@@ -244,6 +245,8 @@ class KeylanePopup(Gtk.ApplicationWindow):
 
         self.progress = None  # type: ignore[assignment]
         self._result_scroller = None
+        shell.append(self._build_skill_menu())
+
         if spec.show_results:
             shell.append(self._build_result_area())
 
@@ -413,6 +416,7 @@ class KeylanePopup(Gtk.ApplicationWindow):
         self.entry.add_css_class("keylane-prompt")
         self.entry.set_has_frame(spec.mode != "bar")
         self.entry.connect("activate", self._on_send)
+        self.entry.connect("changed", self._on_entry_changed)
         row.append(self.entry)
 
         # A toggle: press to start dictating, press again to stop.
@@ -424,6 +428,20 @@ class KeylanePopup(Gtk.ApplicationWindow):
         self.mic_btn.connect("toggled", self._on_mic_toggled)
         row.append(self.mic_btn)
 
+        # A quiet chip showing which device the control plane is on, and a
+        # menu to change it. Deliberately understated: it is status, not a
+        # control you are meant to reach for.
+        self.device_btn = Gtk.MenuButton()
+        self.device_btn.add_css_class("keylane-device-chip")
+        self.device_btn.set_valign(Gtk.Align.CENTER)
+        self.device_btn.set_tooltip_text("Compute device")
+        self.device_btn.set_popover(self._build_device_popover())
+        self._device_label = Gtk.Label(label="…")
+        self._device_label.add_css_class("keylane-device-text")
+        self.device_btn.set_child(self._device_label)
+        row.append(self.device_btn)
+        self._refresh_devices()
+
         if spec.mode != "bar":
             self.send_btn = Gtk.Button(label="Send")
             self.send_btn.add_css_class("suggested-action")
@@ -434,6 +452,126 @@ class KeylanePopup(Gtk.ApplicationWindow):
         else:
             self.send_btn = None  # type: ignore[assignment]
         return row
+
+    def _build_device_popover(self) -> Gtk.Popover:
+        popover = Gtk.Popover()
+        popover.add_css_class("keylane-device-menu")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.set_margin_top(8)
+        box.set_margin_bottom(8)
+        box.set_margin_start(8)
+        box.set_margin_end(8)
+
+        heading = Gtk.Label(label="Run the control plane on")
+        heading.add_css_class("keylane-subtitle")
+        heading.set_xalign(0.0)
+        box.append(heading)
+
+        self._device_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.append(self._device_box)
+
+        self._device_note = Gtk.Label(label="")
+        self._device_note.add_css_class("keylane-hint")
+        self._device_note.set_xalign(0.0)
+        self._device_note.set_wrap(True)
+        self._device_note.set_max_width_chars(34)
+        box.append(self._device_note)
+
+        popover.set_child(box)
+        popover.connect("show", lambda *_: self._refresh_devices())
+        return popover
+
+    # Preference -> the label people actually use for it.
+    DEVICE_LABELS = {
+        "auto": "Auto",
+        "npu": "NPU",
+        "gpu": "GPU",
+        "cpu": "CPU",
+    }
+
+    def _refresh_devices(self) -> None:
+        def work() -> None:
+            data = self.client.devices()
+            GLib.idle_add(self._apply_devices, data)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_devices(self, data: dict[str, Any]) -> bool:
+        active = data.get("active")
+        preferred = str(data.get("primary") or "auto")
+        label = active or self.DEVICE_LABELS.get(preferred, preferred.upper())
+        self._device_label.set_text(str(label))
+
+        # Preferring one device and running on another is worth saying.
+        resolved = data.get("resolved")
+        mismatch = bool(active and resolved and active != resolved)
+        if mismatch:
+            self.device_btn.add_css_class("fallback")
+            self.device_btn.set_tooltip_text(
+                f"Preferred {resolved}, running on {active}"
+            )
+        else:
+            self.device_btn.remove_css_class("fallback")
+            self.device_btn.set_tooltip_text(f"Running on {label}")
+
+        box = getattr(self, "_device_box", None)
+        if box is None:
+            return False
+        child = box.get_first_child()
+        while child is not None:
+            box.remove(child)
+            child = box.get_first_child()
+
+        options: list[tuple[str, str]] = [("auto", "Auto — best available")]
+        for device in data.get("devices") or []:
+            device_id = str(device.get("id") or "")
+            pref = (
+                "npu" if device_id.startswith("NPU")
+                else "gpu" if device_id.startswith("GPU")
+                else "cpu" if device_id.startswith("CPU")
+                else ""
+            )
+            if pref:
+                options.append((pref, f"{device.get('label')} — {device.get('name')}"))
+
+        group: Gtk.CheckButton | None = None
+        for value, text in options:
+            button = Gtk.CheckButton(label=text)
+            button.add_css_class("keylane-device-option")
+            if group is None:
+                group = button
+            else:
+                button.set_group(group)
+            button.set_active(value == preferred)
+            button.connect("toggled", self._on_device_chosen, value)
+            box.append(button)
+
+        note = data.get("model") or ""
+        if mismatch:
+            note = f"{resolved} could not run this model. {note}"
+        self._device_note.set_text(str(note)[:150])
+        return False
+
+    def _on_device_chosen(self, button: Gtk.CheckButton, value: str) -> None:
+        if not button.get_active():
+            return
+        self._device_label.set_text("…")
+
+        def work() -> None:
+            result = self.client.set_device(value)
+            GLib.idle_add(self._after_device_change, result)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _after_device_change(self, result: dict[str, Any]) -> bool:
+        popover = self.device_btn.get_popover()
+        if popover is not None:
+            popover.popdown()
+        self._refresh_devices()
+        note = result.get("note") or result.get("error")
+        if note:
+            self._show_result(str(note)[:160])
+        return False
 
     def _build_meta_row(self) -> Gtk.Widget:
         spec = self.popup
@@ -462,6 +600,144 @@ class KeylanePopup(Gtk.ApplicationWindow):
             row.append(chip)
             self._chip_labels[key] = chip
         return row
+
+    def _build_skill_menu(self) -> Gtk.Widget:
+        """The list that drops down when you type "/"."""
+        self._skill_list = Gtk.ListBox()
+        self._skill_list.add_css_class("keylane-skill-list")
+        self._skill_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self._skill_list.connect("row-activated", self._on_skill_row)
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_max_content_height(220)
+        scroller.set_propagate_natural_height(True)
+        scroller.set_child(self._skill_list)
+        scroller.set_visible(False)
+        scroller.add_css_class("keylane-skill-view")
+        self._skill_view = scroller
+        return scroller
+
+    # ------------------------------------------------------ slash commands
+
+    def _load_skills(self) -> None:
+        def work() -> None:
+            skills = self.client.skills()
+            GLib.idle_add(self._store_skills, skills)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _store_skills(self, skills: list[dict[str, Any]]) -> bool:
+        self._skills = skills
+        return False
+
+    def _on_entry_changed(self, entry: Gtk.Entry) -> None:
+        """Show matching skills while the text starts with a slash."""
+        text = entry.get_text()
+        if not text.startswith("/"):
+            self._hide_skill_menu()
+            return
+        query = text[1:].strip().lower()
+        matches = [
+            skill
+            for skill in self._skills
+            if not query
+            or query in str(skill.get("name", "")).lower()
+            or query in str(skill.get("description", "")).lower()
+        ][:8]
+        self._show_skill_menu(matches)
+
+    def _show_skill_menu(self, skills: list[dict[str, Any]]) -> None:
+        view = getattr(self, "_skill_view", None)
+        if view is None:
+            return
+        child = self._skill_list.get_first_child()
+        while child is not None:
+            self._skill_list.remove(child)
+            child = self._skill_list.get_first_child()
+
+        if not skills:
+            # Say why the list is empty rather than showing nothing.
+            row = Gtk.ListBoxRow()
+            row.set_activatable(False)
+            label = Gtk.Label(
+                label=(
+                    "No matching skill."
+                    if self._skills
+                    else "No skills enabled — add some in the control panel."
+                )
+            )
+            label.add_css_class("keylane-hint")
+            label.set_xalign(0.0)
+            label.set_margin_top(6)
+            label.set_margin_bottom(6)
+            label.set_margin_start(10)
+            row.set_child(label)
+            self._skill_list.append(row)
+            view.set_visible(True)
+            return
+
+        for skill in skills:
+            row = Gtk.ListBoxRow()
+            row.set_name(str(skill.get("name", "")))
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+            box.set_margin_top(5)
+            box.set_margin_bottom(5)
+            box.set_margin_start(10)
+            box.set_margin_end(10)
+
+            name = Gtk.Label(label=f"/{skill.get('name', '')}")
+            name.add_css_class("keylane-skill-name")
+            name.set_xalign(0.0)
+            box.append(name)
+
+            description = str(skill.get("description") or "")
+            if description:
+                detail = Gtk.Label(label=description[:90])
+                detail.add_css_class("keylane-hint")
+                detail.set_xalign(0.0)
+                detail.set_ellipsize(3)  # END
+                box.append(detail)
+
+            row.set_child(box)
+            self._skill_list.append(row)
+
+        view.set_visible(True)
+        first = self._skill_list.get_row_at_index(0)
+        if first is not None:
+            self._skill_list.select_row(first)
+
+    def _hide_skill_menu(self) -> None:
+        view = getattr(self, "_skill_view", None)
+        if view is not None:
+            view.set_visible(False)
+
+    def _skill_menu_visible(self) -> bool:
+        view = getattr(self, "_skill_view", None)
+        return bool(view is not None and view.get_visible())
+
+    def _on_skill_row(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow) -> None:
+        self._apply_skill(row.get_name())
+
+    def _apply_skill(self, name: str) -> None:
+        """Replace the "/query" with the skill, ready for the rest of the ask."""
+        if not name:
+            return
+        self.entry.set_text(f"/{name} ")
+        self.entry.set_position(-1)
+        self._hide_skill_menu()
+        self.entry.grab_focus()
+
+    def _move_skill_selection(self, delta: int) -> bool:
+        if not self._skill_menu_visible():
+            return False
+        selected = self._skill_list.get_selected_row()
+        index = (selected.get_index() if selected else -1) + delta
+        row = self._skill_list.get_row_at_index(max(index, 0))
+        if row is not None:
+            self._skill_list.select_row(row)
+            row.grab_focus()
+        return True
 
     def _build_result_area(self) -> Gtk.Widget:
         spec = self.popup
@@ -511,6 +787,7 @@ class KeylanePopup(Gtk.ApplicationWindow):
         self.entry.grab_focus()
         self._refresh_projects()
         self._poll_status()
+        self._load_skills()
 
     def dismiss(self) -> None:
         """Close the popup outright.
@@ -576,6 +853,21 @@ class KeylanePopup(Gtk.ApplicationWindow):
         return False
 
     def _on_key(self, _controller, keyval, _keycode, state) -> bool:
+        if self._skill_menu_visible():
+            if keyval == Gdk.KEY_Escape:
+                # First Escape dismisses the list, not the popup.
+                self._hide_skill_menu()
+                return True
+            if keyval == Gdk.KEY_Down:
+                return self._move_skill_selection(1)
+            if keyval == Gdk.KEY_Up:
+                return self._move_skill_selection(-1)
+            if keyval in (Gdk.KEY_Tab, Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+                row = self._skill_list.get_selected_row()
+                if row is not None and row.get_name():
+                    self._apply_skill(row.get_name())
+                    return True
+
         if keyval == Gdk.KEY_Escape:
             self.dismiss()
             return True

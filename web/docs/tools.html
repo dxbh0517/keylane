@@ -40,6 +40,32 @@
 <h3>Web</h3>
 <div class="table-wrap"><table><thead><tr><th>Tool</th><th>Danger</th><th>What it does</th></tr></thead><tbody><tr><td><code>web_search</code></td><td>safe</td><td>Search via DuckDuckGo or a self-hosted SearXNG</td></tr><tr><td><code>fetch_url</code></td><td>safe</td><td>Download a page and return its readable text</td></tr></tbody></table></div>
 <p>Choose the engine under <strong>Assistant → Web search</strong>. Setting it to <code>none</code> disables both the engine and the tool.</p>
+<h3>Running your own SearXNG</h3>
+<p>DuckDuckGo works with no setup but is scraped from HTML and rate-limits. A local <a href="https://docs.searxng.org" target="_blank" rel="noopener">SearXNG</a> gives a proper JSON API, no rate limit, and no third party seeing your searches:</p>
+<span class="code-label">bash</span><pre><code>mkdir -p ~/.local/share/keylane-searxng
+cat &gt; ~/.local/share/keylane-searxng/settings.yml &lt;&lt;&#x27;YAML&#x27;
+use_default_settings: true
+server:
+  secret_key: &quot;REPLACE-ME&quot;     # openssl rand -hex 32
+  limiter: false
+search:
+  formats: [html, json]        # Keylane needs json
+YAML
+
+podman run -d --name keylane-searxng \
+  -p 127.0.0.1:8888:8080 \
+  -v ~/.local/share/keylane-searxng/settings.yml:/etc/searxng/settings.yml:Z,ro \
+  -e SEARXNG_BASE_URL=http://127.0.0.1:8888/ \
+  --restart unless-stopped \
+  docker.io/searxng/searxng:latest</code></pre>
+<p>Then set the engine to <strong>SearXNG</strong> with URL <code>http://127.0.0.1:8888</code>.</p>
+<p>Two settings matter and both are easy to miss: <strong><code>formats</code> must include <code>json</code></strong>, or the API returns HTML and the tool finds nothing; and</p>
+<p><strong><code>secret_key</code> must be changed</strong>, or SearXNG refuses to start.</p>
+<p>To keep it across reboots:</p>
+<span class="code-label">bash</span><pre><code>podman generate systemd --new --name keylane-searxng --restart-policy=always \
+  &gt; ~/.config/systemd/user/keylane-searxng.service
+systemctl --user daemon-reload &amp;&amp; systemctl --user enable --now keylane-searxng
+loginctl enable-linger &quot;$USER&quot;     # so it starts without you logging in</code></pre>
 <h3>Files</h3>
 <div class="table-wrap"><table><thead><tr><th>Tool</th><th>Danger</th><th>What it does</th></tr></thead><tbody><tr><td><code>list_files</code></td><td>safe</td><td>List a folder</td></tr><tr><td><code>read_file</code></td><td>safe</td><td>Read a text file</td></tr><tr><td><code>write_file</code></td><td>sensitive</td><td>Create, overwrite or append to a file</td></tr><tr><td><code>search_files</code></td><td>safe</td><td>Grep for text, or find files by glob</td></tr></tbody></table></div>
 <p>Every path is resolved and checked before any I/O. The sandbox is your configured project roots plus <code>~/Documents</code>, <code>~/Downloads</code>, <code>~/Pictures</code>, <code>~/Desktop</code>, <code>~/Music</code>, <code>~/Videos</code> and the ComfyUI output directory. These are refused even inside the sandbox: <code>.ssh</code>, <code>.gnupg</code>, <code>.password-store</code>, <code>.aws</code>, <code>.kube</code>, <code>.docker</code>, <code>.mozilla</code>, <code>.thunderbird</code>, <code>keyrings</code>, and any file named <code>.env</code>, <code>.netrc</code>, <code>.pgpass</code>, <code>credentials</code>, <code>id_rsa</code>, <code>id_ed25519</code>.</p>

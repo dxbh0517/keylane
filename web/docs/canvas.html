@@ -68,6 +68,19 @@
 <li><strong>Loose types are coerced.</strong> Numbers in table cells become strings; an unknown</li>
 </ul>
 <p>note style becomes <code>info</code>.</p>
+<h2>Canvases are built, not just requested</h2>
+<p>Asking a 1.5B model to emit a canvas as JSON does not work reliably — it tends to loop trying more tools, or answer in prose. So the canvas is <strong>derived from what the tools actually produced</strong>, in Python, where the result is deterministic. Four steps, in order:</p>
+<ol>
+<li>The model emitted a canvas outright. Best case, and rare.</li>
+<li>A canvas hiding inside the answer string.</li>
+<li>The answer is prose or markdown: headings, tables, lists, fences and</li>
+</ol>
+<p>callouts are parsed into real blocks, so you see layout rather than literal <code>##</code> and <code>|---|</code>.</p>
+<ol>
+<li>No usable answer at all: build one from the tool results. Columnar command</li>
+</ol>
+<p>output — <code>df</code>, <code>free</code>, <code>ps</code>, <code>ls -l</code> — becomes a table; anything else becomes a code block or paragraphs.</p>
+<p>Step 4 is what makes the popup useful with a small model. <code>df -h</code> renders as a six-column table whether or not the model ever managed to say so.</p>
 <h2>When the model answers in prose</h2>
 <p>Not every answer deserves structure, and a small model will sometimes just write a sentence. That is wrapped automatically:</p>
 <ul>

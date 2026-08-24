@@ -42,6 +42,25 @@ CORE_RADIUS = 0.16
 CORE_PULSE_HZ = 0.7
 FPS = 60
 
+# What the assistant is doing, as a colour. Hue carries the meaning; the arcs
+# stay the same shape so the change reads as state, not as a different widget.
+# Values are RGB 0-1, chosen to sit at similar lightness so none shouts.
+STATE_COLOURS = {
+    "thinking":   (0.42, 0.55, 0.98),   # indigo    — the model is deciding
+    "tool":       (0.16, 0.74, 0.68),   # teal      — running something local
+    "delegating": (0.66, 0.40, 0.96),   # violet    — a worker has it
+    "verifying":  (0.20, 0.62, 0.95),   # blue      — checking the result
+    "waiting":    (0.94, 0.62, 0.16),   # amber     — needs your approval
+    "speaking":   (0.36, 0.82, 0.90),   # pale cyan — reading aloud
+    "failed":     (0.92, 0.32, 0.36),   # red
+    "done":       (0.34, 0.84, 0.36),   # green
+}
+DEFAULT_STATE = "thinking"
+
+# Colour changes are eased rather than cut, so a fast tool call does not
+# strobe the orb through three hues.
+COLOUR_BLEND_HZ = 6.0
+
 
 class OrbitLoader(Gtk.DrawingArea):
     """A compact, self-contained activity indicator."""
@@ -51,7 +70,9 @@ class OrbitLoader(Gtk.DrawingArea):
         self._size = size
         self._phase = 0.0
         self._tick: int | None = None
-        self._colour: tuple[float, float, float] = (0.31, 0.55, 1.0)
+        self._state = DEFAULT_STATE
+        self._colour = STATE_COLOURS[DEFAULT_STATE]
+        self._target_colour = self._colour
 
         self.set_content_width(size)
         self.set_content_height(size)
@@ -72,9 +93,24 @@ class OrbitLoader(Gtk.DrawingArea):
         self.queue_draw()
 
     def set_accent(self, rgba: Gdk.RGBA | None) -> None:
+        """Override the palette with the theme accent (used for 'thinking')."""
         if rgba is not None:
-            self._colour = (rgba.red, rgba.green, rgba.blue)
-            self.queue_draw()
+            STATE_COLOURS["thinking"] = (rgba.red, rgba.green, rgba.blue)
+            if self._state == "thinking":
+                self.set_state("thinking")
+
+    def set_state(self, state: str) -> None:
+        """Colour the loader by what the assistant is currently doing."""
+        self._state = state if state in STATE_COLOURS else DEFAULT_STATE
+        self._target_colour = STATE_COLOURS[self._state]
+        if self._tick is None:
+            # Not animating, so there is nothing to blend towards.
+            self._colour = self._target_colour
+        self.queue_draw()
+
+    @property
+    def state(self) -> str:
+        return self._state
 
     def start(self) -> None:
         if self._tick is not None:
@@ -83,6 +119,12 @@ class OrbitLoader(Gtk.DrawingArea):
 
         def frame() -> bool:
             self._phase = (self._phase + step) % 3600.0
+            # Ease towards the target colour instead of cutting to it.
+            blend = min(step * COLOUR_BLEND_HZ, 1.0)
+            self._colour = tuple(
+                current + (target - current) * blend
+                for current, target in zip(self._colour, self._target_colour)
+            )
             self.queue_draw()
             return True
 

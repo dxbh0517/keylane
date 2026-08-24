@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import logging
 import math
+import shutil
+import subprocess
 import threading
 from typing import Any, Callable
 
@@ -194,7 +196,12 @@ class ResultOrb(Gtk.ApplicationWindow):
         hover.connect("enter", self._on_hover_enter)
         hover.connect("leave", self._on_hover_leave)
         self.add_controller(hover)
-        self.connect("map", lambda *_: GLib.idle_add(self._update_input_region))
+        self.connect("map", self._on_mapped)
+
+    def _on_mapped(self, *_args) -> None:
+        GLib.idle_add(self._update_input_region)
+        # The X11 hint only applies once the surface exists.
+        GLib.idle_add(self._keep_above)
 
     # ------------------------------------------------------------- placement
 
@@ -202,6 +209,10 @@ class ResultOrb(Gtk.ApplicationWindow):
         # Set first: every later branch may return early, and _build() reads it.
         self._layer_shell_active = False
         if not HAVE_LAYER_SHELL:
+            return
+        # Calling into layer-shell on an X11 display trips a GTK assertion.
+        display = Gdk.Display.get_default()
+        if display is None or "Wayland" not in type(display).__name__:
             return
         try:
             if not LayerShell.is_supported():  # type: ignore[union-attr]
@@ -229,6 +240,50 @@ class ResultOrb(Gtk.ApplicationWindow):
         except Exception as exc:  # noqa: BLE001
             logger.debug("layer-shell unavailable for the orb: %s", exc)
             self._layer_shell_active = False
+
+    def _keep_above(self) -> None:
+        """Ask the window manager to stack this above everything else.
+
+        Wayland gives clients no say in stacking, and Mutter does not
+        implement layer-shell, so on GNOME the only working route is the X11
+        one: run the surface through XWayland and set the standard
+        ``_NET_WM_STATE_ABOVE`` hint, which Mutter does honour. Compositors
+        with layer-shell never reach here — they got an overlay layer already.
+        """
+        if self._layer_shell_active:
+            return
+        surface = self.get_surface()
+        if surface is None or not hasattr(surface, "get_xid"):
+            return  # a Wayland toplevel: nothing more we can do
+        try:
+            xid = surface.get_xid()
+        except Exception:  # noqa: BLE001
+            return
+        if not xid:
+            return
+
+        wmctrl = shutil.which("wmctrl")
+        if wmctrl:
+            subprocess.Popen(
+                [wmctrl, "-i", "-r", str(xid), "-b", "add,above,sticky,skip_taskbar"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+
+        xprop = shutil.which("xprop")
+        if xprop:
+            subprocess.Popen(
+                [xprop, "-id", str(xid), "-f", "_NET_WM_STATE", "32a",
+                 "-set", "_NET_WM_STATE", "_NET_WM_STATE_ABOVE"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            logger.info(
+                "Cannot pin the result panel above other windows: install "
+                "wmctrl, or run on a compositor with layer-shell."
+            )
 
     def _screen_size(self) -> tuple[int, int]:
         display = Gdk.Display.get_default()
@@ -303,6 +358,10 @@ class ResultOrb(Gtk.ApplicationWindow):
             # keeps the rest of the surface click-through.
             width, height = self._screen_size()
             self.set_default_size(width, height)
+            # Explicitly not maximised: the window is screen-sized only so the
+            # shell can sit in a corner, and a maximised state makes the WM
+            # treat it as a real window.
+            self.unmaximize()
             pad = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             pad.set_margin_top(EDGE_MARGIN)
             pad.set_margin_bottom(EDGE_MARGIN)
@@ -433,6 +492,7 @@ class ResultOrb(Gtk.ApplicationWindow):
         if not text:
             return
         self._speaking = True
+        self._loader.set_state("speaking")
         self._speak_btn.add_css_class("speaking")
         self._speak_btn.set_tooltip_text("Stop reading")
 
@@ -472,12 +532,20 @@ class ResultOrb(Gtk.ApplicationWindow):
         self._status_label.set_text(self._status)
         self._set_body(None)
         self._apply_geometry()
+        self._loader.set_state("thinking")
         self._loader.start()
         self.present()
+        GLib.idle_add(self._keep_above)
 
-    def set_status(self, text: str) -> None:
+    def set_status(self, text: str, state: str = "") -> None:
+        """Update the caption and, with it, the colour of the loader."""
         self._status = text[:120]
         self._status_label.set_text(self._status)
+        if state:
+            self._loader.set_state(state)
+
+    def set_state(self, state: str) -> None:
+        self._loader.set_state(state)
 
     def show_result(
         self, canvas: dict[str, Any] | None, *, title: str = "", failed: bool = False
@@ -491,6 +559,7 @@ class ResultOrb(Gtk.ApplicationWindow):
         self._status_label.set_text(
             title or (canvas or {}).get("title") or ("Failed" if failed else "Done")
         )
+        self._loader.set_state("failed" if failed else "done")
         if failed:
             self._shell.add_css_class("failed")
         else:
@@ -499,6 +568,7 @@ class ResultOrb(Gtk.ApplicationWindow):
         self._expanded = True
         self._animate_to(1.0)
         self.present()
+        GLib.idle_add(self._keep_above)
 
         # A longer answer earns a longer read before it closes itself.
         self._start_countdown(
@@ -520,6 +590,7 @@ class ResultOrb(Gtk.ApplicationWindow):
         hand-off to the orb would just lose the task.
         """
         self._loader.stop()
+        self._loader.set_state("waiting")
         self._cancel_countdown()
         tool = data.get("pending_tool") or "this action"
         arguments = data.get("pending_arguments") or {}

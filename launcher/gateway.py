@@ -48,6 +48,30 @@ class GatewayClient:
         except Exception:  # noqa: BLE001
             return []
 
+    def devices(self) -> dict[str, Any]:
+        try:
+            return self._get("/api/devices", timeout=5.0)
+        except Exception:  # noqa: BLE001
+            return {"devices": []}
+
+    def set_device(self, primary: str) -> dict[str, Any]:
+        try:
+            with httpx.Client(timeout=90.0) as client:
+                response = client.put(
+                    f"{self.base_url}/api/devices", json={"primary": primary}
+                )
+                return response.json() if response.content else {}
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)[:160]}
+
+    def skills(self) -> list[dict[str, Any]]:
+        """Enabled skills, for the popup's slash menu."""
+        try:
+            data = self._get("/api/skills", timeout=5.0)
+        except Exception:  # noqa: BLE001
+            return []
+        return [s for s in data.get("skills", []) if s.get("enabled")]
+
     def gateway_config(self) -> dict[str, Any]:
         try:
             return self._get("/api/config")

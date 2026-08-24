@@ -637,3 +637,104 @@ def test_short_answers_get_a_narrow_panel():
     wide = {"blocks": [{"type": "table", "columns": ["a"], "rows": [["1"]]}]}
     # A one-liner in a full-width panel is mostly empty panel.
     assert panel_width(short, canvas_text(short)) < panel_width(wide, canvas_text(wide))
+
+
+# ------------------------------------------------ structural canvas building
+
+from app.canvas_build import markdown_to_canvas, output_to_canvas  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "label,text,columns",
+    [
+        (
+            "df -h",
+            "Filesystem      Size  Used Avail Use% Mounted on\n"
+            "/dev/dm-0       952G  732G  217G  78% /\n"
+            "tmpfs            32G   25M   32G   1% /dev/shm",
+            ["Filesystem", "Size", "Used", "Avail", "Use%", "Mounted on"],
+        ),
+        (
+            "ps",
+            "  PID TTY          TIME CMD\n"
+            " 1234 pts/0    00:00:01 bash\n"
+            " 5678 pts/0    00:00:00 python",
+            ["PID", "TTY", "TIME", "CMD"],
+        ),
+    ],
+)
+def test_columnar_output_becomes_a_table(label, text, columns):
+    # This is what makes the popup useful when the model never emits a canvas.
+    block = output_to_canvas(text, command=label).blocks[0]
+    assert block.type == "table", f"{label} did not become a table"
+    assert block.columns == columns
+    assert all(len(row) == len(columns) for row in block.rows)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I opened Firefox for you.",
+        "ERROR failed\nWARN thing\nINFO ok",
+    ],
+)
+def test_non_tabular_output_is_not_forced_into_a_table(text):
+    assert output_to_canvas(text).blocks[0].type in {"text", "code"}
+
+
+def test_markdown_becomes_blocks_not_literal_characters():
+    canvas = markdown_to_canvas(
+        "## Disk usage\n\n"
+        "You have 217 GB free.\n\n"
+        "| Mount | Use% |\n|-------|------|\n| /     | 78%  |\n\n"
+        "> **Warning** Root is nearly full.\n\n"
+        "```shell\ndf -h\n```"
+    )
+    kinds = [b.type for b in canvas.blocks]
+    assert canvas.title == "Disk usage"          # the H2 became the title
+    assert canvas.summary.startswith("You have")  # short lead became the summary
+    assert "table" in kinds and "note" in kinds and "code" in kinds
+    note = next(b for b in canvas.blocks if b.type == "note")
+    assert note.style == "warning"
+    # None of the markup should survive as literal text.
+    rendered = canvas.to_text()
+    assert "##" not in rendered and "|---" not in rendered and "**" not in rendered
+
+
+def test_a_list_of_pairs_becomes_stats():
+    canvas = markdown_to_canvas("- Free: 217 GB\n- Used: 732 GB")
+    assert canvas.blocks[0].type == "stats"
+    assert canvas.blocks[0].items[0].label == "Free"
+
+
+def test_a_plain_list_stays_a_list():
+    canvas = markdown_to_canvas("- open the file\n- read it\n- close it")
+    assert canvas.blocks[0].type == "list"
+
+
+def test_inline_markup_is_stripped():
+    canvas = markdown_to_canvas("Some **bold** and `code` and *italic* text here.")
+    body = canvas.summary or canvas.blocks[0].text
+    assert "*" not in body and "`" not in body
+    assert "bold" in body and "code" in body
+
+
+# ----------------------------------------------------------- loader states
+
+from launcher_stubs import loader_states  # noqa: E402
+
+
+def test_every_assistant_state_has_a_colour():
+    states = loader_states()
+    for needed in ("thinking", "tool", "delegating", "verifying", "waiting", "failed", "done"):
+        assert needed in states, f"no colour for {needed}"
+
+
+def test_state_colours_are_distinguishable():
+    states = loader_states()
+    # Colours that differ by less than this read as the same hue in a 26px orb.
+    values = list(states.values())
+    for i, a in enumerate(values):
+        for b in values[i + 1 :]:
+            distance = sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+            assert distance > 0.12, f"{a} and {b} are too close to tell apart"

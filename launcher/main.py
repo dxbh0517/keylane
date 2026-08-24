@@ -51,7 +51,62 @@ def _spawn_tray() -> subprocess.Popen | None:
         return None
 
 
+def _choose_backend() -> None:
+    """Pick the GDK backend that lets the result panel stay on top.
+
+    Wayland gives clients no control over stacking. Compositors that
+    implement ``zwlr_layer_shell_v1`` (sway, Hyprland) offer an overlay layer
+    instead — but GNOME's Mutter implements neither, so a Wayland window there
+    simply cannot be kept above other windows.
+
+    XWayland can: Mutter honours ``_NET_WM_STATE_ABOVE`` on X11 surfaces. So
+    when layer-shell is missing we run through XWayland to get that one
+    capability. Set ``KEYLANE_BACKEND`` to override.
+    """
+    if os.environ.get("KEYLANE_BACKEND"):
+        os.environ["GDK_BACKEND"] = os.environ["KEYLANE_BACKEND"]
+        return
+    if os.environ.get("GDK_BACKEND"):
+        return
+    if os.environ.get("XDG_SESSION_TYPE") != "wayland":
+        return
+
+    # The typelib being installed proves nothing: it is present on Fedora
+    # GNOME, where is_supported() is False because Mutter does not implement
+    # the protocol. Only a real probe answers this, and it needs a display —
+    # so run it in a throwaway subprocess rather than opening one here.
+    probe = (
+        "import gi;"
+        "gi.require_version('Gtk','4.0');"
+        "gi.require_version('Gtk4LayerShell','1.0');"
+        "from gi.repository import Gtk, Gtk4LayerShell as L;"
+        "import sys;"
+        "sys.exit(0 if L.is_supported() else 1)"
+    )
+    try:
+        have_layer_shell = (
+            subprocess.run(
+                [sys.executable, "-c", probe],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                env={**os.environ, "GDK_BACKEND": "wayland"},
+            ).returncode
+            == 0
+        )
+    except Exception:  # noqa: BLE001
+        have_layer_shell = False
+
+    if not have_layer_shell and os.environ.get("DISPLAY"):
+        os.environ["GDK_BACKEND"] = "x11"
+        logger.info(
+            "No layer-shell: using XWayland so the result panel can stay on top."
+        )
+
+
 def run_launcher(*, with_tray: bool = True, background: bool = False) -> int:
+    _choose_backend()
+
     import gi
 
     gi.require_version("Gtk", "4.0")
@@ -132,6 +187,7 @@ def run_launcher(*, with_tray: bool = True, background: bool = False) -> int:
             """Send a request and let the orb carry it from here."""
             orb = self._ensure_orb()
             orb.start(message)
+            self._watch_activity(orb)
 
             def work() -> None:
                 data = client.chat(payload)
@@ -139,7 +195,52 @@ def run_launcher(*, with_tray: bool = True, background: bool = False) -> int:
 
             threading.Thread(target=work, daemon=True).start()
 
+        def _watch_activity(self, orb) -> None:
+            """Colour the orb from the gateway's live activity stream.
+
+            The orb otherwise sits on one colour for the whole request, which
+            hides the difference between "still thinking" and "Claude Code has
+            had this for ninety seconds".
+            """
+            stop = getattr(self, "_activity_stop", None)
+            if stop is not None:
+                stop.set()
+            stop = threading.Event()
+            self._activity_stop = stop
+
+            def on_snapshot(snapshot: dict) -> None:
+                active = (snapshot.get("active") or [None])[0]
+                if not active:
+                    return
+                status = str(active.get("status") or "")
+                step = str(active.get("step") or "")
+                worker = str(active.get("worker") or "")
+                state = {
+                    "thinking": "thinking",
+                    "routing": "thinking",
+                    "running": "tool",
+                    "verifying": "verifying",
+                    "retrying": "tool",
+                    "waiting_confirmation": "waiting",
+                }.get(status, "thinking")
+                if worker and worker not in {"assistant", ""}:
+                    state = "delegating"
+                GLib.idle_add(orb.set_state, state)
+                if step:
+                    GLib.idle_add(orb.set_status, step, state)
+
+            def work() -> None:
+                try:
+                    client.stream_events(on_snapshot, stop.is_set)
+                except Exception:  # noqa: BLE001
+                    pass  # the orb keeps its last colour
+
+            threading.Thread(target=work, daemon=True).start()
+
         def _on_result(self, data: dict, payload: dict) -> bool:
+            stop = getattr(self, "_activity_stop", None)
+            if stop is not None:
+                stop.set()
             orb = self._ensure_orb()
             status = str(data.get("status") or "").lower()
 

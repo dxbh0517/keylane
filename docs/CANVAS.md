@@ -60,6 +60,25 @@ field optional. A 1.5B model has to be able to emit it correctly first time.
 - **Loose types are coerced.** Numbers in table cells become strings; an unknown
   note style becomes `info`.
 
+## Canvases are built, not just requested
+
+Asking a 1.5B model to emit a canvas as JSON does not work reliably — it tends
+to loop trying more tools, or answer in prose. So the canvas is **derived from
+what the tools actually produced**, in Python, where the result is
+deterministic. Four steps, in order:
+
+1. The model emitted a canvas outright. Best case, and rare.
+2. A canvas hiding inside the answer string.
+3. The answer is prose or markdown: headings, tables, lists, fences and
+   callouts are parsed into real blocks, so you see layout rather than literal
+   `##` and `|---|`.
+4. No usable answer at all: build one from the tool results. Columnar command
+   output — `df`, `free`, `ps`, `ls -l` — becomes a table; anything else
+   becomes a code block or paragraphs.
+
+Step 4 is what makes the popup useful with a small model. `df -h` renders as a
+six-column table whether or not the model ever managed to say so.
+
 ## When the model answers in prose
 
 Not every answer deserves structure, and a small model will sometimes just

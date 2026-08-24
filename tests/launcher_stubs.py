@@ -26,3 +26,15 @@ for node in _module.body:
 
 canvas_text = _namespace["_canvas_text"]
 panel_width = _namespace["_panel_width_for"]
+
+
+def loader_states() -> dict[str, tuple[float, float, float]]:
+    """The loader's state palette, read without importing GTK."""
+    source = (Path(__file__).resolve().parent.parent / "launcher" / "loader.py").read_text()
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            getattr(target, "id", "") == "STATE_COLOURS" for target in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError("STATE_COLOURS not found in launcher/loader.py")

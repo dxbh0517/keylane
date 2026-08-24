@@ -138,9 +138,14 @@ class SkillRegistry:
         self._skills: dict[str, Skill] = {}
         self.reload()
 
+    # Documentation living beside the skills is not itself a skill.
+    NOT_SKILLS = {"readme.md", "index.md", "contributing.md", "license.md"}
+
     def reload(self) -> None:
         self._skills = {}
         for path in sorted(self.directory.rglob("*.md")):
+            if path.name.lower() in self.NOT_SKILLS:
+                continue
             skill = load_skill_file(path)
             if skill is not None:
                 self._skills[skill.name] = skill

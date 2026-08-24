@@ -16,6 +16,7 @@ grows downward to show the answer.
 | <kbd>Ctrl</kbd>+<kbd>Enter</kbd> | Send and hide — the work continues in the background |
 | <kbd>Esc</kbd> | Close |
 | Microphone | Click to start dictating, click again to stop |
+| `/` | Show the skill list; arrows to move, Tab or Enter to pick |
 | Click away | Close (unless the theme disables it) |
 
 The bar **closes** when it loses focus — it does not linger in the background.
@@ -25,6 +26,24 @@ The microphone button is a toggle: click it to start dictating, click again to
 stop. Whisper transcribes locally and appends the text to whatever is already in
 the field. A recording you forget about stops itself after two minutes.
 
+## Calling a skill
+
+Type `/` and the enabled skills appear below the bar, filtered as you keep
+typing. Arrow keys move, Tab or Enter picks one, Escape closes the list
+without closing the popup.
+
+Only enabled skills are listed — install and switch them on under
+**Control panel → Skills**.
+
+## The device chip
+
+A quiet chip in the bar shows which device the control plane is actually
+running on. Click it to choose: Auto, NPU, GPU or CPU — whatever this machine
+exposes, named as the hardware reports itself.
+
+It turns amber when the device in use is not the one you asked for, which
+happens when a model will not compile on your first choice. Hovering says why.
+
 ## What happens after you press Enter
 
 The bar gets out of the way. It closes, and a small **orb** appears in a screen
@@ -32,7 +51,11 @@ corner and spins while the work runs — so a Claude Code job that takes two
 minutes does not pin an input field to your screen.
 
 While it works, three arcs orbit a pulsing core — drawn with Cairo rather
-than a stock spinner, and centred in the circle. They run at unequal rates so
+than a stock spinner, and centred in the circle. **The colour says what it is
+doing**: indigo while the model is deciding, teal running a local tool, violet
+once a worker has it, sky while checking the result, amber waiting for your
+approval, cyan reading aloud, then green or red. Colours ease between states
+rather than cutting, so a fast tool call does not strobe. They run at unequal rates so
 the figure never visibly repeats. With animations switched off in your desktop
 settings it becomes a slow opacity breath instead.
 
@@ -63,6 +86,26 @@ voice. See [Speech](speech.html).
 Choose the corner in **Control panel → Gateway → Result panel corner**:
 `top-right` (the default), `top-left`, `bottom-right`, `bottom-left` or
 `center`.
+
+### Staying on top
+
+The orb and the answer stay above other windows, whatever you switch to.
+
+How that is achieved depends on the compositor, because Wayland deliberately
+gives clients no control over stacking:
+
+| Compositor | Mechanism |
+| --- | --- |
+| sway, Hyprland, other wlroots | `gtk4-layer-shell` overlay layer |
+| GNOME (Mutter) | XWayland plus `_NET_WM_STATE_ABOVE` |
+
+Mutter implements neither layer-shell nor any Wayland stacking protocol, so on
+GNOME the launcher runs through XWayland — that is the only route that works
+there. Set `KEYLANE_BACKEND=wayland` to override, at the cost of the panel no
+longer staying on top.
+
+`wmctrl` makes the X11 path more reliable; without it Keylane falls back to
+`xprop`.
 
 > **Note**: Exact corner placement needs `gtk4-layer-shell`. Without it Keylane
 > uses a screen-sized transparent window with its input region clipped to the

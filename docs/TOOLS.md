@@ -41,6 +41,46 @@ stripped.
 Choose the engine under **Assistant → Web search**. Setting it to `none`
 disables both the engine and the tool.
 
+### Running your own SearXNG
+
+DuckDuckGo works with no setup but is scraped from HTML and rate-limits. A
+local [SearXNG](https://docs.searxng.org) gives a proper JSON API, no rate
+limit, and no third party seeing your searches:
+
+```bash
+mkdir -p ~/.local/share/keylane-searxng
+cat > ~/.local/share/keylane-searxng/settings.yml <<'YAML'
+use_default_settings: true
+server:
+  secret_key: "REPLACE-ME"     # openssl rand -hex 32
+  limiter: false
+search:
+  formats: [html, json]        # Keylane needs json
+YAML
+
+podman run -d --name keylane-searxng \
+  -p 127.0.0.1:8888:8080 \
+  -v ~/.local/share/keylane-searxng/settings.yml:/etc/searxng/settings.yml:Z,ro \
+  -e SEARXNG_BASE_URL=http://127.0.0.1:8888/ \
+  --restart unless-stopped \
+  docker.io/searxng/searxng:latest
+```
+
+Then set the engine to **SearXNG** with URL `http://127.0.0.1:8888`.
+
+Two settings matter and both are easy to miss: **`formats` must include
+`json`**, or the API returns HTML and the tool finds nothing; and
+**`secret_key` must be changed**, or SearXNG refuses to start.
+
+To keep it across reboots:
+
+```bash
+podman generate systemd --new --name keylane-searxng --restart-policy=always \
+  > ~/.config/systemd/user/keylane-searxng.service
+systemctl --user daemon-reload && systemctl --user enable --now keylane-searxng
+loginctl enable-linger "$USER"     # so it starts without you logging in
+```
+
 ### Files
 
 | Tool | Danger | What it does |

@@ -287,6 +287,108 @@ async def get_models_overview() -> dict[str, Any]:
     return data
 
 
+@app.get("/api/devices")
+async def list_devices() -> dict[str, Any]:
+    """Compute devices the control plane can run on, as the user sees them.
+
+    OpenVINO names devices ``CPU``, ``GPU``, ``GPU.1``, ``NPU``. By convention
+    ``GPU.0`` is the integrated adapter and later indices are discrete, but the
+    only reliable label is the device's own full name — so that is what is
+    shown, with the convention as a fallback.
+    """
+    from app.models_settings import load_models_settings, resolve_openvino_device
+
+    settings = load_models_settings()
+    devices: list[dict[str, Any]] = []
+    try:
+        import openvino as ov
+
+        core = ov.Core()
+        available = list(core.available_devices)
+    except Exception as exc:  # noqa: BLE001
+        return {"devices": [], "error": str(exc)[:200], "primary": settings.primary_device}
+
+    def describe(name: str) -> tuple[str, str]:
+        try:
+            full = str(core.get_property(name, "FULL_DEVICE_NAME"))
+        except Exception:  # noqa: BLE001
+            full = name
+        lowered = full.lower()
+        if name.startswith("NPU"):
+            return "NPU", full
+        if name.startswith("CPU"):
+            return "CPU", full
+        if name.startswith("GPU"):
+            if "igpu" in lowered or name in {"GPU", "GPU.0"} and "intel" in lowered:
+                kind = "Integrated graphics"
+            elif "dgpu" in lowered:
+                kind = "Discrete graphics"
+            else:
+                kind = "Integrated graphics" if name in {"GPU", "GPU.0"} else "Discrete graphics"
+            return kind, full
+        return name, full
+
+    for name in available:
+        label, full = describe(name)
+        devices.append({"id": name, "label": label, "name": full})
+
+    router = get_pipeline_safe("router")
+    return {
+        "devices": devices,
+        "primary": settings.primary_device,
+        "resolved": resolve_openvino_device(settings),
+        "active": router.get("device"),
+        "loaded": router.get("loaded", False),
+        "model": settings.router_model_id,
+    }
+
+
+def get_pipeline_safe(role: str) -> dict[str, Any]:
+    try:
+        from app.npu.pipeline import get_pipeline
+
+        pipeline = get_pipeline(role, get_config())
+        return {
+            "loaded": pipeline.loaded,
+            "device": pipeline.device,
+            "status": pipeline.status,
+        }
+    except Exception:  # noqa: BLE001
+        return {"loaded": False, "device": None, "status": "unavailable"}
+
+
+class DeviceChoice(BaseModel):
+    primary: str = Field(pattern=r"^(auto|npu|gpu|cpu)$")
+    gpu_device: str | None = None
+
+
+@app.put("/api/devices")
+async def choose_device(body: DeviceChoice) -> dict[str, Any]:
+    """Switch the control plane to a device and reload straight away."""
+    from app.models_settings import ModelsSettingsUpdate, update_models_settings
+    from app.npu.pipeline import get_pipeline, reload_pipelines
+
+    update = ModelsSettingsUpdate(primary_device=body.primary)
+    if body.gpu_device:
+        update.gpu_device = body.gpu_device
+    try:
+        update_models_settings(update)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    get_pipeline("router", get_config())
+    get_pipeline("verifier", get_config())
+    reload_pipelines(get_config())
+    reload_assistant(get_config())
+    router = get_pipeline("router", get_config())
+    return {
+        "primary": body.primary,
+        "active": router.device,
+        "loaded": router.loaded,
+        "note": router.degraded_reason or router.status,
+    }
+
+
 @app.get("/api/models/available")
 async def get_available_worker_models() -> dict[str, Any]:
     from app.worker_models import available_worker_models

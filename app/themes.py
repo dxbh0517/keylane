@@ -497,6 +497,52 @@ window.keylane-popup {{
   color: @ag_accent;
 }}
 
+/* Device chip: status, not a button you are meant to reach for. */
+.keylane-device-chip {{
+  background: none;
+  background-color: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 2px 8px;
+  min-height: 0;
+  border-radius: 999px;
+  color: alpha(@ag_muted, 0.85);
+}}
+.keylane-device-chip:hover {{
+  background-color: alpha(@ag_text, 0.07);
+  color: @ag_text;
+}}
+/* Running somewhere other than your choice is worth a hint of colour. */
+.keylane-device-chip.fallback {{ color: alpha(#d97706, 0.95); }}
+.keylane-device-text {{
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+}}
+.keylane-device-menu {{ background-color: @ag_surface; }}
+.keylane-device-option {{ font-size: 12.5px; color: @ag_text; }}
+
+/* Slash-command list */
+.keylane-skill-view {{
+  border-top: 1px solid alpha(@ag_border, 0.7);
+  margin-top: {popup.padding}px;
+  padding-top: 4px;
+}}
+.keylane-skill-list {{ background-color: transparent; }}
+.keylane-skill-list row {{
+  border-radius: {max(radius - 6, 6)}px;
+  background-color: transparent;
+}}
+.keylane-skill-list row:selected {{
+  background-color: alpha(@ag_accent, 0.16);
+}}
+.keylane-skill-name {{
+  font-family: monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: @ag_accent;
+}}
+
 .keylane-send {{
   border-radius: {inner_radius}px;
   min-height: {entry_height - 6}px;
