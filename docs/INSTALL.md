@@ -315,10 +315,20 @@ scripts/npu-driver-fix.sh
 ```
 
 It installs Intel's matched compiler and Level Zero backend into
-`/usr/local/lib`, ahead of Fedora's in the loader path — Fedora's files are
-left alone, and deleting the three installed libraries plus `ldconfig` reverts
-it. It then pins the gateway's OpenVINO to the release the driver was built
-for.
+`/usr/local/lib64` and registers that directory in
+`/etc/ld.so.conf.d/00-keylane-npu.conf` so it sorts ahead of `/usr/lib64`.
+Fedora's own files are left in place and untouched — only the resolution order
+changes, so reverting is:
+
+```bash
+sudo rm -f /usr/local/lib64/lib*npu*.so* /etc/ld.so.conf.d/00-keylane-npu.conf
+sudo ldconfig
+```
+
+Note that `/usr/local/lib` is **not** searched by the loader on 64-bit Fedora;
+installing there looks like it worked and changes nothing.
+
+It then pins the gateway's OpenVINO to the release the driver was built for.
 
 **Model size matters.** On a Meteor Lake NPU a 1.5B int4 export compiles in
 about ten seconds. A 3.8B export may not finish at all. Prefer a small router

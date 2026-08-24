@@ -16,7 +16,8 @@ set -euo pipefail
 DRIVER_TAG="v1.35.0"          # pairs with OpenVINO 2026.2
 OPENVINO="2026.2.1"
 GENAI="2026.2.1.0"
-PREFIX="/usr/local/lib"        # ahead of /usr/lib64 for the dynamic loader
+PREFIX="/usr/local/lib64"      # see the ld.so.conf.d drop-in below
+LDCONF="/etc/ld.so.conf.d/00-keylane-npu.conf"
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
 
@@ -71,10 +72,25 @@ installer="$work/install-root.sh"
 {
   echo '#!/bin/sh'
   echo 'set -eu'
+  # An earlier version of this script installed into /usr/local/lib, which
+  # Fedora's loader does not search. Leaving those behind is just confusion.
+  echo "rm -f /usr/local/lib/libze_intel_npu.so* /usr/local/lib/libopenvino_intel_npu_compiler*.so"
   echo "install -d '$PREFIX'"
+  # Install only real files; the .so and .so.1 names are recreated as symlinks.
+  # ldconfig warns about a versioned soname that is a regular file, and a copy
+  # of a 127MB library under three names is wasteful besides.
   for lib in "$src"/*.so*; do
+    [ -L "$lib" ] && continue
     echo "install -m 0755 '$lib' '$PREFIX/$(basename "$lib")'"
   done
+  for lib in "$src"/*.so*; do
+    [ -L "$lib" ] || continue
+    echo "ln -sfn '$(basename "$(readlink -f "$lib")")' '$PREFIX/$(basename "$lib")'"
+  done
+  # Fedora searches neither /usr/local/lib nor /usr/local/lib64 by default, and
+  # the drop-in has to sort before the others so these win over Fedora's own
+  # copies in /usr/lib64 rather than losing to them.
+  echo "printf '%s\\n' '$PREFIX' > '$LDCONF'"
   echo 'ldconfig'
 } > "$installer"
 chmod 755 "$installer"
@@ -100,5 +116,8 @@ Done. Check the Models page, or:
 
 The first NPU load compiles the model and can take several minutes; it is
 cached afterwards. To undo, remove the libraries from /usr/local/lib, run
-ldconfig, and reinstall the OpenVINO version you had.
+ldconfig, and reinstall the OpenVINO version you had:
+
+  sudo rm -f /usr/local/lib64/lib*npu*.so* /etc/ld.so.conf.d/00-keylane-npu.conf
+  sudo ldconfig
 EOF
