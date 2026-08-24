@@ -171,9 +171,12 @@ class NpuPipeline:
             if preferred and device != preferred:
                 # Loading on a slower device still beats no assistant at all,
                 # but the user needs to know why their choice was not honoured.
+                detail = failures[0] if failures else ""
+                if preferred == "NPU":
+                    detail = npu_failure_diagnosis() or detail
                 self.degraded_reason = (
                     f"{preferred} could not compile this model, so it is running on "
-                    f"{device}. {failures[0] if failures else ''}"
+                    f"{device}. {detail}"
                 ).strip()
                 logger.warning("%s: %s", self.role, self.degraded_reason)
             logger.info("%s model loaded on %s from %s", self.role, device, model_path)
@@ -262,3 +265,42 @@ def reload_pipelines(config: AppConfig | None = None) -> dict[str, bool]:
         pipeline.reload()
         status[role] = pipeline.loaded
     return status
+
+
+# The NPU driver splits into two pieces: a Level Zero backend that enumerates
+# the device, and a compiler that turns an OpenVINO graph into something the
+# NPU can run. Distributions package them separately, and with only the first
+# installed the NPU looks perfectly healthy right up until a compile is
+# attempted — which then fails with whatever configuration key the plugin
+# happened to try first. Reporting that key sends people chasing a setting
+# when the real answer is a missing package.
+_COMPILER_LIBRARY = "libnpu_driver_compiler.so"
+_COMPILER_SEARCH = ("/usr/lib64", "/usr/lib", "/usr/local/lib64", "/usr/local/lib")
+
+
+def npu_compiler_present() -> bool:
+    """True when the NPU driver's compiler library is installed."""
+    from pathlib import Path as _Path
+
+    return any((_Path(d) / _COMPILER_LIBRARY).exists() for d in _COMPILER_SEARCH)
+
+
+def npu_failure_diagnosis() -> str:
+    """Explain an NPU compile failure, when the cause is knowable."""
+    if npu_compiler_present():
+        return ""
+    version = None
+    try:
+        import openvino as ov
+
+        version = ov.Core().get_property("NPU", "NPU_COMPILER_VERSION")
+    except Exception:  # noqa: BLE001
+        pass
+    if version not in (None, 0):
+        # A compiler is reachable by some other route; the failure is not this.
+        return ""
+    return (
+        "The NPU driver's compiler is not installed, so no model can be "
+        f"compiled for the NPU ({_COMPILER_LIBRARY} is missing). On Fedora: "
+        "sudo dnf install intel-npu-compiler."
+    )

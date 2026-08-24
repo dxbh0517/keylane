@@ -10,25 +10,39 @@ Every item says *why* — a list of features without reasons is a wish list.
 
 ## 1. The NPU path does not work on this hardware
 
-**The problem.** OpenVINO GenAI's NPU pipeline sets `NPU_MAX_TILES`, which the
-installed Level Zero driver does not accept. Disabling NPUW gets past that and
-then compilation fails with `ZE_RESULT_ERROR_UNSUPPORTED_FEATURE`. The NPU is
-detected and healthy; the LLM path is the mismatch. Keylane currently falls back
-to GPU, which works but is not the product's premise.
+**The cause, now known.** The Intel NPU driver ships as two pieces: a Level
+Zero backend (`libze_intel_npu.so`) that enumerates the device, and a compiler
+(`libnpu_driver_compiler.so`) that turns an OpenVINO graph into something the
+NPU can execute. Fedora packages them separately — `intel-npu-driver` and
+`intel-npu-compiler` — and only the first is pulled in as a dependency.
+
+With the backend alone the NPU looks entirely healthy: it enumerates as
+`Intel(R) AI Boost`, `/dev/accel/accel0` exists, and properties read back. The
+first compile then fails, and the error names whatever the plugin tried first
+(`Unsupported configuration key: NPU_MAX_TILES`), which sends you chasing a
+setting. `NPU_COMPILER_VERSION` reads `0`, and a plain
+`Core.compile_model(xml, "NPU")` — no GenAI involved — fails identically with
+`ZE_RESULT_ERROR_UNSUPPORTED_FEATURE` from the graph extension.
+
+**This supersedes an earlier note here** suggesting plain `Core.compile_model`
+as a workaround for the router. It is not one; the missing compiler defeats
+every path equally.
 
 **What to do.**
 
-- Ship a **compatibility probe** — try to compile a tiny model on the NPU at
-  first run, record the result, and say plainly in the panel whether the NPU is
-  usable for LLMs on this machine rather than making the user read a stack
-  trace.
-- Test against `openvino-genai` versions pinned to the Level Zero driver, and
-  publish a known-good matrix.
+- Keylane now detects the missing library and says so in the panel instead of
+  reporting the misleading configuration key.
+- The installer should check for it and offer to install it, the same way it
+  checks the other prerequisites.
+- Fedora's `intel-npu-compiler` is built from OpenVINO 2025.1.0 while the venv
+  runs 2026.3.0. If that combination misbehaves, Intel's own
+  `intel-driver-compiler-npu` release matching the driver version is the
+  fallback.
+- Ship a **compatibility probe** — compile a tiny model on the NPU at first
+  run, record the result, and state plainly whether the NPU is usable for LLMs
+  on this machine.
 - Support **NPU-targeted exports** explicitly (static shapes, channel-wise
   int4). A model tagged `-npu` should be preferred for the router.
-- Consider **OpenVINO plain `Core.compile_model`** for the router instead of
-  GenAI's LLM pipeline. The router emits one small JSON object; it does not need
-  a full chat pipeline, and a plain IR compile is far more likely to load.
 
 ## 2. Model downloads are still fragile
 

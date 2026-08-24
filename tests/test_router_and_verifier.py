@@ -136,3 +136,21 @@ def test_verifier_accepts_image_output(tmp_path):
         evidence=evidence,
     )
     assert result.complete is True
+
+
+def test_npu_diagnosis_is_silent_when_the_compiler_is_installed(monkeypatch):
+    """No compiler, no explanation to give — and vice versa.
+
+    The NPU enumerates fine with only the Level Zero backend installed, so a
+    compile failure gets blamed on whatever config key the plugin tried first.
+    The diagnosis exists to name the missing package instead.
+    """
+    from app.npu import pipeline
+
+    monkeypatch.setattr(pipeline, "npu_compiler_present", lambda: True)
+    assert pipeline.npu_failure_diagnosis() == ""
+
+    monkeypatch.setattr(pipeline, "npu_compiler_present", lambda: False)
+    message = pipeline.npu_failure_diagnosis()
+    assert "libnpu_driver_compiler.so" in message
+    assert "intel-npu-compiler" in message
