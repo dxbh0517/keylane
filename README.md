@@ -275,6 +275,7 @@ The handbook is served at `/docs` and its source lives in `docs/`:
 | [Writing plugins](docs/PLUGINS.md) | Workers, MCP servers, tools, skills |
 | [Writing themes](docs/THEMES.md) | Palettes and popup shapes |
 | [Canvas answers](docs/CANVAS.md) | The structured document answers render from |
+| [Speech](docs/SPEECH.md) | Reading answers aloud, and the engines that do it |
 | [What it still needs](docs/ROADMAP.md) | Known gaps and next steps |
 | [HTTP API](docs/API.md) | Every endpoint |
 

@@ -20,6 +20,7 @@ skill.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -28,7 +29,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.skills import SkillError, get_skill_registry, load_skill_file
+from app.config import ROOT as ROOT_DIR
+from app.skills import SkillError, get_skill_registry
 
 logger = logging.getLogger(__name__)
 
@@ -378,3 +380,69 @@ async def install(reference: str, paths: list[str]) -> dict[str, Any]:
             "repository cannot change the assistant's behaviour on import."
         ),
     }
+
+
+# --------------------------------------------------------------- catalog --
+
+CATALOG_DIR = ROOT_DIR / "skills" / "catalog"
+
+
+def load_catalog() -> list[dict[str, Any]]:
+    """The curated shortlist, from ``skills/catalog/*.json``.
+
+    A catalog entry is only a shortcut to the ordinary GitHub import — it
+    grants nothing extra, so a bad entry is a broken link, not a risk.
+    """
+    entries: list[dict[str, Any]] = []
+    if not CATALOG_DIR.is_dir():
+        return entries
+    for path in sorted(CATALOG_DIR.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Bad skill-catalog entry %s: %s", path.name, exc)
+            continue
+        if not (data.get("repo") and data.get("path")):
+            logger.warning("Skill-catalog entry %s has no repo/path", path.name)
+            continue
+        data.setdefault("id", path.stem)
+        data.setdefault("name", data["id"])
+        entries.append(data)
+    return entries
+
+
+async def catalog_with_status() -> dict[str, Any]:
+    """The catalog, marked with what is installed and what has moved.
+
+    Offering an install that 404s is worse than offering nothing, so each
+    entry's path is checked against the repository it names.
+    """
+    entries = load_catalog()
+    if not entries:
+        return {"skills": [], "count": 0}
+
+    installed = {s.name for s in get_skill_registry().list()}
+
+    # One tree read per repository, not one per entry.
+    repos: dict[str, set[str]] = {}
+    for entry in entries:
+        repos.setdefault(entry["repo"], set())
+    for repo in list(repos):
+        try:
+            found = await discover(repo)
+            repos[repo] = {s["path"] for s in found["skills"]}
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Could not verify catalog repo %s: %s", repo, exc)
+            repos[repo] = set()
+
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        known = repos.get(entry["repo"]) or set()
+        item = dict(entry)
+        item["installed"] = entry.get("name") in installed or entry["id"] in installed
+        # Empty means the repo could not be read at all — not that it is gone.
+        item["verified"] = bool(known) and entry["path"] in known
+        item["unreachable"] = not known
+        out.append(item)
+
+    return {"skills": out, "count": len(out)}

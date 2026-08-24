@@ -492,6 +492,10 @@ window.keylane-popup {{
   background-color: alpha(@ag_danger, 0.18);
   color: @ag_danger;
 }}
+.keylane-icon-btn.speaking {{
+  background-color: alpha(@ag_accent, 0.18);
+  color: @ag_accent;
+}}
 
 .keylane-send {{
   border-radius: {inner_radius}px;
@@ -550,6 +554,8 @@ window.keylane-orb-window {{ background-color: transparent; }}
   border-color: alpha(@ag_accent, 0.5);
 }}
 .keylane-result-shell.failed {{ border-color: alpha(@ag_danger, 0.7); }}
+/* Hovering pauses the auto-dismiss; the brighter edge says so. */
+.keylane-result-shell.hovered {{ border-color: alpha(@ag_accent, 0.55); }}
 
 .canvas-title {{
   font-size: {popup.font_size - 2}px;

@@ -1,0 +1,13 @@
+{
+  "id": "xlsx",
+  "name": "Spreadsheets",
+  "repo": "anthropics/skills",
+  "path": "skills/xlsx/SKILL.md",
+  "installs": "184K",
+  "source": "Anthropic",
+  "tags": [
+    "documents",
+    "data"
+  ],
+  "desc": "Read and write .xlsx workbooks, including formulas and multiple sheets."
+}

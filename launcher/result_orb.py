@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from typing import Any, Callable
 
 import gi
@@ -33,6 +34,7 @@ gi.require_version("Gdk", "4.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 from launcher.canvas_view import build_canvas  # noqa: E402
+from launcher.loader import OrbitLoader  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +49,20 @@ except (ValueError, ImportError):  # pragma: no cover - environment dependent
 
 
 ORB_SIZE = 56
-PANEL_WIDTH = 460
+# A one-line answer in a 440px panel is mostly empty panel. Width is chosen
+# from how much there is to show, so the squircle fits its content.
+PANEL_WIDTH = 440
+PANEL_WIDTH_COMPACT = 300
+COMPACT_CHARS = 90
 PANEL_MAX_HEIGHT = 560
 EDGE_MARGIN = 24
+
+# The panel closes itself, because an answer you have read should not need
+# dismissing. Hovering pauses the countdown — reading is a reason to stay.
+DISMISS_AFTER = 9.0
+DISMISS_AFTER_LONG = 20.0        # more to read, more time to read it
+LONG_ANSWER_CHARS = 220
+DISMISS_TICK_MS = 100
 
 # Apple's move/reposition spring: critically damped, response 0.4s.
 SPRING_RESPONSE = 0.36
@@ -62,6 +75,58 @@ CORNERS = {
     "bottom-left": (Gtk.Align.START, Gtk.Align.END),
     "center": (Gtk.Align.CENTER, Gtk.Align.CENTER),
 }
+
+
+def _canvas_text(canvas: dict[str, Any] | None) -> str:
+    """Flatten a canvas into something worth reading aloud.
+
+    Tables and code are described rather than spelled out — reading a df
+    listing cell by cell is worse than useless.
+    """
+    if not canvas:
+        return ""
+    parts: list[str] = []
+    for key in ("title", "summary"):
+        value = str(canvas.get(key) or "").strip()
+        if value:
+            parts.append(value)
+    for block in canvas.get("blocks") or []:
+        kind = str(block.get("type") or "text")
+        if kind in {"text", "heading", "note"}:
+            parts.append(str(block.get("text") or ""))
+        elif kind == "stats":
+            parts += [
+                f"{item.get('label')}: {item.get('value')}"
+                for item in block.get("items") or []
+            ]
+        elif kind == "list":
+            parts += [str(entry) for entry in block.get("entries") or []]
+        elif kind == "table":
+            rows = block.get("rows") or []
+            parts.append(f"A table of {len(rows)} row{'s' if len(rows) != 1 else ''}.")
+        elif kind == "code":
+            parts.append("Command output is shown on screen.")
+    cleaned: list[str] = []
+    for part in parts:
+        value = part.strip()
+        if value:
+            # Joining with ". " after a sentence that already ends in one
+            # produces "..", which every synthesiser reads as a pause and a
+            # stumble.
+            cleaned.append(value.rstrip(".").strip() if value.endswith(".") else value)
+    return ". ".join(cleaned)
+
+
+def _panel_width_for(canvas: dict[str, Any] | None, text: str) -> int:
+    """Wide enough for the content, narrow enough not to look empty."""
+    blocks = (canvas or {}).get("blocks") or []
+    kinds = {str(b.get("type") or "") for b in blocks}
+    # Tables, stat rows and code all need horizontal room; prose does not.
+    if kinds & {"table", "stats", "code", "links"}:
+        return PANEL_WIDTH
+    if len(blocks) > 2 or len(text) > COMPACT_CHARS:
+        return PANEL_WIDTH
+    return PANEL_WIDTH_COMPACT
 
 
 def _critically_damped(t: float) -> float:
@@ -86,12 +151,15 @@ class ResultOrb(Gtk.ApplicationWindow):
         self,
         app: Gtk.Application,
         *,
+        client: Any = None,
         corner: str = "top-right",
         on_open_link: Callable[[str], None] | None = None,
         on_reopen: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(application=app, title="Keylane result")
+        self.client = client
         self.corner = corner if corner in CORNERS else "top-right"
+        self._speech_available = bool(client and client.speech_available())
         self._on_open_link = on_open_link
         self._on_reopen = on_reopen
 
@@ -102,6 +170,12 @@ class ResultOrb(Gtk.ApplicationWindow):
         self._canvas: dict[str, Any] | None = None
         self._actions: Gtk.Widget | None = None
         self._status = "Working…"
+        self._panel_width = PANEL_WIDTH
+        self._hovered = False
+        self._dismiss_tick: int | None = None
+        self._dismiss_left = 0.0
+        self._speaking = False
+        self._answer_text = ""
 
         self.set_decorated(False)
         self.set_resizable(False)
@@ -115,6 +189,11 @@ class ResultOrb(Gtk.ApplicationWindow):
         key = Gtk.EventControllerKey()
         key.connect("key-pressed", self._on_key)
         self.add_controller(key)
+
+        hover = Gtk.EventControllerMotion()
+        hover.connect("enter", self._on_hover_enter)
+        hover.connect("leave", self._on_hover_leave)
+        self.add_controller(hover)
         self.connect("map", lambda *_: GLib.idle_add(self._update_input_region))
 
     # ------------------------------------------------------------- placement
@@ -173,10 +252,8 @@ class ResultOrb(Gtk.ApplicationWindow):
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         header.set_valign(Gtk.Align.CENTER)
 
-        self._spinner = Gtk.Spinner()
-        self._spinner.set_size_request(20, 20)
-        self._spinner.set_valign(Gtk.Align.CENTER)
-        header.append(self._spinner)
+        self._loader = OrbitLoader(26)
+        header.append(self._loader)
 
         self._status_label = Gtk.Label(label=self._status)
         self._status_label.set_xalign(0.0)
@@ -184,6 +261,17 @@ class ResultOrb(Gtk.ApplicationWindow):
         self._status_label.add_css_class("keylane-progress")
         self._status_label.set_ellipsize(3)  # END
         header.append(self._status_label)
+
+        # Read aloud sits beside close, hidden until there is an answer and
+        # speech is actually available.
+        self._speak_btn = Gtk.Button()
+        self._speak_btn.set_icon_name("audio-speakers-symbolic")
+        self._speak_btn.set_tooltip_text("Read aloud")
+        self._speak_btn.add_css_class("keylane-icon-btn")
+        self._speak_btn.set_valign(Gtk.Align.CENTER)
+        self._speak_btn.set_visible(False)
+        self._speak_btn.connect("clicked", self._on_speak)
+        header.append(self._speak_btn)
 
         self._close_btn = Gtk.Button()
         self._close_btn.set_icon_name("window-close-symbolic")
@@ -231,22 +319,41 @@ class ResultOrb(Gtk.ApplicationWindow):
     # ------------------------------------------------------------- geometry
 
     def _apply_geometry(self) -> None:
-        """Size the shell for the current point in the orb → panel animation."""
-        t = self._progress
-        width = int(ORB_SIZE + (PANEL_WIDTH - ORB_SIZE) * t)
-        self._shell.set_size_request(width, -1)
+        """Size the shell for the current point in the orb -> panel animation.
 
+        Width interpolates; height is left to the content. Forcing a fixed
+        panel height is what left a one-line answer floating in 40px of empty
+        space — a squircle should be as tall as what it holds.
+        """
+        t = self._progress
         collapsed = t < 0.02
-        self._shell.set_hexpand(False)
+
         if collapsed:
             self._shell.set_size_request(ORB_SIZE, ORB_SIZE)
             self._shell.add_css_class("is-orb")
         else:
+            width = int(ORB_SIZE + (self._panel_width - ORB_SIZE) * t)
+            self._shell.set_size_request(width, -1)
             self._shell.remove_css_class("is-orb")
 
+        self._shell.set_hexpand(False)
+        has_answer = self._canvas is not None
+
+        # In the collapsed orb the loader is the only thing there, centred.
+        self._loader.set_visible(collapsed or not has_answer)
+        self._loader.set_size(26 if not collapsed else 30)
+        # Collapsed, the header holds only the loader and must fill the orb so
+        # CENTER alignment has the whole circle to centre within. Expanded, it
+        # is a normal left-aligned row again.
+        self._header.set_hexpand(collapsed)
+        self._header.set_vexpand(collapsed)
+        self._loader.set_hexpand(collapsed)
+        self._loader.set_vexpand(collapsed)
         self._status_label.set_visible(not collapsed)
-        self._close_btn.set_visible(t > 0.9 and self._canvas is not None)
-        self._body.set_visible(t > 0.55 and self._canvas is not None)
+        self._close_btn.set_visible(t > 0.9 and has_answer)
+        self._speak_btn.set_visible(t > 0.9 and has_answer and self._speech_available)
+
+        self._body.set_visible(t > 0.55 and has_answer)
         self._body.set_opacity(max(0.0, min((t - 0.55) / 0.45, 1.0)))
         self._shell.set_opacity(0.35 + 0.65 * min(t * 4, 1.0) if t < 0.25 else 1.0)
         GLib.idle_add(self._update_input_region)
@@ -280,19 +387,92 @@ class ResultOrb(Gtk.ApplicationWindow):
 
         self._tick = GLib.timeout_add(int(1000 / SPRING_FPS), frame)
 
+    # ------------------------------------------------------- auto-dismiss
+
+    def _on_hover_enter(self, *_args) -> None:
+        self._hovered = True
+        self._shell.add_css_class("hovered")
+
+    def _on_hover_leave(self, *_args) -> None:
+        self._panel_width = PANEL_WIDTH
+        self._hovered = False
+        self._shell.remove_css_class("hovered")
+
+    def _start_countdown(self, seconds: float) -> None:
+        """Close after ``seconds``, pausing while the pointer is over it."""
+        self._cancel_countdown()
+        self._dismiss_left = seconds
+
+        def tick() -> bool:
+            # Hovering, speaking, or an unanswered approval all mean the user
+            # is still using this — hold.
+            if self._hovered or self._speaking or self._actions is not None:
+                return True
+            self._dismiss_left -= DISMISS_TICK_MS / 1000.0
+            if self._dismiss_left <= 0:
+                self._dismiss_tick = None
+                self.dismiss()
+                return False
+            return True
+
+        self._dismiss_tick = GLib.timeout_add(DISMISS_TICK_MS, tick)
+
+    def _cancel_countdown(self) -> None:
+        if self._dismiss_tick is not None:
+            GLib.source_remove(self._dismiss_tick)
+            self._dismiss_tick = None
+
+    # -------------------------------------------------------- read aloud
+
+    def _on_speak(self, *_args) -> None:
+        if self._speaking:
+            self._speak_btn.set_sensitive(False)
+            threading.Thread(target=self._stop_speech, daemon=True).start()
+            return
+        text = self._answer_text.strip()
+        if not text:
+            return
+        self._speaking = True
+        self._speak_btn.add_css_class("speaking")
+        self._speak_btn.set_tooltip_text("Stop reading")
+
+        def work() -> None:
+            ok, detail = self.client.speak(text)
+
+            def done() -> bool:
+                self._speaking = False
+                self._speak_btn.remove_css_class("speaking")
+                self._speak_btn.set_tooltip_text("Read aloud")
+                self._speak_btn.set_sensitive(True)
+                if not ok and detail:
+                    self._status_label.set_text(detail[:110])
+                # Reading finished, so the countdown may resume.
+                if self._canvas is not None and self._dismiss_tick is None:
+                    self._start_countdown(DISMISS_AFTER)
+                return False
+
+            GLib.idle_add(done)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _stop_speech(self) -> None:
+        self.client.stop_speech()
+
     # ----------------------------------------------------------------- API
 
     def start(self, message: str) -> None:
         """Show the orb, spinning, for a request that has just been sent."""
         self._canvas = None
+        self._answer_text = ""
         self._clear_actions()
+        self._cancel_countdown()
         self._expanded = False
         self._progress = 0.0
         self._status = message[:80] or "Working…"
         self._status_label.set_text(self._status)
         self._set_body(None)
         self._apply_geometry()
-        self._spinner.start()
+        self._loader.start()
         self.present()
 
     def set_status(self, text: str) -> None:
@@ -303,9 +483,11 @@ class ResultOrb(Gtk.ApplicationWindow):
         self, canvas: dict[str, Any] | None, *, title: str = "", failed: bool = False
     ) -> None:
         """Expand the orb into the answer."""
-        self._spinner.stop()
+        self._loader.stop()
         self._clear_actions()
         self._canvas = canvas
+        self._answer_text = _canvas_text(canvas)
+        self._panel_width = _panel_width_for(canvas, self._answer_text)
         self._status_label.set_text(
             title or (canvas or {}).get("title") or ("Failed" if failed else "Done")
         )
@@ -317,6 +499,13 @@ class ResultOrb(Gtk.ApplicationWindow):
         self._expanded = True
         self._animate_to(1.0)
         self.present()
+
+        # A longer answer earns a longer read before it closes itself.
+        self._start_countdown(
+            DISMISS_AFTER_LONG
+            if len(self._answer_text) > LONG_ANSWER_CHARS
+            else DISMISS_AFTER
+        )
 
     def show_confirmation(
         self,
@@ -330,7 +519,8 @@ class ResultOrb(Gtk.ApplicationWindow):
         A gated tool has to be approvable without reopening the bar, or the
         hand-off to the orb would just lose the task.
         """
-        self._spinner.stop()
+        self._loader.stop()
+        self._cancel_countdown()
         tool = data.get("pending_tool") or "this action"
         arguments = data.get("pending_arguments") or {}
         self._status_label.set_text("Approval needed")
@@ -349,6 +539,7 @@ class ResultOrb(Gtk.ApplicationWindow):
                 }
             )
         self._canvas = canvas
+        self._panel_width = PANEL_WIDTH
         self._set_body(canvas)
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -382,7 +573,8 @@ class ResultOrb(Gtk.ApplicationWindow):
 
     def dismiss(self) -> None:
         """Collapse and hide. Interruptible at any point in the animation."""
-        self._spinner.stop()
+        self._loader.stop()
+        self._cancel_countdown()
         self._expanded = False
         self._animate_to(0.0)
 

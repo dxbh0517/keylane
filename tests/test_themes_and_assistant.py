@@ -558,3 +558,82 @@ def test_skill_name_falls_back_to_the_folder():
 
     name, _, _ = _metadata("no front matter", "skills/deploy/SKILL.md")
     assert name == "deploy"
+
+
+# --------------------------------------------------------------------- tts
+
+from app.tts import clean_for_speech, probe_engines, resolve  # noqa: E402
+
+
+def test_speech_text_is_stripped_of_markup():
+    cleaned = clean_for_speech("**Disk** is `74%` full.\n\n- root\n- boot")
+    # A synthesiser should read words, not asterisks and backticks.
+    assert "*" not in cleaned and "`" not in cleaned
+    assert "Disk" in cleaned and "74%" in cleaned
+
+
+def test_speech_text_replaces_urls_and_code_blocks():
+    assert "a link" in clean_for_speech("See https://example.com/x for more")
+    assert "code block" in clean_for_speech("Run:\n```\nls -la\n```\nDone")
+
+
+def test_speech_text_is_capped_at_a_sentence():
+    body = ("This is a sentence. " * 200).strip()
+    cut = clean_for_speech(body, limit=200)
+    assert len(cut) <= 200
+    assert cut.endswith(".")
+
+
+def test_engine_probe_reports_every_engine():
+    engines = {e.id for e in probe_engines(refresh=True)}
+    # Present or not, all three must be described so the panel can explain.
+    assert engines == {"piper", "espeak", "flite"}
+
+
+def test_unavailable_engine_names_how_to_install_it():
+    for engine in probe_engines():
+        if not engine.available:
+            assert engine.install_hint, f"{engine.id} gives no way to fix it"
+
+
+def test_resolve_falls_back_when_the_engine_is_missing():
+    engine, _voice = resolve("does-not-exist", "")
+    available = [e for e in probe_engines() if e.available]
+    if available:
+        assert engine is not None and engine.available
+    else:
+        assert engine is None
+
+
+# --------------------------------------------------- result orb behaviour
+
+from launcher_stubs import canvas_text, panel_width  # noqa: E402
+
+
+def test_spoken_canvas_describes_tables_rather_than_reading_them():
+    text = canvas_text(
+        {"title": "Disk", "blocks": [
+            {"type": "table", "columns": ["a"], "rows": [["1"], ["2"]]},
+            {"type": "code", "text": "df -h"},
+        ]}
+    )
+    assert "table of 2 rows" in text
+    assert "df -h" not in text            # reading raw output aloud is useless
+    assert ".." not in text               # doubled stops make it stumble
+
+
+def test_spoken_canvas_includes_stats_and_prose():
+    text = canvas_text(
+        {"summary": "All good.", "blocks": [
+            {"type": "stats", "items": [{"label": "Free", "value": "2 GB"}]},
+            {"type": "text", "text": "Nothing to do."},
+        ]}
+    )
+    assert "Free: 2 GB" in text and "Nothing to do" in text
+
+
+def test_short_answers_get_a_narrow_panel():
+    short = {"blocks": [{"type": "text", "text": "It is 9:40 PM."}]}
+    wide = {"blocks": [{"type": "table", "columns": ["a"], "rows": [["1"]]}]}
+    # A one-liner in a full-width panel is mostly empty panel.
+    assert panel_width(short, canvas_text(short)) < panel_width(wide, canvas_text(wide))

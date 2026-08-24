@@ -1,0 +1,13 @@
+{
+  "id": "pdf",
+  "name": "PDF handling",
+  "repo": "anthropics/skills",
+  "path": "skills/pdf/SKILL.md",
+  "installs": "184K",
+  "source": "Anthropic",
+  "tags": [
+    "documents",
+    "files"
+  ],
+  "desc": "Read, split, merge and fill PDFs. Useful whenever an answer involves a document on disk."
+}

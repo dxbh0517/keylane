@@ -336,6 +336,72 @@ $("#refresh-tools").addEventListener("click", async (e) => {
   }
 });
 
+let speechEngines = [];
+
+function renderVoices(engineId, selected) {
+  const engine = speechEngines.find((e) => e.id === engineId);
+  const sel = $("#speech-voice");
+  const voices = engine?.voices || [];
+  sel.innerHTML = voices.length
+    ? voices.map((v) => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("")
+    : `<option value="">— no voices —</option>`;
+  if (selected && voices.some((v) => v.id === selected)) sel.value = selected;
+}
+
+async function loadSpeech(settings) {
+  const data = await api("/api/speech");
+  speechEngines = data.engines || [];
+  const s = settings || data.settings || {};
+  const form = $("#assistant-form");
+
+  form.speech_enabled.checked = !!s.enabled;
+  form.auto_speak.checked = !!s.auto_speak;
+  form.speech_rate.value = s.rate ?? 100;
+  form.speech_pitch.value = s.pitch ?? 50;
+
+  const usable = speechEngines.filter((e) => e.available);
+  $("#speech-engine").innerHTML = usable.length
+    ? usable.map((e) => `<option value="${esc(e.id)}">${esc(e.name)}</option>`).join("")
+    : `<option value="">— none installed —</option>`;
+  if (s.engine && usable.some((e) => e.id === s.engine)) $("#speech-engine").value = s.engine;
+  renderVoices($("#speech-engine").value, s.voice);
+
+  // Say what is missing and how to get it, rather than showing an empty list.
+  const missing = speechEngines.filter((e) => !e.available && e.install_hint);
+  $("#speech-note").textContent = usable.length
+    ? missing.length
+      ? `Also available: ${missing.map((e) => `${e.name} — ${e.install_hint}`).join(" · ")}`
+      : ""
+    : "No speech engine installed. Try: sudo dnf install espeak-ng piper";
+}
+
+$("#speech-engine").addEventListener("change", (e) => renderVoices(e.target.value, ""));
+
+$("#speech-test").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const note = $("#speech-note");
+  const previous = note.textContent;
+  note.textContent = "Speaking…";
+  try {
+    await api("/api/speech/speak", {
+      method: "POST",
+      body: JSON.stringify({
+        text: "Keylane is ready. This is how answers will sound.",
+        engine: $("#speech-engine").value,
+        voice: $("#speech-voice").value,
+        rate: Number($("#assistant-form").speech_rate.value) || 100,
+        pitch: Number($("#assistant-form").speech_pitch.value) || 50,
+      }),
+    });
+    note.textContent = previous;
+  } catch (err) {
+    note.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 async function loadAssistant() {
   const data = await api("/api/assistant");
   const s = data.settings || {};
@@ -367,6 +433,8 @@ async function loadAssistant() {
   form.from_address.value = s.email?.from_address || "";
   form.from_name.value = s.email?.from_name || "";
   form.allowed_recipients.value = (s.email?.allowed_recipients || []).join("\n");
+
+  await loadSpeech(s.speech);
 
   $("#assistant-device").textContent = data.model_loaded
     ? `NPU model on ${data.device || "device"}`
@@ -415,6 +483,14 @@ $("#assistant-form").addEventListener("submit", async (e) => {
       enabled: form.shell_enabled.checked,
       allowlist: lines(form.shell_allowlist.value),
       working_directory: form.shell_working_directory.value.trim() || "~",
+    },
+    speech: {
+      enabled: form.speech_enabled.checked,
+      auto_speak: form.auto_speak.checked,
+      engine: form.speech_engine.value,
+      voice: form.speech_voice.value,
+      rate: Number(form.speech_rate.value) || 100,
+      pitch: Number(form.speech_pitch.value) || 50,
     },
     email: {
       enabled: form.email_enabled.checked,
@@ -787,6 +863,65 @@ $("#skill-list").addEventListener("change", async (e) => {
   } catch (err) {
     toast(err.message);
     await loadSkills();
+  }
+});
+
+async function loadSkillCatalog() {
+  let data;
+  try {
+    data = await api("/api/skills/catalog");
+  } catch (err) {
+    $("#skill-catalog").innerHTML = `<p class="empty">${esc(err.message)}</p>`;
+    return;
+  }
+  const skills = data.skills || [];
+  $("#skill-catalog-meta").textContent = `${skills.length} suggested`;
+  $("#skill-catalog").innerHTML = skills.length
+    ? skills
+        .map((s) => {
+          const state = s.installed
+            ? `<span class="badge ok">installed</span>`
+            : s.unreachable
+              ? `<span class="badge">source unreachable</span>`
+              : s.verified
+                ? `<button type="button" class="btn primary small skill-catalog-install"
+                     data-repo="${esc(s.repo)}" data-path="${esc(s.path)}">Install</button>`
+                : `<span class="badge warn">moved upstream</span>`;
+          return `<article class="tool-card safe">
+        <div class="row between">
+          <span class="name">${esc(s.name)}</span>
+          <span class="badge">${esc(s.installs || "")}</span>
+        </div>
+        <p class="desc">${esc(s.desc || "")}</p>
+        <p class="args">${esc(s.source || s.repo)} · ${esc(s.repo)}</p>
+        <div class="tool-controls">${state}</div>
+      </article>`;
+        })
+        .join("")
+    : `<p class="empty">No catalog entries under <code>skills/catalog/</code>.</p>`;
+}
+
+$("#skill-catalog").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".skill-catalog-install");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = "Installing…";
+  try {
+    const res = await api("/api/skills/import", {
+      method: "POST",
+      body: JSON.stringify({ repo: btn.dataset.repo, paths: [btn.dataset.path] }),
+    });
+    const failed = res.failed || [];
+    toast(
+      failed.length
+        ? `Failed: ${failed[0].reason}`
+        : "Installed — switch it on below when you want it active"
+    );
+    await Promise.all([loadSkills(), loadSkillCatalog()]);
+  } catch (err) {
+    toast(err.message);
+    btn.disabled = false;
+    btn.textContent = "Install";
   }
 });
 
@@ -1565,6 +1700,7 @@ async function refreshAll() {
     loadPlugins(),
     loadCatalog(),
     loadSkills(),
+    loadSkillCatalog(),
     loadThemes(),
     loadProjects(),
     loadWorkerEndpoints(),

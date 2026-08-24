@@ -1,0 +1,13 @@
+{
+  "id": "canvas-design",
+  "name": "Canvas design",
+  "repo": "anthropics/skills",
+  "path": "skills/canvas-design/SKILL.md",
+  "installs": "184K",
+  "source": "Anthropic",
+  "tags": [
+    "design",
+    "images"
+  ],
+  "desc": "Produce visual art as PNG and PDF using design principles rather than guesswork."
+}

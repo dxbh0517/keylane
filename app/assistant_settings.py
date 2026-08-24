@@ -115,6 +115,26 @@ class EmailSettings(BaseModel):
         return value
 
 
+class SpeechSettings(BaseModel):
+    enabled: bool = False
+    """Show the read-aloud button and allow the speak tool."""
+
+    engine: str = ""
+    """piper | espeak | flite. Empty picks the best one installed."""
+
+    voice: str = ""
+    """Engine-specific voice id. Empty picks the engine's first voice."""
+
+    rate: int = 100
+    """Speaking rate as a percentage of the engine's normal speed."""
+
+    pitch: int = 50
+    """0-99, eSpeak only."""
+
+    auto_speak: bool = False
+    """Read every answer aloud as soon as it arrives."""
+
+
 class DelegationSettings(BaseModel):
     enabled: bool = True
     """Let the assistant hand work to configured AI tools (Claude Code, …)."""
@@ -135,6 +155,7 @@ class AssistantSettings(BaseModel):
     shell: ShellPolicy = Field(default_factory=ShellPolicy)
     search: SearchSettings = Field(default_factory=SearchSettings)
     email: EmailSettings = Field(default_factory=EmailSettings)
+    speech: SpeechSettings = Field(default_factory=SpeechSettings)
     delegation: DelegationSettings = Field(default_factory=DelegationSettings)
 
     def sanitized(self) -> dict[str, Any]:
@@ -169,6 +190,7 @@ def load_assistant_settings(*, refresh: bool = False) -> AssistantSettings:
         shell=ShellPolicy(**(raw.get("shell") or {})),
         search=SearchSettings(**(raw.get("search") or {})),
         email=EmailSettings(**(raw.get("email") or {})),
+        speech=SpeechSettings(**(raw.get("speech") or {})),
         delegation=DelegationSettings(**(raw.get("delegation") or {})),
     )
     return _cache
@@ -201,6 +223,7 @@ def save_assistant_settings(settings: AssistantSettings) -> AssistantSettings:
         ("shell", settings.shell),
         ("search", settings.search),
         ("email", settings.email),
+        ("speech", settings.speech),
         ("delegation", settings.delegation),
     ):
         lines.append(f"[{section}]")
@@ -220,6 +243,7 @@ class AssistantSettingsUpdate(BaseModel):
     shell: dict[str, Any] | None = None
     search: dict[str, Any] | None = None
     email: dict[str, Any] | None = None
+    speech: dict[str, Any] | None = None
     delegation: dict[str, Any] | None = None
 
 
@@ -230,7 +254,7 @@ def update_assistant_settings(update: AssistantSettingsUpdate) -> AssistantSetti
 
     if "persona" in payload:
         data["persona"] = payload["persona"]
-    for section in ("tools", "shell", "search", "delegation"):
+    for section in ("tools", "shell", "search", "speech", "delegation"):
         if section in payload:
             data[section] = {**data[section], **payload[section]}
     if "email" in payload:

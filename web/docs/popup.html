@@ -18,7 +18,7 @@
           <span>Handbook</span>
         </span>
       </a>
-      <nav class="side-nav" aria-label="Documentation"><div><p class="side-group-title">Start here</p><div class="side-links"><a href="index.html">Keylane handbook</a><a href="install.html">Install, update, uninstall</a><a href="popup.html" aria-current="page">The popup and the tray</a></div></div><div><p class="side-group-title">The assistant</p><div class="side-links"><a href="assistant.html">How the assistant thinks</a><a href="tools.html">Tools</a><a href="skills.html">Skills</a><a href="canvas.html">Canvas answers</a></div></div><div><p class="side-group-title">Extending</p><div class="side-links"><a href="plugins.html">Writing plugins</a><a href="themes.html">Writing themes</a><a href="api.html">HTTP API</a><a href="roadmap.html">What it still needs</a></div></div></nav>
+      <nav class="side-nav" aria-label="Documentation"><div><p class="side-group-title">Start here</p><div class="side-links"><a href="index.html">Keylane handbook</a><a href="install.html">Install, update, uninstall</a><a href="popup.html" aria-current="page">The popup and the tray</a></div></div><div><p class="side-group-title">The assistant</p><div class="side-links"><a href="assistant.html">How the assistant thinks</a><a href="tools.html">Tools</a><a href="skills.html">Skills</a><a href="speech.html">Speech</a><a href="canvas.html">Canvas answers</a></div></div><div><p class="side-group-title">Extending</p><div class="side-links"><a href="plugins.html">Writing plugins</a><a href="themes.html">Writing themes</a><a href="api.html">HTTP API</a><a href="roadmap.html">What it still needs</a></div></div></nav>
       <div class="side-foot">
         <a href="/">← Control panel</a>
         <span>Local-first · 127.0.0.1</span>
@@ -37,8 +37,13 @@
 <p>The microphone button is a toggle: click it to start dictating, click again to stop. Whisper transcribes locally and appends the text to whatever is already in the field. A recording you forget about stops itself after two minutes.</p>
 <h2>What happens after you press Enter</h2>
 <p>The bar gets out of the way. It closes, and a small <strong>orb</strong> appears in a screen corner and spins while the work runs — so a Claude Code job that takes two minutes does not pin an input field to your screen.</p>
+<p>While it works, three arcs orbit a pulsing core — drawn with Cairo rather than a stock spinner, and centred in the circle. They run at unequal rates so the figure never visibly repeats. With animations switched off in your desktop settings it becomes a slow opacity breath instead.</p>
 <p>When the answer arrives the orb <strong>expands into a squircle</strong> showing the result. It grows from the orb rather than appearing centre-screen, so it is obvious where it came from, and the growth is a critically damped spring: no bounce, because nothing here was thrown. Clicking away or pressing <kbd>Esc</kbd> collapses it, interruptibly, from wherever the animation currently is.</p>
+<p>The panel is sized to its answer: a one-line reply gets a narrow squircle, a table gets the full width. It <strong>closes itself</strong> after about nine seconds — twenty for a longer answer — and the countdown <strong>pauses while your pointer is over it</strong>, so reading is never interrupted. A request waiting for your approval never times out.</p>
 <p>If the assistant needs approval for something, the orb expands into an Allow / Cancel choice instead — you never have to reopen the bar to approve.</p>
+<h2>Read aloud</h2>
+<p>With speech enabled, answers carry a speaker button. Tables and command output are described rather than spelled out — reading a <code>df</code> listing cell by cell is worse than useless — and the auto-dismiss waits until it has finished speaking.</p>
+<p>Turn it on under <strong>Assistant → Read aloud</strong>, where you also pick the engine and voice. See <a href="speech.html">Speech</a>.</p>
 <p>Choose the corner in <strong>Control panel → Gateway → Result panel corner</strong>: <code>top-right</code> (the default), <code>top-left</code>, <code>bottom-right</code>, <code>bottom-left</code> or <code>center</code>.</p>
 <div class="note "><span class="note-title">Note</span><p>Exact corner placement needs <code>gtk4-layer-shell</code>. Without it Keylane uses a screen-sized transparent window with its input region clipped to the orb, which reaches the corner and still lets every click outside pass through to whatever is underneath.</p></div>
 <h2>Answers are canvases, not walls of text</h2>

@@ -72,6 +72,37 @@ class GatewayClient:
 
     # ----------------------------------------------------------------- writes
 
+    def speech_available(self) -> bool:
+        """Whether read-aloud is switched on and an engine is installed."""
+        try:
+            data = self._get("/api/speech")
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(data.get("available")) and bool(
+            (data.get("settings") or {}).get("enabled")
+        )
+
+    def speak(self, text: str) -> tuple[bool, str]:
+        """Read text aloud. Returns ``(ok, detail)``; blocks until finished."""
+        try:
+            with httpx.Client(timeout=600.0) as client:
+                response = client.post(
+                    f"{self.base_url}/api/speech/speak", json={"text": text}
+                )
+                if response.status_code >= 400:
+                    payload = response.json() if response.content else {}
+                    return False, str(payload.get("detail") or response.text)[:200]
+                return True, ""
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)[:200]
+
+    def stop_speech(self) -> None:
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                client.post(f"{self.base_url}/api/speech/stop")
+        except Exception:  # noqa: BLE001
+            pass
+
     def chat(self, payload: dict[str, Any], *, timeout: float = 900.0) -> dict[str, Any]:
         try:
             with httpx.Client(timeout=timeout) as client:

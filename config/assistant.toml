@@ -36,6 +36,14 @@ from_name = ""
 allowed_recipients = []
 timeout_seconds = 30
 
+[speech]
+enabled = false
+engine = ""
+voice = ""
+rate = 100
+pitch = 50
+auto_speak = false
+
 [delegation]
 enabled = true
 follow_up = true

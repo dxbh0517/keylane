@@ -473,6 +473,20 @@ class SkillImportBody(BaseModel):
     paths: list[str] = Field(default_factory=list)
 
 
+@app.get("/api/skills/catalog")
+async def skill_catalog() -> dict[str, Any]:
+    """A curated shortlist of skills worth installing, checked against source."""
+    from app.skill_import import catalog_with_status
+
+    try:
+        return await catalog_with_status()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Skill catalog check failed: %s", exc)
+        from app.skill_import import load_catalog
+
+        return {"skills": load_catalog(), "count": 0, "error": str(exc)[:200]}
+
+
 @app.post("/api/skills/discover")
 async def discover_skills(body: SkillDiscoverBody) -> dict[str, Any]:
     """List the skills in a GitHub repository, without installing anything."""
@@ -867,6 +881,72 @@ async def reload_skills() -> dict[str, Any]:
     for plugin_id, skills in get_plugin_registry().contributed_skills().items():
         registry.add_plugin_skills(plugin_id, skills)
     return {"status": "reloaded", "count": len(registry.list())}
+
+
+# ------------------------------------------------------------------ speech
+
+
+class SpeakBody(BaseModel):
+    text: str = Field(min_length=1)
+    engine: str = ""
+    voice: str = ""
+    rate: int | None = Field(default=None, ge=25, le=400)
+    pitch: int | None = Field(default=None, ge=0, le=99)
+
+
+@app.get("/api/speech")
+async def speech_options() -> dict[str, Any]:
+    """Which speech engines and voices this machine actually has."""
+    from app.tts import probe_engines
+
+    settings = load_assistant_settings().speech
+    engines = probe_engines()
+    return {
+        "settings": settings.model_dump(),
+        "engines": [e.model_dump() for e in engines],
+        "available": any(e.available for e in engines),
+    }
+
+
+@app.post("/api/speech/refresh")
+async def refresh_speech() -> dict[str, Any]:
+    from app.tts import probe_engines
+
+    engines = probe_engines(refresh=True)
+    return {
+        "engines": [e.model_dump() for e in engines],
+        "available": any(e.available for e in engines),
+    }
+
+
+@app.post("/api/speech/speak")
+async def speak_text(body: SpeakBody) -> dict[str, Any]:
+    """Read text aloud on the machine running the gateway."""
+    from app.tts import SpeakError, speak
+
+    settings = load_assistant_settings().speech
+    if not settings.enabled:
+        raise HTTPException(
+            status_code=400,
+            detail="Read aloud is switched off. Enable it under Assistant → Speech.",
+        )
+    try:
+        return await speak(
+            body.text,
+            engine_id=body.engine or settings.engine,
+            voice_id=body.voice or settings.voice,
+            rate=body.rate if body.rate is not None else settings.rate,
+            pitch=body.pitch if body.pitch is not None else settings.pitch,
+        )
+    except SpeakError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/speech/stop")
+async def stop_speech() -> dict[str, Any]:
+    from app.tts import stop
+
+    return {"stopped": await stop()}
 
 
 # ---------------------------------------------------------------- activity

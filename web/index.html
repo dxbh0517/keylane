@@ -224,6 +224,42 @@
           </fieldset>
 
           <fieldset>
+            <legend>Read aloud</legend>
+            <label class="check">
+              <input name="speech_enabled" type="checkbox" />
+              <span>Show a read-aloud button on answers</span>
+            </label>
+            <label class="check">
+              <input name="auto_speak" type="checkbox" />
+              <span>Read every answer aloud automatically</span>
+            </label>
+            <div class="row wrap">
+              <label class="grow">
+                <span>Engine</span>
+                <select name="speech_engine" id="speech-engine"></select>
+              </label>
+              <label class="grow" style="flex:2">
+                <span>Voice</span>
+                <select name="speech_voice" id="speech-voice"></select>
+              </label>
+            </div>
+            <div class="row wrap">
+              <label class="grow">
+                <span>Rate <span class="field-help">percent of normal speed</span></span>
+                <input name="speech_rate" type="number" min="25" max="400" />
+              </label>
+              <label class="grow">
+                <span>Pitch <span class="field-help">eSpeak only</span></span>
+                <input name="speech_pitch" type="number" min="0" max="99" />
+              </label>
+              <div class="row" style="align-items:flex-end">
+                <button type="button" class="btn ghost" id="speech-test">Test</button>
+              </div>
+            </div>
+            <p class="hint muted" id="speech-note"></p>
+          </fieldset>
+
+          <fieldset>
             <legend>Email</legend>
             <label class="check">
               <input name="email_enabled" type="checkbox" />
@@ -378,6 +414,18 @@
             <p class="muted hint" id="skill-note"></p>
           </div>
         </form>
+
+        <div class="card">
+          <div class="section-head">
+            <h3>Suggested skills</h3>
+            <span class="muted hint" id="skill-catalog-meta"></span>
+          </div>
+          <p class="muted hint">
+            A short list worth installing, checked against the source repository.
+            Everything here installs through the same GitHub importer below.
+          </p>
+          <div class="tool-grid" id="skill-catalog"></div>
+        </div>
 
         <details class="installer" id="skill-import">
           <summary>Import skills from GitHub</summary>

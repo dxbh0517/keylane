@@ -90,6 +90,21 @@ Single-file edits can go to either. Always pass the project path, and always
 check `changed_files` in the result before reporting success.
 ```
 
+## Suggested skills
+
+The Skills tab opens with a short curated list — PDF, Word, spreadsheet and
+presentation handling, research, writing structure, and design skills — from
+Anthropic and other reputable sources.
+
+Each entry is checked against its source repository before being offered, so a
+skill that has moved or been renamed upstream is marked rather than handed to
+you as a broken install. Installing one goes through the ordinary GitHub
+importer, so a catalog entry is a **shortcut, not a special case**: nothing it
+can do is anything you could not do by pasting the repository yourself.
+
+Entries live in `skills/catalog/*.json`, one file each — add your own the same
+way. See [the catalog README](https://github.com/dxbh0517/keylane/tree/main/skills/catalog).
+
 ## Importing from GitHub
 
 **Control panel → Skills → Import skills from GitHub**, then give it a

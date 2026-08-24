@@ -61,6 +61,8 @@ NAV: list[Group] = [
                  "Every capability the assistant can reach, and how to add one."),
             Page("skills", "SKILLS.md", "Skills", "Guide",
                  "Teach Keylane your house rules, or import skills from GitHub."),
+            Page("speech", "SPEECH.md", "Speech", "Guide",
+                 "Read answers aloud, locally, with the engine and voice you pick."),
             Page("canvas", "CANVAS.md", "Canvas answers", "Reference",
                  "The structured document an answer is rendered from."),
         ],

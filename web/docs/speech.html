@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Speech · Keylane docs</title>
+  <meta name="description" content="Read answers aloud, locally, with the engine and voice you pick." />
+  <link rel="icon" type="image/png" href="/assets/favicon.png" />
+  <link rel="stylesheet" href="assets/docs.css" />
+</head>
+<body>
+  <div class="docs">
+    <aside class="sidebar">
+      <a class="docs-brand" href="index.html">
+        <img src="/assets/logo.svg" width="30" height="30" alt="" />
+        <span>
+          <strong>Keylane</strong>
+          <span>Handbook</span>
+        </span>
+      </a>
+      <nav class="side-nav" aria-label="Documentation"><div><p class="side-group-title">Start here</p><div class="side-links"><a href="index.html">Keylane handbook</a><a href="install.html">Install, update, uninstall</a><a href="popup.html">The popup and the tray</a></div></div><div><p class="side-group-title">The assistant</p><div class="side-links"><a href="assistant.html">How the assistant thinks</a><a href="tools.html">Tools</a><a href="skills.html">Skills</a><a href="speech.html" aria-current="page">Speech</a><a href="canvas.html">Canvas answers</a></div></div><div><p class="side-group-title">Extending</p><div class="side-links"><a href="plugins.html">Writing plugins</a><a href="themes.html">Writing themes</a><a href="api.html">HTTP API</a><a href="roadmap.html">What it still needs</a></div></div></nav>
+      <div class="side-foot">
+        <a href="/">← Control panel</a>
+        <span>Local-first · 127.0.0.1</span>
+      </div>
+    </aside>
+
+    <main class="content">
+      <article class="article">
+        <p class="eyebrow">Guide</p>
+        <h1>Speech</h1>
+<p>Keylane can read answers aloud, locally. No cloud service is involved and nothing leaves the machine — the same rule the rest of Keylane follows.</p>
+<p>Turn it on under <strong>Control panel → Assistant → Read aloud</strong>.</p>
+<h2>Engines</h2>
+<p>Three are supported. Keylane probes for them at startup and lists whatever this machine actually has, so the panel never offers something that is not installed.</p>
+<div class="table-wrap"><table><thead><tr><th>Engine</th><th>Sounds like</th><th>Install</th></tr></thead><tbody><tr><td><strong>Piper</strong></td><td>Neural, natural. The best of the three.</td><td><code>sudo dnf install piper</code> plus a voice</td></tr><tr><td><strong>eSpeak NG</strong></td><td>Robotic, instant, 140+ languages</td><td><code>sudo dnf install espeak-ng</code></td></tr><tr><td><strong>Flite</strong></td><td>Small and fast, a few English voices</td><td><code>sudo dnf install flite</code></td></tr></tbody></table></div>
+<p>If the engine you picked is missing, Keylane falls back to the best one present rather than failing silently.</p>
+<h3>Piper voices</h3>
+<p>Piper needs a voice model — the binary alone cannot speak. Download an <code>.onnx</code> and its <code>.onnx.json</code> into <code>~/.local/share/piper/voices</code>:</p>
+<span class="code-label">bash</span><pre><code>mkdir -p ~/.local/share/piper/voices &amp;&amp; cd ~/.local/share/piper/voices
+BASE=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alba/medium
+curl -LO $BASE/en_GB-alba-medium.onnx
+curl -LO $BASE/en_GB-alba-medium.onnx.json</code></pre>
+<p>Press <strong>Rediscover</strong> on the Assistant tab and it appears in the voice list. Voices for other languages are in the same repository under their language code.</p>
+<h2>Settings</h2>
+<div class="table-wrap"><table><thead><tr><th>Setting</th><th>Meaning</th></tr></thead><tbody><tr><td>Show a read-aloud button</td><td>Adds the speaker button to answers</td></tr><tr><td>Read every answer automatically</td><td>Speaks each answer as it arrives</td></tr><tr><td>Engine</td><td>Which synthesiser to use</td></tr><tr><td>Voice</td><td>Engine-specific; Piper voices are files, eSpeak&#x27;s are language codes</td></tr><tr><td>Rate</td><td>Percent of the engine&#x27;s normal speed</td></tr><tr><td>Pitch</td><td>0–99, eSpeak only</td></tr></tbody></table></div>
+<p><strong>Test</strong> speaks a sample line so you can hear a voice before committing to it.</p>
+<h2>What actually gets read</h2>
+<p>Answers are <a href="canvas.html">canvases</a>, not prose, so they are flattened for speech rather than read literally:</p>
+<ul>
+<li>Titles, summaries, paragraphs and callouts are read as written.</li>
+<li>Stat tiles are read as &quot;Free: 237 GB&quot;.</li>
+<li><strong>Tables are described</strong> — &quot;a table of 4 rows&quot; — not read cell by cell.</li>
+<li><strong>Code and command output are not read</strong>; you are told it is on screen.</li>
+<li>Markdown, URLs and bullet characters are stripped, so the synthesiser reads</li>
+</ul>
+<p>words rather than punctuation.</p>
+<p>Long answers are cut at a sentence boundary rather than mid-word.</p>
+<h2>API</h2>
+<span class="code-label">http</span><pre><code>GET  /api/speech            engines, voices and current settings
+POST /api/speech/refresh    re-probe (after installing an engine or a voice)
+POST /api/speech/speak      {&quot;text&quot;: &quot;...&quot;, &quot;engine&quot;: &quot;...&quot;, &quot;voice&quot;: &quot;...&quot;}
+POST /api/speech/stop       silence whatever is speaking</code></pre>
+<p><code>speak</code> blocks until the speech finishes, and its timeout scales with the length of the text.</p>
+<h2>Notes</h2>
+<ul>
+<li>Playback goes through PipeWire (<code>pw-play</code> / <code>pw-cat</code>), falling back to</li>
+</ul>
+<p>PulseAudio or ALSA. If none is present Keylane says so rather than appearing to work.</p>
+<ul>
+<li>Flite takes its text as a command-line argument rather than on stdin —</li>
+</ul>
+<p>worth knowing if you add another engine, since piping to it silently produces an empty audio file.</p>
+        <nav class="page-nav"><a href="skills.html"><span class="dir">Previous</span><span class="name">Skills</span></a><a class="next" href="canvas.html"><span class="dir">Next</span><span class="name">Canvas answers</span></a></nav>
+      </article>
+    </main>
+
+    <aside class="toc" aria-label="On this page"></aside>
+  </div>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

@@ -31,14 +31,34 @@ The bar gets out of the way. It closes, and a small **orb** appears in a screen
 corner and spins while the work runs — so a Claude Code job that takes two
 minutes does not pin an input field to your screen.
 
+While it works, three arcs orbit a pulsing core — drawn with Cairo rather
+than a stock spinner, and centred in the circle. They run at unequal rates so
+the figure never visibly repeats. With animations switched off in your desktop
+settings it becomes a slow opacity breath instead.
+
 When the answer arrives the orb **expands into a squircle** showing the result.
 It grows from the orb rather than appearing centre-screen, so it is obvious
 where it came from, and the growth is a critically damped spring: no bounce,
 because nothing here was thrown. Clicking away or pressing <kbd>Esc</kbd>
 collapses it, interruptibly, from wherever the animation currently is.
 
+The panel is sized to its answer: a one-line reply gets a narrow squircle, a
+table gets the full width. It **closes itself** after about nine seconds —
+twenty for a longer answer — and the countdown **pauses while your pointer is
+over it**, so reading is never interrupted. A request waiting for your approval
+never times out.
+
 If the assistant needs approval for something, the orb expands into an
 Allow / Cancel choice instead — you never have to reopen the bar to approve.
+
+## Read aloud
+
+With speech enabled, answers carry a speaker button. Tables and command output
+are described rather than spelled out — reading a `df` listing cell by cell is
+worse than useless — and the auto-dismiss waits until it has finished speaking.
+
+Turn it on under **Assistant → Read aloud**, where you also pick the engine and
+voice. See [Speech](speech.html).
 
 Choose the corner in **Control panel → Gateway → Result panel corner**:
 `top-right` (the default), `top-left`, `bottom-right`, `bottom-left` or

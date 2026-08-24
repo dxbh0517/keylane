@@ -1,0 +1,12 @@
+{
+  "id": "writing-shape",
+  "name": "Writing shape",
+  "repo": "mattpocock/skills",
+  "path": "skills/in-progress/writing-shape/SKILL.md",
+  "installs": "251K",
+  "source": "Matt Pocock",
+  "tags": [
+    "writing"
+  ],
+  "desc": "Structure a piece of writing so it holds together. Marked in-progress upstream, so expect it to change."
+}

@@ -121,6 +121,7 @@ def run_launcher(*, with_tray: bool = True, background: bool = False) -> int:
             if self.orb is None:
                 self.orb = ResultOrb(
                     self,
+                    client=client,
                     corner=corner,
                     on_open_link=_open_link,
                     on_reopen=self.activate,
