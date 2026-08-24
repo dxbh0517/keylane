@@ -232,6 +232,18 @@ class StatusResponse(BaseModel):
     tools_enabled: bool = True
     tool_count: int = 0
     busy: bool = False
+    incomplete_models: list["IncompleteModel"] = Field(default_factory=list)
+    """Downloads that left a graph behind but no weights.
+
+    Reported separately from "no model" so the panel can offer a resume
+    rather than telling you to download what is already half there.
+    """
+
+
+class IncompleteModel(BaseModel):
+    id: str
+    repo_id: str = ""
+    missing: list[str] = Field(default_factory=list)
 
 
 class ProjectInfo(BaseModel):

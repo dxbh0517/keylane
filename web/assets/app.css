@@ -1043,3 +1043,13 @@ details.installer[open] > summary { margin-bottom: var(--s-3); }
 }
 
 .canvas-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+
+/* A model whose download stopped part way: present on disk, unusable. */
+.rec-card.incomplete {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+}
+.warn-text {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--warn);
+}

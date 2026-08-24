@@ -104,11 +104,28 @@ async function loadStatus() {
   $("#count-tools").textContent = data.tool_count || "";
 
   const banner = $("#status-banner");
-  if (!data.assistant && data.npu) {
+  const partial = data.incomplete_models || [];
+  if (!data.assistant && partial.length) {
+    // A download that stopped early leaves the graph and not the weights.
+    // Telling someone to download a model they already downloaded is the
+    // least useful thing the panel could say, so name the file and resume it.
+    const m = partial[0];
+    banner.innerHTML = `<div class="banner warn">
+      <svg viewBox="0 0 24 24"><use href="#i-alert" /></svg>
+      <div><strong>${esc(m.id)}</strong> downloaded only part way — ${esc(
+        m.missing.join(", ")
+      )} ${m.missing.length === 1 ? "is" : "are"} missing, so it cannot load and
+      Keylane is falling back to keyword matching.
+      <button class="link rec-download" data-repo="${esc(m.repo_id)}"
+        data-target="router">Resume the download</button></div>
+    </div>`;
+  } else if (!data.assistant && data.npu) {
     banner.innerHTML = `<div class="banner warn">
       <svg viewBox="0 0 24 24"><use href="#i-alert" /></svg>
       <div>The NPU is available but no router model is loaded, so Keylane is using
-      keyword matching instead of the model. Download an OpenVINO export under
+      keyword matching instead of the model.${
+        data.assistant_note ? ` ${esc(data.assistant_note)}` : ""
+      } Download an OpenVINO export under
       <strong>Models</strong> to switch the assistant on.</div>
     </div>`;
   } else if (!data.tools_enabled) {
@@ -1434,10 +1451,20 @@ async function loadModels() {
     inst.innerHTML = installed.length
       ? installed
           .map(
-            (m) => `<article class="rec-card">
+            (m) => `<article class="rec-card${m.ready === false ? " incomplete" : ""}">
               <strong>${esc(m.name)}</strong>
               <p class="muted meta" title="${esc(m.absolute || m.path)}">${esc(m.absolute || m.path)}</p>
-              <button type="button" class="btn ghost small use-installed" data-path="${esc(m.path)}" data-id="${esc(m.id)}">Use as router</button>
+              ${
+                m.ready === false
+                  ? `<p class="warn-text">Incomplete — missing ${esc(
+                      (m.missing || []).join(", ")
+                    )}</p>
+                     <button type="button" class="btn small rec-download"
+                       data-repo="${esc(m.repo_id)}" data-target="router">Resume download</button>`
+                  : `<button type="button" class="btn ghost small use-installed" data-path="${esc(
+                      m.path
+                    )}" data-id="${esc(m.id)}">Use as router</button>`
+              }
             </article>`
           )
           .join("")

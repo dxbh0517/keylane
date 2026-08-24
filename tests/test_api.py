@@ -390,3 +390,36 @@ def test_installed_models_carry_an_absolute_path(client):
         assert Path(model["absolute"]).is_absolute()
         # The relative form is still stored, for a portable config.
         assert model["path"].startswith("./")
+
+
+def test_a_graph_without_weights_is_not_an_installed_model(tmp_path):
+    """An interrupted download leaves the .xml and not the .bin.
+
+    The directory looks like a model to anything that only checks for the
+    graph, which is how a half-downloaded router ends up reported as
+    installed and then fails to load.
+    """
+    from app.models_catalog import _looks_like_openvino_model, missing_weights
+
+    model = tmp_path / "OpenVINO__Something-int4-ov"
+    model.mkdir()
+    (model / "config.json").write_text("{}")
+    (model / "openvino_model.xml").write_text("<net/>")
+    (model / "openvino_detokenizer.xml").write_text("<net/>")
+    (model / "openvino_detokenizer.bin").write_bytes(b"\x00" * 8)
+
+    assert missing_weights(model) == ["openvino_model.bin"]
+    assert _looks_like_openvino_model(model) is False
+
+    (model / "openvino_model.bin").write_bytes(b"\x00" * 8)
+    assert missing_weights(model) == []
+    assert _looks_like_openvino_model(model) is True
+
+
+def test_status_reports_incomplete_models_so_the_panel_can_offer_a_resume(client):
+    """The field exists and is a list, whatever this machine has on disk."""
+    body = client.get("/api/status").json()
+    assert isinstance(body["incomplete_models"], list)
+    for entry in body["incomplete_models"]:
+        assert entry["missing"], "an incomplete model must name what is missing"
+        assert "/" in entry["repo_id"], "a resume needs the repo id"

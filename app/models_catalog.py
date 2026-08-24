@@ -198,14 +198,41 @@ CHAT_MODELS: list[CatalogModel] = [
 ]
 
 
+def missing_weights(path: Path) -> list[str]:
+    """Graph files in *path* whose weights are absent.
+
+    An OpenVINO IR is a pair: ``foo.xml`` describes the graph, ``foo.bin``
+    holds the numbers. An interrupted download leaves the small .xml behind
+    and the large .bin unfinished, so the directory looks like a model and
+    cannot load. Naming the missing file is the difference between "download
+    a model" and "resume the one you have".
+    """
+    missing: list[str] = []
+    for xml in sorted(path.glob("*.xml")):
+        weights = xml.with_suffix(".bin")
+        # A few exports genuinely inline their weights; those have no .bin
+        # anywhere in the directory, which is not the same as a lost one.
+        if not weights.exists() and any(path.glob("*.bin")):
+            missing.append(weights.name)
+    return missing
+
+
 def _looks_like_openvino_model(path: Path) -> bool:
     """True when *path* is a usable OpenVINO GenAI export directory."""
     if not path.is_dir():
         return False
+    if not _has_graph(path):
+        return False
+    return not missing_weights(path)
+
+
+def _has_graph(path: Path) -> bool:
+    """True when *path* holds an OpenVINO graph, complete or not."""
+    if not path.is_dir():
+        return False
     if (path / "openvino_model.xml").exists() or (path / "openvino_language_model.xml").exists():
         return True
-    xmls = list(path.glob("*.xml"))
-    if not xmls:
+    if not any(path.glob("*.xml")):
         return False
     return (path / "config.json").exists() or any(path.glob("*.bin"))
 
@@ -231,11 +258,14 @@ def installed_router_models() -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     seen: set[str] = set()
     for path in sorted(candidates, key=lambda p: p.name.lower()):
-        if path.name in seen or not _looks_like_openvino_model(path):
+        if path.name in seen or not _has_graph(path):
             continue
         seen.add(path.name)
         cat = catalog_by_id.get(path.name)
         rel = path.relative_to(ROOT).as_posix()
+        # An interrupted download is listed, not hidden: the folder exists, so
+        # hiding it just makes the download look like it did nothing.
+        absent = missing_weights(path)
         found.append(
             {
                 "id": path.name,
@@ -246,6 +276,11 @@ def installed_router_models() -> list[dict[str, Any]]:
                 "size_hint": cat.size_hint if cat else "",
                 "quant": cat.quant if cat else "",
                 "installed": True,
+                "ready": not absent,
+                "missing": absent,
+                # Folder names are the repo id with "/" as "__" (see
+                # hf_hub.target_dir), so a resume needs no extra state.
+                "repo_id": path.name.replace("__", "/"),
             }
         )
     return found

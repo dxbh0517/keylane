@@ -39,6 +39,7 @@ from app.schemas import (
     ProjectInfo,
     ProjectsResponse,
     RouteRequest,
+    IncompleteModel,
     StatusResponse,
     TaskResponse,
     ToolCallRequest,
@@ -60,6 +61,7 @@ from app.settings_store import (
     current_gateway_settings,
     update_gateway_settings,
 )
+from app.models_catalog import installed_router_models
 from app.models_settings import (
     ModelsSettingsUpdate,
     models_overview,
@@ -240,6 +242,11 @@ async def status() -> StatusResponse:
         tools_enabled=load_assistant_settings().tools.enabled,
         tool_count=len(get_tool_registry().usable_specs()),
         busy=get_activity_bus().snapshot().busy,
+        incomplete_models=[
+            IncompleteModel(id=m["id"], repo_id=m["repo_id"], missing=m["missing"])
+            for m in installed_router_models()
+            if not m["ready"]
+        ],
     )
 
 
