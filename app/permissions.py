@@ -53,7 +53,11 @@ def validate_working_directory(
     cfg = config or get_config()
     if path is None or path.strip() == "":
         if required:
-            raise PermissionError_("A project directory is required for this worker.")
+            raise PermissionError_(
+                "A project directory is required for this worker. Pick one "
+                "from the project chip in the popup, or add one under "
+                "Projects in the control panel."
+            )
         return None
     return str(resolve_under_roots(path, cfg.security.allowed_project_roots))
 

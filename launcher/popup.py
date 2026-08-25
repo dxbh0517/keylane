@@ -106,6 +106,7 @@ class KeylanePopup(Gtk.ApplicationWindow):
         self.theme: ActiveTheme = ActiveTheme()
 
         self._projects: list[dict[str, str]] = []
+        self._project_path: str | None = None
         self._status: dict[str, Any] = {}
         self._pending_task_id: str | None = None
         self._state = "IDLE"
@@ -428,6 +429,22 @@ class KeylanePopup(Gtk.ApplicationWindow):
         self.mic_btn.connect("toggled", self._on_mic_toggled)
         row.append(self.mic_btn)
 
+        # Which project a request runs in. Coding workers refuse to run without
+        # one, and the Spotlight preset shows no meta row, so without this chip
+        # that refusal is a dead end -- the error names a requirement with
+        # nothing anywhere in the popup that can satisfy it. Hidden entirely
+        # when no projects are configured, since then there is nothing to pick.
+        self.project_btn = Gtk.MenuButton()
+        self.project_btn.add_css_class("keylane-device-chip")
+        self.project_btn.set_valign(Gtk.Align.CENTER)
+        self.project_btn.set_tooltip_text("Project directory for this request")
+        self.project_btn.set_popover(self._build_project_popover())
+        self._project_label = Gtk.Label(label="No project")
+        self._project_label.add_css_class("keylane-device-text")
+        self.project_btn.set_child(self._project_label)
+        self.project_btn.set_visible(False)
+        row.append(self.project_btn)
+
         # A quiet chip showing which device the control plane is on, and a
         # menu to change it. Deliberately understated: it is status, not a
         # control you are meant to reach for.
@@ -452,6 +469,74 @@ class KeylanePopup(Gtk.ApplicationWindow):
         else:
             self.send_btn = None  # type: ignore[assignment]
         return row
+
+    def _build_project_popover(self) -> Gtk.Popover:
+        popover = Gtk.Popover()
+        popover.add_css_class("keylane-device-menu")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        for setter in ("set_margin_top", "set_margin_bottom", "set_margin_start", "set_margin_end"):
+            getattr(box, setter)(8)
+
+        heading = Gtk.Label(label="Run this request in")
+        heading.add_css_class("keylane-subtitle")
+        heading.set_xalign(0.0)
+        box.append(heading)
+
+        self._project_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.append(self._project_box)
+
+        note = Gtk.Label(label="Add projects in the control panel.")
+        note.add_css_class("keylane-hint")
+        note.set_xalign(0.0)
+        note.set_wrap(True)
+        note.set_max_width_chars(34)
+        box.append(note)
+
+        popover.set_child(box)
+        popover.connect("show", lambda *_: self._refresh_projects())
+        return popover
+
+    def _rebuild_project_menu(self) -> None:
+        box = getattr(self, "_project_box", None)
+        if box is None:
+            return
+        while (child := box.get_first_child()) is not None:
+            box.remove(child)
+
+        group: Gtk.CheckButton | None = None
+        for path, label in [(None, "No project")] + [
+            (p["path"], p["name"]) for p in self._projects
+        ]:
+            button = Gtk.CheckButton(label=label)
+            button.add_css_class("keylane-device-option")
+            if group is None:
+                group = button
+            else:
+                button.set_group(group)
+            button.set_active(path == self._project_path)
+            button.connect("toggled", self._on_project_chosen, path)
+            box.append(button)
+
+    def _on_project_chosen(self, button: Gtk.CheckButton, path: str | None) -> None:
+        if not button.get_active() or path == self._project_path:
+            return
+        self._project_path = path
+        self._sync_project_chip()
+        popover = self.project_btn.get_popover()
+        if popover is not None:
+            popover.popdown()
+
+    def _sync_project_chip(self) -> None:
+        button = getattr(self, "project_btn", None)
+        if button is None:
+            return
+        # Nothing configured means nothing to choose: show no chip at all.
+        button.set_visible(bool(self._projects))
+        name = next(
+            (p["name"] for p in self._projects if p["path"] == self._project_path),
+            None,
+        )
+        self._project_label.set_text(name or "No project")
 
     def _build_device_popover(self) -> Gtk.Popover:
         popover = Gtk.Popover()
@@ -881,15 +966,18 @@ class KeylanePopup(Gtk.ApplicationWindow):
     # ---------------------------------------------------------------- status
 
     def _selected_project(self) -> str | None:
+        """The project this request runs in.
+
+        The chip is the source of truth. The combo only exists in the panel and
+        window presets, so reading it first would return nothing in the default
+        Spotlight bar -- which is exactly the case that needs to work.
+        """
         combo = getattr(self, "project_combo", None)
-        if combo is None or not self._projects:
-            return None
-        index = combo.get_active()
-        if index is None or index <= 0:
-            return None
-        if index - 1 < len(self._projects):
-            return self._projects[index - 1]["path"]
-        return None
+        if combo is not None and self._projects:
+            index = combo.get_active()
+            if index is not None and index > 0 and index - 1 < len(self._projects):
+                return self._projects[index - 1]["path"]
+        return self._project_path
 
     def _refresh_projects(self) -> None:
         def work() -> None:
@@ -900,8 +988,15 @@ class KeylanePopup(Gtk.ApplicationWindow):
 
     def _apply_projects(self, projects: list[dict[str, str]]) -> bool:
         combo = getattr(self, "project_combo", None)
+        self._projects = projects
+        # A project that has since been removed must not stay selected.
+        if self._project_path and not any(
+            p["path"] == self._project_path for p in projects
+        ):
+            self._project_path = None
+        self._sync_project_chip()
+        self._rebuild_project_menu()
         if combo is None:
-            self._projects = projects
             return False
         previous = combo.get_active_text()
         self._projects = projects
