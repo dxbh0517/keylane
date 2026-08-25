@@ -15,7 +15,14 @@ from app.plugins.base import (
     SettingField,
     SettingType,
 )
-from app.plugins.mcp_client import McpError, mcp_call_tool, mcp_list_tools
+from app.plugins.mcp_client import (
+    McpError,
+    mcp_call_tool,
+    mcp_call_tool_http,
+    mcp_list_tools,
+    mcp_list_tools_http,
+    normalize_auth_header,
+)
 from app.schemas import RouteDecision, WorkerEvidence, WorkerResult
 
 logger = logging.getLogger(__name__)
@@ -30,9 +37,11 @@ class McpPlugin(BasePlugin):
     MCP-backed plugin.
 
     Manifest keys (settings / plugin.toml):
-      command          executable (e.g. comfy-mcp)
+      url              Streamable HTTP endpoint (preferred for remote MCP)
+      auth_header      Authorization value, e.g. "Bearer <token>"
+      command          executable (e.g. comfy-mcp) for stdio transport
       args             JSON list of CLI args
-      health_tool      tool name for health (default server_info)
+      health_tool      tool name for health (blank = list_tools only)
       run_tool         tool name for worker execution (default generate_image)
       env              JSON object of extra env vars
       worker_id        route worker name (defaults to plugin id; blank = tools only)
@@ -72,6 +81,8 @@ class McpPlugin(BasePlugin):
 
     def default_settings(self) -> dict[str, Any]:
         return {
+            "url": "",
+            "auth_header": "",
             "command": "comfy-mcp",
             "args": "[]",
             "health_tool": "server_info",
@@ -83,12 +94,27 @@ class McpPlugin(BasePlugin):
     def settings_schema(self) -> list[SettingField]:
         return [
             SettingField(
-                key="command",
-                label="MCP command",
+                key="url",
+                label="MCP HTTP URL",
                 type=SettingType.STRING,
-                description="Executable that speaks MCP over stdio",
+                description="Streamable HTTP endpoint (e.g. http://127.0.0.1:2587/mcp). "
+                "When set, Keylane talks HTTP directly — no npx bridge.",
+                default="",
+            ),
+            SettingField(
+                key="auth_header",
+                label="Authorization",
+                type=SettingType.SECRET,
+                description='Bearer token from the MCP server. Paste the raw token or "Bearer …".',
+                default="",
+            ),
+            SettingField(
+                key="command",
+                label="MCP command (stdio)",
+                type=SettingType.STRING,
+                description="Executable that speaks MCP over stdio. Ignored when URL is set.",
                 default="comfy-mcp",
-                required=True,
+                required=False,
             ),
             SettingField(
                 key="args",
@@ -100,6 +126,7 @@ class McpPlugin(BasePlugin):
                 key="health_tool",
                 label="Health tool",
                 type=SettingType.STRING,
+                description="Leave blank to only list tools (safer when the tool needs args).",
                 default="server_info",
             ),
             SettingField(
@@ -117,7 +144,18 @@ class McpPlugin(BasePlugin):
             ),
         ]
 
+    def uses_http(self) -> bool:
+        return bool(str(self.settings.get("url") or "").strip())
+
     def mcp_descriptor(self) -> dict[str, Any]:
+        if self.uses_http():
+            return {
+                "transport": "http",
+                "url": str(self.settings.get("url") or "").strip(),
+                "auth_header": self._auth_header(),
+                "health_tool": self.settings.get("health_tool", "server_info"),
+                "run_tool": self.settings.get("run_tool", "generate_image"),
+            }
         return {
             "transport": "stdio",
             "command": self.settings.get("command"),
@@ -125,6 +163,20 @@ class McpPlugin(BasePlugin):
             "health_tool": self.settings.get("health_tool", "server_info"),
             "run_tool": self.settings.get("run_tool", "generate_image"),
         }
+
+    def _auth_header(self) -> str:
+        direct = str(self.settings.get("auth_header") or "").strip()
+        if direct:
+            return normalize_auth_header(direct)
+        env = self._env() or {}
+        for key in ("AUTH_HEADER", "AUTHORIZATION", "MCP_AUTH"):
+            if env.get(key):
+                return normalize_auth_header(env[key])
+        return ""
+
+    def _http_headers(self) -> dict[str, str]:
+        auth = self._auth_header()
+        return {"Authorization": auth} if auth else {}
 
     @staticmethod
     def _parse_json(value: Any, fallback: Any) -> Any:
@@ -179,36 +231,90 @@ class McpPlugin(BasePlugin):
         import asyncio
 
         try:
-            cmd = self._command()
-            resolved = shutil.which(cmd) or (cmd if Path(cmd).exists() else None)
-            if not resolved:
-                return PluginHealth(ok=False, detail=f"Command not found: {cmd}")
-            tool = str(self.settings.get("health_tool") or "server_info")
-            # Prefer a lightweight tool call; fall back to list_tools.
-            # Cap both attempts so a hung stdio MCP cannot stall /api/status.
-            try:
-                payload = await asyncio.wait_for(
-                    mcp_call_tool(cmd, tool, {}, args=self._args(), env=self._env()),
-                    timeout=1.75,
-                )
-                return PluginHealth(
-                    ok=True,
-                    detail=f"MCP healthy via {tool}",
-                    metadata={"result": _short(payload)},
-                )
-            except TimeoutError:
-                raise
-            except Exception as tool_exc:  # noqa: BLE001
+            tool = str(self.settings.get("health_tool") or "").strip()
+            timeout = 4.0 if self.uses_http() else 2.5
+            if self.uses_http():
+                url = str(self.settings.get("url") or "").strip()
+                headers = self._http_headers()
+                if tool:
+                    try:
+                        payload = await asyncio.wait_for(
+                            mcp_call_tool_http(url, tool, {}, headers=headers),
+                            timeout=timeout,
+                        )
+                        return PluginHealth(
+                            ok=True,
+                            detail=f"MCP healthy via {tool}",
+                            metadata={"result": _short(payload), "transport": "http"},
+                        )
+                    except TimeoutError:
+                        raise
+                    except Exception as tool_exc:  # noqa: BLE001
+                        tools = await asyncio.wait_for(
+                            mcp_list_tools_http(url, headers=headers),
+                            timeout=timeout,
+                        )
+                        names = [t.get("name") for t in tools]
+                        return PluginHealth(
+                            ok=True,
+                            detail=(
+                                f"MCP reachable ({len(names)} tools); "
+                                f"health tool failed: {tool_exc}"
+                            ),
+                            metadata={"tools": names, "transport": "http"},
+                        )
                 tools = await asyncio.wait_for(
-                    mcp_list_tools(cmd, self._args(), env=self._env()),
-                    timeout=1.75,
+                    mcp_list_tools_http(url, headers=headers),
+                    timeout=timeout,
                 )
                 names = [t.get("name") for t in tools]
                 return PluginHealth(
                     ok=True,
-                    detail=f"MCP reachable ({len(names)} tools); health tool failed: {tool_exc}",
-                    metadata={"tools": names},
+                    detail=f"MCP reachable ({len(names)} tools)",
+                    metadata={"tools": names, "transport": "http"},
                 )
+
+            cmd = self._command()
+            resolved = shutil.which(cmd) or (cmd if Path(cmd).exists() else None)
+            if not resolved:
+                return PluginHealth(ok=False, detail=f"Command not found: {cmd}")
+            if tool:
+                try:
+                    payload = await asyncio.wait_for(
+                        mcp_call_tool(cmd, tool, {}, args=self._args(), env=self._env()),
+                        timeout=timeout,
+                    )
+                    return PluginHealth(
+                        ok=True,
+                        detail=f"MCP healthy via {tool}",
+                        metadata={"result": _short(payload)},
+                    )
+                except TimeoutError:
+                    raise
+                except Exception as tool_exc:  # noqa: BLE001
+                    tools = await asyncio.wait_for(
+                        mcp_list_tools(cmd, self._args(), env=self._env()),
+                        timeout=timeout,
+                    )
+                    names = [t.get("name") for t in tools]
+                    return PluginHealth(
+                        ok=True,
+                        detail=(
+                            f"MCP reachable ({len(names)} tools); "
+                            f"health tool failed: {tool_exc}"
+                        ),
+                        metadata={"tools": names},
+                    )
+            tools = await asyncio.wait_for(
+                mcp_list_tools(cmd, self._args(), env=self._env()),
+                timeout=timeout,
+            )
+            names = [t.get("name") for t in tools]
+            return PluginHealth(
+                ok=True,
+                detail=f"MCP reachable ({len(names)} tools)",
+                metadata={"tools": names},
+            )
         except TimeoutError:
             logger.warning("MCP plugin %s health timed out", self.id)
             return PluginHealth(ok=False, detail="MCP health timed out")
@@ -218,12 +324,21 @@ class McpPlugin(BasePlugin):
 
     async def run(self, decision: RouteDecision) -> WorkerResult:
         try:
-            cmd = self._command()
             tool = str(self.settings.get("run_tool") or "generate_image")
             arguments = self._build_arguments(decision, tool)
-            payload = await mcp_call_tool(
-                cmd, tool, arguments, args=self._args(), env=self._env()
-            )
+            if self.uses_http():
+                url = str(self.settings.get("url") or "").strip()
+                payload = await mcp_call_tool_http(
+                    url, tool, arguments, headers=self._http_headers()
+                )
+                transport = "http"
+                cmd = url
+            else:
+                cmd = self._command()
+                payload = await mcp_call_tool(
+                    cmd, tool, arguments, args=self._args(), env=self._env()
+                )
+                transport = "stdio"
             summary, output_path, dims = _extract_media(payload, decision)
             evidence = WorkerEvidence(
                 worker=self.worker_id or self.id,
@@ -233,7 +348,7 @@ class McpPlugin(BasePlugin):
                 exit_code=0,
                 output_path=output_path,
                 output_dimensions=dims,
-                metadata={"mcp_tool": tool, "mcp_command": cmd},
+                metadata={"mcp_tool": tool, "mcp_command": cmd, "transport": transport},
             )
             return WorkerResult(
                 success=True,
@@ -349,6 +464,10 @@ def _extract_media(
 
 def mcp_plugin_from_manifest(data: dict[str, Any], settings: dict[str, Any] | None = None) -> McpPlugin:
     merged = {**(data.get("settings") or {}), **(settings or {})}
+    if data.get("url"):
+        merged.setdefault("url", data["url"])
+    if data.get("auth_header"):
+        merged.setdefault("auth_header", data["auth_header"])
     if data.get("command"):
         merged.setdefault("command", data["command"])
     if data.get("args") is not None:

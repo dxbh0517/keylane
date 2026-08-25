@@ -2,12 +2,11 @@
 # until the user asks for it, so a fresh install ships with nothing
 # reaching out to a worker or the network.
 #
-# Wraps Mailspring's built-in MCP server (Preferences → MCP Server).
-# Keylane speaks stdio; Mailspring speaks Streamable HTTP — mcp-remote
-# bridges them, using the same args Mailspring writes for Claude Desktop.
+# Talks to Mailspring's built-in MCP server over Streamable HTTP
+# (Preferences → MCP Server → http://127.0.0.1:2587/mcp).
 #
-# After install: enable the MCP server in Mailspring, then set AUTH_HEADER
-# in plugin settings to "Bearer <token>" from Preferences → MCP Server.
+# After install: enable the MCP server in Mailspring, then set auth_header
+# to the token from Preferences → MCP Server (raw UUID or "Bearer <token>").
 id = "mailspring"
 name = "Mailspring"
 kind = "mcp"
@@ -17,18 +16,7 @@ worker_id = ""
 cloud = false
 tags = "tools, local, mail, mcp"
 
-command = "npx"
-args = [
-  "--registry=https://registry.npmjs.org/",
-  "--yes",
-  "mcp-remote@latest",
-  "http://127.0.0.1:2587/mcp",
-  "--allow-http",
-  "--transport",
-  "http-only",
-  "--header",
-  "Authorization:${AUTH_HEADER}",
-]
-health_tool = "list_folders"
+url = "http://127.0.0.1:2587/mcp"
+auth_header = ""
+health_tool = ""
 run_tool = "search_mail"
-env = { AUTH_HEADER = "Bearer REPLACE_WITH_MAILSPRING_TOKEN" }

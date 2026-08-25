@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 from app.plugins.base import BasePlugin
-from app.plugins.mcp_client import mcp_call_tool, mcp_list_tools
+from app.plugins.mcp_client import mcp_call_tool, mcp_call_tool_http, mcp_list_tools, mcp_list_tools_http
 from app.tools.base import BaseTool, ToolDanger, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -66,21 +66,35 @@ class McpTool(BaseTool):
 
     async def run(self, args: dict[str, Any]) -> ToolResult:
         descriptor = self._plugin.mcp_descriptor() or {}
-        command = descriptor.get("command")
-        if not command:
-            return ToolResult.failure(f"{self.source} has no MCP command configured.")
+        transport = str(descriptor.get("transport") or "stdio")
         try:
-            command = self._plugin._command()  # resolves PATH / ~/.local/bin
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            payload = await mcp_call_tool(
-                str(command),
-                self._tool_name,
-                dict(args or {}),
-                args=descriptor.get("args") or [],
-                env=getattr(self._plugin, "_env", lambda: None)(),
-            )
+            if transport == "http":
+                url = str(descriptor.get("url") or "").strip()
+                if not url:
+                    return ToolResult.failure(f"{self.source} has no MCP URL configured.")
+                auth = str(descriptor.get("auth_header") or "").strip()
+                headers = {"Authorization": auth} if auth else {}
+                payload = await mcp_call_tool_http(
+                    url,
+                    self._tool_name,
+                    dict(args or {}),
+                    headers=headers,
+                )
+            else:
+                command = descriptor.get("command")
+                if not command:
+                    return ToolResult.failure(f"{self.source} has no MCP command configured.")
+                try:
+                    command = self._plugin._command()  # resolves PATH / ~/.local/bin
+                except Exception:  # noqa: BLE001
+                    pass
+                payload = await mcp_call_tool(
+                    str(command),
+                    self._tool_name,
+                    dict(args or {}),
+                    args=descriptor.get("args") or [],
+                    env=getattr(self._plugin, "_env", lambda: None)(),
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("MCP tool %s failed: %s", self.name, exc)
             return ToolResult.failure(f"{self.name} failed: {exc}")
@@ -106,18 +120,31 @@ class McpTool(BaseTool):
 
 async def mcp_tools_for_plugin(plugin_id: str, plugin: BasePlugin) -> list[McpTool]:
     descriptor = plugin.mcp_descriptor() or {}
-    command = descriptor.get("command")
-    if not command:
-        return []
+    transport = str(descriptor.get("transport") or "stdio")
     try:
-        command = plugin._command()  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001
-        pass
-    entries = await mcp_list_tools(
-        str(command),
-        descriptor.get("args") or [],
-        env=getattr(plugin, "_env", lambda: None)(),
-    )
+        if transport == "http":
+            url = str(descriptor.get("url") or "").strip()
+            if not url:
+                return []
+            auth = str(descriptor.get("auth_header") or "").strip()
+            headers = {"Authorization": auth} if auth else {}
+            entries = await mcp_list_tools_http(url, headers=headers)
+        else:
+            command = descriptor.get("command")
+            if not command:
+                return []
+            try:
+                command = plugin._command()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            entries = await mcp_list_tools(
+                str(command),
+                descriptor.get("args") or [],
+                env=getattr(plugin, "_env", lambda: None)(),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Could not list MCP tools for %s: %s", plugin_id, exc)
+        return []
     tools: list[McpTool] = []
     for entry in entries:
         name = entry.get("name")
