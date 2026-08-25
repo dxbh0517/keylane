@@ -10,6 +10,7 @@ from app.activity import get_activity_bus
 from app.assistant import AssistantOutcome, get_assistant
 from app.assistant_settings import load_assistant_settings
 from app.config import AppConfig, get_config
+from app.intent import is_calendar_intent, is_mail_intent, pick_calendar_tool, pick_mail_tool
 from app.permissions import PermissionError_, is_local_only, validate_route
 from app.planner import build_plan, needs_multi_step
 from app.plugins.registry import get_plugin_registry
@@ -23,6 +24,7 @@ from app.schemas import (
     WorkerEvidence,
     WorkerResult,
 )
+from app.sessions import get_session_store
 from app.verifier import VerifierService
 
 logger = logging.getLogger(__name__)
@@ -73,6 +75,7 @@ class GatewayOrchestrator:
             canvas=task.canvas,
             pending_tool=task.pending_tool,
             pending_arguments=task.pending_arguments,
+            session_id=task.session_id,
         )
 
     async def route_only(
@@ -112,20 +115,31 @@ class GatewayOrchestrator:
         if request.task_id and request.confirmed:
             return await self.approve(request.task_id)
 
+        sessions = get_session_store()
+        if request.clear_session and request.session_id:
+            sessions.clear(request.session_id)
+        session = sessions.get_or_create(request.session_id)
+
         task = TaskRecord(
             message=request.message,
             project=request.project,
             max_retries=self.config.gateway.max_retries,
             status=TaskStatus.ROUTING,
+            session_id=session.session_id,
         )
         await self.store.put(task)
         await self.activity.start_task(task.task_id, request.message)
+        sessions.append_user(session, request.message, task_id=task.task_id)
 
         local_only = is_local_only(self.config, request.local_only)
 
         # The NPU assistant gets first refusal: it may finish the job with its
         # own tools, or delegate to a worker and follow up on the result.
-        assistant_response = await self._try_assistant(task, local_only=local_only)
+        assistant_response = await self._try_assistant(
+            task,
+            local_only=local_only,
+            history=session.prompt_history(),
+        )
         if assistant_response is not None:
             return assistant_response
 
@@ -208,7 +222,11 @@ class GatewayOrchestrator:
     # ------------------------------------------------------------- assistant
 
     async def _try_assistant(
-        self, task: TaskRecord, *, local_only: bool
+        self,
+        task: TaskRecord,
+        *,
+        local_only: bool,
+        history: str = "",
     ) -> TaskResponse | None:
         """Give the NPU assistant a shot. ``None`` means "fall through to routing"."""
         settings = load_assistant_settings()
@@ -237,6 +255,7 @@ class GatewayOrchestrator:
                 local_only=local_only,
                 confirmed_tools=set(task.confirmed_tools),
                 on_step=on_step,
+                history=history,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Assistant loop failed; falling back to worker routing")
@@ -246,11 +265,42 @@ class GatewayOrchestrator:
             )
             return None
 
-        # Nothing happened — let the ordinary worker router handle it.
+        # Nothing happened — let the ordinary worker router handle it, unless
+        # this is a mail/calendar ask that must stay on local tools.
         if not outcome.steps and not outcome.answer and not outcome.question:
+            if self._tool_native_intent(task.message):
+                return await self._refuse_chat_fallthrough(task)
             return None
 
         return await self._finish_assistant(task, outcome)
+
+    def _tool_native_intent(self, message: str) -> bool:
+        names = self.assistant.tools.all_names()
+        if is_mail_intent(message) and pick_mail_tool(names):
+            return True
+        if is_calendar_intent(message) and pick_calendar_tool(names):
+            return True
+        return False
+
+    async def _refuse_chat_fallthrough(self, task: TaskRecord) -> TaskResponse:
+        """Do not invent an LM Studio answer for mail/calendar when tools exist."""
+        names = self.assistant.tools.all_names()
+        mail = pick_mail_tool(names) if is_mail_intent(task.message) else None
+        cal = pick_calendar_tool(names) if is_calendar_intent(task.message) else None
+        hint = mail or cal or "the matching local tool"
+        task.status = TaskStatus.FAILED
+        task.worker = "assistant"
+        task.error = (
+            f"This looks like a mail/calendar request, but the assistant did not "
+            f"call {hint}. It will not be sent to a chat worker. Try again, or "
+            f"check that the Mailspring / calendar plugin is healthy."
+        )
+        task.result = task.error
+        await self.store.update(task)
+        await self.activity.update_task(
+            task.task_id, status="failed", worker="assistant", error=task.error
+        )
+        return self._to_response(task)
 
     async def _finish_assistant(
         self, task: TaskRecord, outcome: AssistantOutcome
@@ -305,6 +355,20 @@ class GatewayOrchestrator:
             worker=task.worker,
             error=outcome.error,
         )
+        if task.session_id and task.status == TaskStatus.COMPLETED:
+            sessions = get_session_store()
+            session = sessions.get(task.session_id) or sessions.get_or_create(task.session_id)
+            sessions.append_assistant(
+                session,
+                task.result or "",
+                canvas=task.canvas,
+                task_id=task.task_id,
+                tools_used=[
+                    str(s.get("tool") or "")
+                    for s in task.assistant_steps
+                    if s.get("tool")
+                ],
+            )
         return self._to_response(task)
 
     async def _resume_assistant(self, task: TaskRecord) -> TaskResponse:
@@ -328,6 +392,12 @@ class GatewayOrchestrator:
             clear_pending=True,
         )
 
+        history = ""
+        if task.session_id:
+            session = get_session_store().get(task.session_id)
+            if session is not None:
+                history = session.prompt_history()
+
         # Replay what already happened so the model does not start over, then
         # execute the step the user just approved.
         prior = [AssistantStep(**step) for step in task.assistant_steps]
@@ -343,6 +413,7 @@ class GatewayOrchestrator:
                 local_only=task.local_only,
                 confirmed_tools=set(task.confirmed_tools),
                 prior_steps=prior,
+                history=history,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Assistant resume failed")
@@ -354,6 +425,18 @@ class GatewayOrchestrator:
             )
             return self._to_response(task)
         return await self._finish_assistant(task, outcome)
+
+    def _record_session_answer(self, task: TaskRecord) -> None:
+        if not task.session_id:
+            return
+        sessions = get_session_store()
+        session = sessions.get(task.session_id) or sessions.get_or_create(task.session_id)
+        sessions.append_assistant(
+            session,
+            task.result or "",
+            canvas=task.canvas,
+            task_id=task.task_id,
+        )
 
     async def _execute_worker(self, decision: RouteDecision) -> WorkerResult:
         return await self.registry.run_worker(decision)
@@ -449,6 +532,7 @@ class GatewayOrchestrator:
                 await self.activity.update_task(
                     task.task_id, status="completed", worker=decision.worker
                 )
+                self._record_session_answer(task)
                 return self._to_response(task)
 
             if not verification.retry or attempt >= task.max_retries:

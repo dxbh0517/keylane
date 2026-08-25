@@ -157,6 +157,7 @@ class ResultOrb(Gtk.ApplicationWindow):
         corner: str = "top-right",
         on_open_link: Callable[[str], None] | None = None,
         on_reopen: Callable[[], None] | None = None,
+        on_followup: Callable[[str, str | None], None] | None = None,
     ) -> None:
         super().__init__(application=app, title="Keylane result")
         self.client = client
@@ -164,6 +165,7 @@ class ResultOrb(Gtk.ApplicationWindow):
         self._speech_available = bool(client and client.speech_available())
         self._on_open_link = on_open_link
         self._on_reopen = on_reopen
+        self._on_followup = on_followup
 
         self._expanded = False
         self._progress = 0.0        # 0 = orb, 1 = full panel
@@ -178,6 +180,8 @@ class ResultOrb(Gtk.ApplicationWindow):
         self._dismiss_left = 0.0
         self._speaking = False
         self._answer_text = ""
+        self._session_id: str | None = None
+        self._reply_row: Gtk.Widget | None = None
 
         self.set_decorated(False)
         self.set_resizable(False)
@@ -346,6 +350,27 @@ class ResultOrb(Gtk.ApplicationWindow):
         self._body.add_css_class("keylane-result-view")
         self._shell.append(self._body)
 
+        # Follow-up reply: stays with the answer so the conversation continues
+        # without reopening the Spotlight bar.
+        reply_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        reply_row.add_css_class("keylane-followup")
+        reply_row.set_visible(False)
+        self._reply_entry = Gtk.Entry()
+        self._reply_entry.set_placeholder_text("Ask a follow-up…")
+        self._reply_entry.set_hexpand(True)
+        self._reply_entry.connect("activate", self._on_followup_submit)
+        reply_row.append(self._reply_entry)
+        send = Gtk.Button(label="Send")
+        send.add_css_class("suggested-action")
+        send.connect("clicked", self._on_followup_submit)
+        reply_row.append(send)
+        clear = Gtk.Button(label="Clear")
+        clear.set_tooltip_text("Start a new conversation")
+        clear.connect("clicked", self._on_clear_session)
+        reply_row.append(clear)
+        self._reply_row = reply_row
+        self._shell.append(reply_row)
+
         halign, valign = CORNERS[self.corner]
         self._shell.set_halign(halign)
         self._shell.set_valign(valign)
@@ -463,9 +488,16 @@ class ResultOrb(Gtk.ApplicationWindow):
         self._dismiss_left = seconds
 
         def tick() -> bool:
-            # Hovering, speaking, or an unanswered approval all mean the user
-            # is still using this — hold.
-            if self._hovered or self._speaking or self._actions is not None:
+            # Hovering, speaking, typing a follow-up, or an unanswered approval
+            # all mean the user is still using this — hold.
+            focused = False
+            try:
+                focused = bool(
+                    self._reply_entry is not None and self._reply_entry.has_focus()
+                )
+            except Exception:  # noqa: BLE001
+                focused = False
+            if self._hovered or self._speaking or self._actions is not None or focused:
                 return True
             self._dismiss_left -= DISMISS_TICK_MS / 1000.0
             if self._dismiss_left <= 0:
@@ -531,6 +563,9 @@ class ResultOrb(Gtk.ApplicationWindow):
         self._status = message[:80] or "Working…"
         self._status_label.set_text(self._status)
         self._set_body(None)
+        if self._reply_row is not None:
+            self._reply_row.set_visible(False)
+            self._reply_entry.set_text("")
         self._apply_geometry()
         self._loader.set_state("thinking")
         self._loader.start()
@@ -546,6 +581,9 @@ class ResultOrb(Gtk.ApplicationWindow):
 
     def set_state(self, state: str) -> None:
         self._loader.set_state(state)
+
+    def set_session_id(self, session_id: str | None) -> None:
+        self._session_id = session_id
 
     def show_result(
         self, canvas: dict[str, Any] | None, *, title: str = "", failed: bool = False
@@ -565,17 +603,43 @@ class ResultOrb(Gtk.ApplicationWindow):
         else:
             self._shell.remove_css_class("failed")
         self._set_body(canvas)
+        if self._reply_row is not None and self._on_followup is not None and not failed:
+            self._reply_row.set_visible(True)
         self._expanded = True
         self._animate_to(1.0)
         self.present()
         GLib.idle_add(self._keep_above)
 
         # A longer answer earns a longer read before it closes itself.
+        # Follow-up entry pauses auto-dismiss while focused.
         self._start_countdown(
             DISMISS_AFTER_LONG
             if len(self._answer_text) > LONG_ANSWER_CHARS
             else DISMISS_AFTER
         )
+
+    def _on_followup_submit(self, *_args) -> None:
+        text = (self._reply_entry.get_text() or "").strip()
+        if not text or self._on_followup is None:
+            return
+        self._cancel_countdown()
+        self._reply_entry.set_text("")
+        self._on_followup(text, self._session_id)
+
+    def _on_clear_session(self, *_args) -> None:
+        session_id = self._session_id
+        self._session_id = None
+        if session_id and self.client is not None:
+            def work() -> None:
+                try:
+                    self.client.clear_session(session_id)
+                except Exception:  # noqa: BLE001
+                    logger.debug("clear_session failed", exc_info=True)
+
+            threading.Thread(target=work, daemon=True).start()
+        self._status_label.set_text("New conversation")
+        if self._reply_entry is not None:
+            self._reply_entry.set_placeholder_text("Ask something new…")
 
     def show_confirmation(
         self,

@@ -20,6 +20,10 @@ from app.schemas import RouteDecision, WorkerEvidence, WorkerResult
 
 logger = logging.getLogger(__name__)
 
+# Sentinel: omitted worker_id defaults to the plugin id (is a routing destination).
+# Explicit None or "" means tools-only — see docs/PLUGINS.md.
+_WORKER_DEFAULT = object()
+
 
 class McpPlugin(BasePlugin):
     """
@@ -31,7 +35,7 @@ class McpPlugin(BasePlugin):
       health_tool      tool name for health (default server_info)
       run_tool         tool name for worker execution (default generate_image)
       env              JSON object of extra env vars
-      worker_id        route worker name (defaults to plugin id)
+      worker_id        route worker name (defaults to plugin id; blank = tools only)
       cloud            whether this MCP talks to cloud services
     """
 
@@ -48,7 +52,7 @@ class McpPlugin(BasePlugin):
         author: str = "community",
         version: str = "0.1.0",
         homepage: str | None = None,
-        worker_id: str | None = None,
+        worker_id: Any = _WORKER_DEFAULT,
         cloud: bool = False,
     ) -> None:
         self.id = plugin_id
@@ -57,7 +61,12 @@ class McpPlugin(BasePlugin):
         self.author = author
         self.version = version
         self.homepage = homepage
-        self.worker_id = worker_id or plugin_id
+        if worker_id is _WORKER_DEFAULT:
+            self.worker_id = plugin_id
+        elif worker_id is None or str(worker_id).strip() == "":
+            self.worker_id = None
+        else:
+            self.worker_id = str(worker_id)
         self.cloud = cloud
         super().__init__(settings)
 
@@ -167,27 +176,42 @@ class McpPlugin(BasePlugin):
         return env or None
 
     async def health(self) -> PluginHealth:
+        import asyncio
+
         try:
             cmd = self._command()
+            resolved = shutil.which(cmd) or (cmd if Path(cmd).exists() else None)
+            if not resolved:
+                return PluginHealth(ok=False, detail=f"Command not found: {cmd}")
             tool = str(self.settings.get("health_tool") or "server_info")
             # Prefer a lightweight tool call; fall back to list_tools.
+            # Cap both attempts so a hung stdio MCP cannot stall /api/status.
             try:
-                payload = await mcp_call_tool(
-                    cmd, tool, {}, args=self._args(), env=self._env()
+                payload = await asyncio.wait_for(
+                    mcp_call_tool(cmd, tool, {}, args=self._args(), env=self._env()),
+                    timeout=1.75,
                 )
                 return PluginHealth(
                     ok=True,
                     detail=f"MCP healthy via {tool}",
                     metadata={"result": _short(payload)},
                 )
+            except TimeoutError:
+                raise
             except Exception as tool_exc:  # noqa: BLE001
-                tools = await mcp_list_tools(cmd, self._args(), env=self._env())
+                tools = await asyncio.wait_for(
+                    mcp_list_tools(cmd, self._args(), env=self._env()),
+                    timeout=1.75,
+                )
                 names = [t.get("name") for t in tools]
                 return PluginHealth(
                     ok=True,
                     detail=f"MCP reachable ({len(names)} tools); health tool failed: {tool_exc}",
                     metadata={"tools": names},
                 )
+        except TimeoutError:
+            logger.warning("MCP plugin %s health timed out", self.id)
+            return PluginHealth(ok=False, detail="MCP health timed out")
         except Exception as exc:  # noqa: BLE001
             logger.warning("MCP plugin %s health failed: %s", self.id, exc)
             return PluginHealth(ok=False, detail=str(exc))
@@ -336,6 +360,11 @@ def mcp_plugin_from_manifest(data: dict[str, Any], settings: dict[str, Any] | No
         if key in data:
             val = data[key]
             merged.setdefault(key, val if isinstance(val, str) else json.dumps(val))
+    if "worker_id" in data:
+        raw_worker = data.get("worker_id")
+        worker_id: Any = None if raw_worker in (None, "") else str(raw_worker)
+    else:
+        worker_id = _WORKER_DEFAULT
     return McpPlugin(
         plugin_id=data["id"],
         name=data.get("name") or data["id"],
@@ -344,6 +373,6 @@ def mcp_plugin_from_manifest(data: dict[str, Any], settings: dict[str, Any] | No
         author=data.get("author") or "community",
         version=data.get("version") or "0.1.0",
         homepage=data.get("homepage"),
-        worker_id=data.get("worker_id") or data["id"],
+        worker_id=worker_id,
         cloud=bool(data.get("cloud", False)),
     )

@@ -57,6 +57,7 @@ function setTab(name) {
   $("#page-title").textContent = title;
   $("#page-lede").textContent = lede;
   history.replaceState(null, "", `#${name}`);
+  ensureTab(name).catch((err) => toast(err.message));
 }
 
 $$(".nav-item").forEach((btn) => {
@@ -66,6 +67,49 @@ $$(".nav-item").forEach((btn) => {
 function applyThemeCss() {
   const link = $("#theme-css");
   if (link) link.href = `/theme.css?t=${Date.now()}`;
+}
+
+/* Lazy tab data: cold boot used to fan out every control-plane probe at once
+   (worker health, Hugging Face catalogs, GitHub skill checks). Only the active
+   section loads now; others hydrate on first visit. */
+const loadedTabs = new Set();
+
+async function ensureTab(name) {
+  if (loadedTabs.has(name)) return;
+  loadedTabs.add(name);
+  switch (name) {
+    case "status":
+      await loadStatus();
+      break;
+    case "assistant":
+      await Promise.all([loadAssistant(), loadTools()]);
+      break;
+    case "plugins":
+      await Promise.all([loadPlugins({ health: false }), loadCatalog()]);
+      loadPlugins({ health: true }).catch(() => {});
+      break;
+    case "skills":
+      await loadSkills();
+      loadSkillCatalog().catch(() => {});
+      break;
+    case "models":
+      await loadModels();
+      refreshHfJobs().catch(() => {});
+      break;
+    case "themes":
+      await loadThemes();
+      break;
+    case "config":
+      await Promise.all([
+        loadConfig(),
+        loadProjects(),
+        loadWorkerEndpoints(),
+        loadSystemInfo(),
+      ]);
+      break;
+    default:
+      break;
+  }
 }
 
 /* ————————————————————————————————————————————————— status ——— */
@@ -82,8 +126,10 @@ function pill(label, ok, detail = "", state = null) {
 
 async function loadStatus() {
   const data = await api("/api/status");
+  const grid = $("#status-grid");
+  grid.removeAttribute("aria-busy");
   const npuState = data.npu ? "ok" : data.npu_driver ? "warn" : "bad";
-  $("#status-grid").innerHTML = [
+  grid.innerHTML = [
     pill("NPU", data.npu, data.npu_detail || "", npuState),
     pill(
       "Assistant",
@@ -374,6 +420,7 @@ function connectActivityStream() {
 /* ————————————————————————————————————————————— assistant ——— */
 
 let toolsCache = [];
+let speechDevices = [];
 
 function toolCard(tool) {
   const props = Object.keys(tool.parameters?.properties || {});
@@ -533,9 +580,36 @@ function renderVoices(engineId, selected) {
   if (selected && voices.some((v) => v.id === selected)) sel.value = selected;
 }
 
+function renderSpeechDevices(devices, selected, resolved) {
+  const sel = $("#speech-device");
+  // Unavailable devices stay in the list, disabled, carrying their reason.
+  // Hiding a GPU that is physically present just looks like missing hardware.
+  const options = [
+    `<option value="auto">Automatic${resolved ? ` (using ${esc(resolved)})` : ""}</option>`,
+    ...devices.map(
+      (d) =>
+        `<option value="${esc(d.id)}" ${d.available ? "" : "disabled"}>${esc(d.name)}${
+          d.available ? (d.detail ? ` — ${esc(d.detail)}` : "") : " — unavailable"
+        }</option>`
+    ),
+  ];
+  sel.innerHTML = options.join("");
+  const wanted = selected || "auto";
+  sel.value = devices.some((d) => d.id === wanted && d.available) ? wanted : "auto";
+
+  const chosen = devices.find((d) => d.id === sel.value);
+  const blocked = devices.filter((d) => !d.available && d.detail);
+  $("#speech-device-help").textContent = chosen?.detail
+    ? chosen.detail
+    : blocked.length
+      ? `${blocked[0].name}: ${blocked[0].detail}`
+      : "where synthesis happens";
+}
+
 async function loadSpeech(settings) {
   const data = await api("/api/speech");
   speechEngines = data.engines || [];
+  speechDevices = data.devices || [];
   const s = settings || data.settings || {};
   const form = $("#assistant-form");
 
@@ -550,6 +624,7 @@ async function loadSpeech(settings) {
     : `<option value="">— none installed —</option>`;
   if (s.engine && usable.some((e) => e.id === s.engine)) $("#speech-engine").value = s.engine;
   renderVoices($("#speech-engine").value, s.voice);
+  renderSpeechDevices(speechDevices, s.device, data.resolved_device);
 
   // Audio8 has no speed or pitch control. Leaving the inputs live would let
   // someone set a rate that silently does nothing, so grey them out and say so
@@ -576,6 +651,11 @@ async function loadSpeech(settings) {
 }
 
 $("#speech-engine").addEventListener("change", (e) => renderVoices(e.target.value, ""));
+$("#speech-device").addEventListener("change", (e) => {
+  const chosen = speechDevices.find((d) => d.id === e.target.value);
+  $("#speech-device-help").textContent =
+    chosen?.detail || "picked automatically";
+});
 
 $("#speech-test").addEventListener("click", async (e) => {
   const btn = e.currentTarget;
@@ -590,6 +670,7 @@ $("#speech-test").addEventListener("click", async (e) => {
         text: "Keylane is ready. This is how answers will sound.",
         engine: $("#speech-engine").value,
         voice: $("#speech-voice").value,
+        device: $("#speech-device").value,
         rate: Number($("#assistant-form").speech_rate.value) || 100,
         pitch: Number($("#assistant-form").speech_pitch.value) || 50,
       }),
@@ -615,6 +696,9 @@ async function loadAssistant() {
   form.delegation_enabled.checked = !!s.delegation?.enabled;
   form.delegation_follow_up.checked = !!s.delegation?.follow_up;
   form.max_delegations.value = s.delegation?.max_delegations ?? 2;
+  form.agent_enabled.checked = s.agent?.enabled !== false;
+  form.supervisor_backend.value = s.supervisor?.backend || "auto";
+  form.supervisor_fallback.value = s.supervisor?.fallback_worker || "auto";
 
   form.search_engine.value = s.search?.engine || "duckduckgo";
   form.searxng_url.value = s.search?.searxng_url || "";
@@ -674,6 +758,13 @@ $("#assistant-form").addEventListener("submit", async (e) => {
       follow_up: form.delegation_follow_up.checked,
       max_delegations: Number(form.max_delegations.value),
     },
+    supervisor: {
+      backend: form.supervisor_backend.value,
+      fallback_worker: form.supervisor_fallback.value,
+    },
+    agent: {
+      enabled: form.agent_enabled.checked,
+    },
     search: {
       engine: form.search_engine.value,
       searxng_url: form.searxng_url.value.trim(),
@@ -689,6 +780,7 @@ $("#assistant-form").addEventListener("submit", async (e) => {
       auto_speak: form.auto_speak.checked,
       engine: form.speech_engine.value,
       voice: form.speech_voice.value,
+      device: form.speech_device.value,
       rate: Number(form.speech_rate.value) || 100,
       pitch: Number(form.speech_pitch.value) || 50,
     },
@@ -803,24 +895,26 @@ $("#catalog-grid").addEventListener("click", async (e) => {
   }
 });
 
-async function loadPlugins() {
-  const plugins = await api("/api/plugins?health=true");
+async function loadPlugins({ health = true } = {}) {
+  const plugins = await api(`/api/plugins?health=${health ? "true" : "false"}`);
   $("#count-plugins").textContent = plugins.filter((p) => p.enabled).length;
   $("#plugin-list").innerHTML = plugins
     .map((p) => {
-      const health = p.health;
+      const healthInfo = p.health;
       const healthBadge = !p.enabled
         ? `<span class="badge">disabled</span>`
-        : health
-          ? `<span class="badge ${health.ok ? "ok" : "bad"}">${health.ok ? "healthy" : "unreachable"}</span>`
-          : "";
+        : healthInfo
+          ? `<span class="badge ${healthInfo.ok ? "ok" : "bad"}">${healthInfo.ok ? "healthy" : "unreachable"}</span>`
+          : health
+            ? ""
+            : `<span class="badge">checking</span>`;
       const toolCount = (p.tools || []).length;
       return `<article class="card">
         <div class="card-head">
           <div>
             <div class="row"><h3>${esc(p.name)}</h3>${healthBadge}</div>
             <p class="muted hint" style="margin-top:4px">${esc(p.description || "")}</p>
-            ${health?.detail ? `<p class="muted hint" style="margin-top:4px">${esc(health.detail)}</p>` : ""}
+            ${healthInfo?.detail ? `<p class="muted hint" style="margin-top:4px">${esc(healthInfo.detail)}</p>` : ""}
           </div>
           <div class="row wrap" style="justify-content:flex-end">
             <span class="badge ${p.kind === "mcp" ? "mcp" : ""}">${esc(p.kind)}</span>
@@ -1956,28 +2050,35 @@ document.addEventListener("click", async (e) => {
 
 /* ————————————————————————————————————————————————— boot ——— */
 
-async function refreshAll() {
-  await Promise.all([
-    loadStatus(),
-    loadConfig(),
-    loadAssistant(),
-    loadTools(),
-    loadModels(),
-    loadPlugins(),
-    loadCatalog(),
-    loadSkills(),
-    loadSkillCatalog(),
-    loadThemes(),
-    loadProjects(),
-    loadWorkerEndpoints(),
-    loadSystemInfo(),
-  ]);
+async function refreshCurrentTab() {
+  const hash = (location.hash || "#status").slice(1);
+  const tab = titles[hash] ? hash : "status";
+  loadedTabs.delete(tab);
+  // Status counts are cheap and keep the rail honest after a refresh.
+  if (tab !== "status") {
+    loadStatus().catch(() => {});
+  }
+  await ensureTab(tab);
+}
+
+async function warmRailCounts() {
+  // Fire-and-forget metadata so nav badges fill without blocking first paint.
+  api("/api/plugins?health=false")
+    .then((plugins) => {
+      $("#count-plugins").textContent = plugins.filter((p) => p.enabled).length;
+    })
+    .catch(() => {});
+  api("/api/skills")
+    .then((data) => {
+      $("#count-skills").textContent = (data.skills || []).length || "";
+    })
+    .catch(() => {});
 }
 
 $("#refresh-btn").addEventListener("click", (e) => {
   const btn = e.currentTarget;
   btn.disabled = true;
-  refreshAll()
+  refreshCurrentTab()
     .then(() => toast("Refreshed"))
     .catch((err) => toast(err.message))
     .finally(() => {
@@ -1986,8 +2087,10 @@ $("#refresh-btn").addEventListener("click", (e) => {
 });
 
 const initial = (location.hash || "#status").slice(1);
-setTab(titles[initial] ? initial : "status");
+const startTab = titles[initial] ? initial : "status";
+setTab(startTab);
 connectActivityStream();
-refreshAll()
-  .then(() => refreshHfJobs())
-  .catch((err) => toast(err.message));
+warmRailCounts();
+if (startTab === "models") {
+  refreshHfJobs().catch(() => {});
+}

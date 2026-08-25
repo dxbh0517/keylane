@@ -180,12 +180,15 @@ def run_launcher(*, with_tray: bool = True, background: bool = False) -> int:
                     corner=corner,
                     on_open_link=_open_link,
                     on_reopen=self.activate,
+                    on_followup=self._followup,
                 )
             return self.orb
 
         def submit(self, message: str, payload: dict) -> None:
             """Send a request and let the orb carry it from here."""
             orb = self._ensure_orb()
+            if payload.get("session_id"):
+                orb.set_session_id(str(payload["session_id"]))
             orb.start(message)
             self._watch_activity(orb)
 
@@ -194,6 +197,13 @@ def run_launcher(*, with_tray: bool = True, background: bool = False) -> int:
                 GLib.idle_add(self._on_result, data, payload)
 
             threading.Thread(target=work, daemon=True).start()
+
+        def _followup(self, message: str, session_id: str | None) -> None:
+            """Collapse to the orb, ask again, expand when the answer lands."""
+            payload = {"message": message}
+            if session_id:
+                payload["session_id"] = session_id
+            self.submit(message, payload)
 
         def _watch_activity(self, orb) -> None:
             """Colour the orb from the gateway's live activity stream.
@@ -257,6 +267,10 @@ def run_launcher(*, with_tray: bool = True, background: bool = False) -> int:
             if not canvas:
                 text = data.get("result") or data.get("error") or "No answer."
                 canvas = {"blocks": [{"type": "text", "text": str(text)}]}
+            session_id = data.get("session_id") or payload.get("session_id")
+            if session_id:
+                orb.set_session_id(str(session_id))
+                payload["session_id"] = str(session_id)
             orb.show_result(canvas, failed=failed)
             return False
 

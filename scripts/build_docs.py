@@ -302,7 +302,7 @@ TEMPLATE = """<!doctype html>
   <title>{title} · Keylane docs</title>
   <meta name="description" content="{summary}" />
   <link rel="icon" type="image/png" href="/assets/favicon.png" />
-  <link rel="stylesheet" href="assets/docs.css" />
+  <link rel="stylesheet" href="assets/docs.css?v=20260825" />
 </head>
 <body>
   <div class="docs">

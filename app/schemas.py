@@ -118,6 +118,11 @@ class ChatRequest(BaseModel):
     confirmed: bool = False
     local_only: bool | None = None
     task_id: str | None = None
+    session_id: str | None = None
+    """Continue a multi-turn conversation. Created automatically when omitted."""
+
+    clear_session: bool = False
+    """When true with session_id, wipe that session before this turn."""
 
 
 class RouteRequest(BaseModel):
@@ -173,6 +178,7 @@ class TaskRecord(BaseModel):
     max_retries: int = 3
     error: str | None = None
     local_only: bool = False
+    session_id: str | None = None
     # Assistant-loop bookkeeping
     assistant_steps: list[dict[str, Any]] = Field(default_factory=list)
     canvas: dict[str, Any] | None = None
@@ -202,6 +208,7 @@ class TaskResponse(BaseModel):
 
     pending_tool: str | None = None
     pending_arguments: dict[str, Any] = Field(default_factory=dict)
+    session_id: str | None = None
 
 
 class ToolCallRequest(BaseModel):

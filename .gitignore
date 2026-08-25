@@ -35,3 +35,7 @@ plugins/community/*
 # Voice reference clips for read-aloud cloning are per-machine.
 voices/*
 !voices/.gitkeep
+
+# Per-machine agent state and long-term memory vault.
+data/
+memory/

@@ -121,7 +121,7 @@ rm -f  ~/.config/systemd/user/ai-{gateway,launcher}.service
 rm -f  ~/.config/systemd/user/*.target.wants/ai-{gateway,launcher}.service
 systemctl --user daemon-reload
 
-rm -f  ~/.local/share/applications/{app.keylane.Launcher,keylane}.desktop
+rm -f  ~/.local/share/applications/{app.keylane.Launcher,keylane,ai-gateway-launcher}.desktop
 rm -f  ~/.config/autostart/keylane-panel.desktop
 find   ~/.local/share/icons/hicolor -name 'keylane*' -delete
 gtk-update-icon-cache -f ~/.local/share/icons/hicolor
@@ -184,6 +184,7 @@ Everything is a [plugin](PLUGINS.md), and each one is optional.
 | **Claude Code** | `npm i -g @anthropic-ai/claude-code`, then `claude` once to sign in |
 | **Cursor** | Install the Cursor Agent CLI and sign in |
 | **ComfyUI** | `pip install "comfy-cli>=1.14.0" comfy-mcp`, `comfy install`, `comfy launch` |
+| **Mailspring** | Mailspring ≥1.23 with Preferences → MCP Server enabled; paste the bearer token into the plugin's `AUTH_HEADER` setting |
 
 Check **Status** — each one turns green when Keylane can reach it. Anything you
 do not use, disable on the **Plugins** tab.

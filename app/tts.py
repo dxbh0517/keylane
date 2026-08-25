@@ -117,23 +117,191 @@ _cache = _Probe()
 CACHE_SECONDS = 60.0
 
 
-def torch_device() -> str:
-    """``cuda`` when torch can reach a GPU, else ``cpu``.
+class DeviceInfo(BaseModel):
+    """One place the model could run, and whether it actually can."""
 
-    Checked lazily rather than at import: torch is heavy, and the answer
-    changes if someone installs a CUDA build without reinstalling Keylane.
-    """
+    id: str
+    """``cpu``, ``cuda:0``, ``xpu:0``, ``npu`` — what to store in settings."""
+
+    name: str
+    available: bool
+    detail: str = ""
+    install_hint: str = ""
+
+
+def _cuda_devices() -> list[DeviceInfo]:
+    """Every CUDA GPU torch can address, or an explanation of why none."""
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        return []
+
+    if torch.cuda.is_available():
+        found = []
+        for index in range(torch.cuda.device_count()):
+            try:
+                name = torch.cuda.get_device_name(index)
+                total = torch.cuda.get_device_properties(index).total_memory
+                detail = f"{total / 1e9:.0f} GB"
+            except Exception:  # noqa: BLE001
+                name, detail = f"CUDA device {index}", ""
+            found.append(
+                DeviceInfo(id=f"cuda:{index}", name=name, available=True, detail=detail)
+            )
+        return found
+
+    # A GPU the driver can see but torch cannot is worth listing anyway: the
+    # fix is a different torch build, and silently hiding the card makes that
+    # look like missing hardware.
+    present = _driver_gpus()
+    return [
+        DeviceInfo(
+            id=f"cuda:{index}",
+            name=name,
+            available=False,
+            detail="present, but this torch build has no CUDA support",
+            install_hint=(
+                "Install a CUDA build in the gateway venv: .venv/bin/pip install "
+                "--index-url https://download.pytorch.org/whl/cu130 torch"
+            ),
+        )
+        for index, name in enumerate(present)
+    ]
+
+
+def _driver_gpus() -> list[str]:
+    """NVIDIA GPUs the driver reports, independent of torch."""
+    binary = shutil.which("nvidia-smi")
+    if not binary:
+        return []
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            [binary, "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        ).stdout
+    except Exception:  # noqa: BLE001
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def _xpu_devices() -> list[DeviceInfo]:
+    """Intel GPUs, which torch reaches through XPU rather than CUDA."""
     try:
         import torch
 
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        xpu = getattr(torch, "xpu", None)
+        if xpu is None or not xpu.is_available():
+            return []
+        return [
+            DeviceInfo(
+                id=f"xpu:{i}",
+                name=xpu.get_device_name(i),
+                available=True,
+            )
+            for i in range(xpu.device_count())
+        ]
     except Exception:  # noqa: BLE001
-        return "cpu"
+        return []
 
 
-def speak_cap() -> int:
+def _npu_device() -> DeviceInfo | None:
+    """The Intel NPU — listed, and honestly unavailable.
+
+    Keylane's router runs on it, so people will reasonably expect speech to as
+    well. It cannot: the NPU is reachable only through OpenVINO, and Audio8 is
+    a PyTorch model with custom modelling code and no OpenVINO export. Saying
+    that plainly beats leaving the option out and looking broken.
+    """
+    try:
+        import openvino as ov
+
+        if not any(d == "NPU" or d.startswith("NPU.") for d in ov.Core().available_devices):
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return DeviceInfo(
+        id="npu",
+        name="Intel NPU",
+        available=False,
+        detail=(
+            "reachable only through OpenVINO, and Audio8 is a PyTorch model "
+            "with no OpenVINO export — the NPU cannot run it"
+        ),
+    )
+
+
+def available_devices() -> list[DeviceInfo]:
+    """Everywhere speech could run, best first, each with its own verdict."""
+    devices: list[DeviceInfo] = []
+    devices.extend(_cuda_devices())
+    devices.extend(_xpu_devices())
+    devices.append(
+        DeviceInfo(
+            id="cpu",
+            name="CPU",
+            available=True,
+            detail="always works, roughly 10x slower than realtime",
+        )
+    )
+    npu = _npu_device()
+    if npu is not None:
+        devices.append(npu)
+    return devices
+
+
+def resolve_device(preference: str = "") -> str:
+    """The torch device to use, honouring ``preference`` when it can.
+
+    Falls back rather than failing: a saved preference for a GPU that is not
+    there any more should still produce speech, on the CPU, rather than an
+    error about hardware.
+    """
+    devices = {d.id: d for d in available_devices()}
+    chosen = devices.get(preference)
+    if chosen is not None and chosen.available:
+        return chosen.id
+    if preference and preference not in {"", "auto"}:
+        logger.info(
+            "Speech device %r is not usable (%s); falling back.",
+            preference,
+            chosen.detail if chosen else "no such device",
+        )
+    # auto: the fastest thing that actually works.
+    for device in devices.values():
+        if device.available and device.id != "cpu":
+            return device.id
+    return "cpu"
+
+
+def torch_device(preference: str = "") -> str:
+    """Backwards-compatible alias; ``cuda``/``cpu`` for callers that branch."""
+    return resolve_device(preference)
+
+
+def is_accelerated(device: str) -> bool:
+    """Whether a resolved device is something other than the CPU."""
+    return bool(device) and not device.startswith("cpu")
+
+
+def speak_cap(device: str = "") -> int:
     """How much text is worth attempting on the device that will run it."""
-    return MAX_SPEAK_CHARS_GPU if torch_device() == "cuda" else MAX_SPEAK_CHARS_CPU
+    resolved = device or resolve_device(_configured_device())
+    return MAX_SPEAK_CHARS_GPU if is_accelerated(resolved) else MAX_SPEAK_CHARS_CPU
+
+
+def _configured_device() -> str:
+    """The device the user picked under Assistant -> Read aloud."""
+    try:
+        from app.assistant_settings import load_assistant_settings
+
+        return load_assistant_settings().speech.device or "auto"
+    except Exception:  # noqa: BLE001
+        return "auto"
 
 
 def clean_for_speech(text: str, limit: int | None = None) -> str:
@@ -257,18 +425,25 @@ class _Synth:
     def device(self) -> str:
         return self._device
 
-    def load(self) -> None:
+    def load(self, device: str | None = None) -> None:
+        target = device or resolve_device(_configured_device())
         with self._lock:
-            if self._model is not None:
+            # Switching device means rebuilding: the weights live on the old
+            # one, and moving a model mid-flight is not worth the subtlety.
+            if self._model is not None and self._device == target:
                 return
+            if self._model is not None:
+                logger.info("Speech device changed %s -> %s; reloading", self._device, target)
+                self._model = None
+                self._processor = None
             import torch
             from transformers import AutoModel, AutoProcessor
 
             path = str(model_dir())
-            device = torch_device()
+            device = target
             # bfloat16 is a win on a GPU and a liability on a CPU, where it is
             # emulated rather than native.
-            dtype = torch.bfloat16 if device == "cuda" else torch.float32
+            dtype = torch.bfloat16 if is_accelerated(device) else torch.float32
             logger.info("Loading Audio8 TTS from %s on %s", path, device)
             processor = AutoProcessor.from_pretrained(path, trust_remote_code=True)
             model = (
@@ -282,11 +457,13 @@ class _Synth:
             self._sample_rate = int(getattr(model.config, "codec_sample_rate", 44100))
             logger.info("Audio8 TTS ready on %s at %d Hz", device, self._sample_rate)
 
-    def synthesize(self, text: str, reference: tuple[str, str] | None) -> Any:
+    def synthesize(
+        self, text: str, reference: tuple[str, str] | None, device: str | None = None
+    ) -> Any:
         """Return a float32 mono numpy array for one chunk of text."""
         import torch
 
-        self.load()
+        self.load(device)
         kwargs: dict[str, Any] = {"text": [text], "return_tensors": "pt"}
         if reference is not None:
             audio_path, transcript = reference
@@ -315,14 +492,16 @@ class _Synth:
 _synth = _Synth()
 
 
-def _render_wav(text: str, reference: tuple[str, str] | None) -> bytes:
+def _render_wav(
+    text: str, reference: tuple[str, str] | None, device: str | None = None
+) -> bytes:
     """Synthesise every chunk and return one WAV, ready to play."""
     import numpy as np
     import soundfile as sf
 
     pieces = []
     for chunk in split_for_synthesis(text):
-        pieces.append(_synth.synthesize(chunk, reference))
+        pieces.append(_synth.synthesize(chunk, reference, device))
 
     rate = _synth.sample_rate or 44100
     if len(pieces) > 1:
@@ -416,7 +595,10 @@ def probe_engines(*, refresh: bool = False) -> list[EngineInfo]:
         )
     else:
         count = len(_reference_voices())
-        device = torch_device()
+        device = resolve_device(_configured_device())
+        named = next(
+            (d.name for d in available_devices() if d.id == device), device
+        )
         voices_note = (
             f"{count} cloned voice{'s' if count != 1 else ''}"
             if count
@@ -425,19 +607,20 @@ def probe_engines(*, refresh: bool = False) -> list[EngineInfo]:
         # Speed is the difference between a usable feature and a novelty here,
         # and it is entirely down to the device, so say which one it found.
         speed = (
-            "running on the GPU"
-            if device == "cuda"
+            f"running on {named}"
+            if is_accelerated(device)
             else (
-                "running on CPU, roughly 10x slower than realtime — long answers "
-                "are truncated"
+                f"running on {named}, roughly 10x slower than realtime — long "
+                "answers are truncated"
             )
         )
         detail = f"ready, {speed}. {voices_note}."
-        hint = (
-            ""
-            if device == "cuda"
-            else "For faster speech, install a CUDA build of torch in the gateway venv."
+        # If a faster device exists but cannot be used, its own hint is more
+        # specific than anything generic said here.
+        blocked = next(
+            (d for d in available_devices() if not d.available and d.install_hint), None
         )
+        hint = "" if is_accelerated(device) else (blocked.install_hint if blocked else "")
 
     engines = [
         EngineInfo(
@@ -521,6 +704,7 @@ async def speak(
     voice_id: str = "",
     rate: int = 100,
     pitch: int = 50,
+    device: str = "",
 ) -> dict[str, Any]:
     """Read text aloud. Returns what was actually used.
 
@@ -528,7 +712,8 @@ async def speak(
     keep working, but Audio8 exposes no speed or pitch control and they are
     ignored. The engine advertises that via ``supports_rate``/``supports_pitch``.
     """
-    body = clean_for_speech(text)
+    target = resolve_device(device or _configured_device())
+    body = clean_for_speech(text, speak_cap(target))
     if not body:
         raise SpeakError("There is nothing to read.")
 
@@ -559,7 +744,8 @@ async def speak(
         # Torch inference is blocking and slow; keeping it off the event loop
         # is what lets the gateway answer anything else while it speaks.
         wav = await asyncio.wait_for(
-            asyncio.to_thread(_render_wav, body, reference), timeout=SYNTH_TIMEOUT
+            asyncio.to_thread(_render_wav, body, reference, target),
+            timeout=SYNTH_TIMEOUT,
         )
     except asyncio.TimeoutError as exc:
         raise SpeakError("Speech synthesis timed out.") from exc

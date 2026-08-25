@@ -125,6 +125,9 @@ class SpeechSettings(BaseModel):
     voice: str = ""
     """Engine-specific voice id. Empty picks the engine's first voice."""
 
+    device: str = "auto"
+    """Where to run synthesis: auto | cpu | cuda:N | xpu:N. See app.tts."""
+
     rate: int = 100
     """Speaking rate as a percentage of the engine's normal speed."""
 
@@ -147,6 +150,27 @@ class DelegationSettings(BaseModel):
     """Ordered worker preference when several could do the job."""
 
 
+class SupervisorSettings(BaseModel):
+    backend: str = "auto"
+    """Who runs the assistant loop: auto | npu | lmstudio | lemonade.
+
+    ``auto`` uses the NPU when its model is loaded, otherwise the fallback
+    chat worker. Pin ``npu`` to refuse chat fallback, or pin a chat worker
+    to always supervise with LM Studio / Lemonade.
+    """
+
+    fallback_worker: str = "auto"
+    """When backend is auto and NPU is down: auto | lmstudio | lemonade."""
+
+
+class AgentSettings(BaseModel):
+    enabled: bool = True
+    """Run the always-on standing-goal scheduler inside the gateway."""
+
+    tick_seconds: int = 60
+    """How often the scheduler wakes to look for due goals."""
+
+
 class AssistantSettings(BaseModel):
     persona: str = ""
     """Extra sentences appended to the assistant system prompt."""
@@ -157,6 +181,8 @@ class AssistantSettings(BaseModel):
     email: EmailSettings = Field(default_factory=EmailSettings)
     speech: SpeechSettings = Field(default_factory=SpeechSettings)
     delegation: DelegationSettings = Field(default_factory=DelegationSettings)
+    supervisor: SupervisorSettings = Field(default_factory=SupervisorSettings)
+    agent: AgentSettings = Field(default_factory=AgentSettings)
 
     def sanitized(self) -> dict[str, Any]:
         """Model dump with the SMTP password masked, for the API/control panel."""
@@ -192,6 +218,8 @@ def load_assistant_settings(*, refresh: bool = False) -> AssistantSettings:
         email=EmailSettings(**(raw.get("email") or {})),
         speech=SpeechSettings(**(raw.get("speech") or {})),
         delegation=DelegationSettings(**(raw.get("delegation") or {})),
+        supervisor=SupervisorSettings(**(raw.get("supervisor") or {})),
+        agent=AgentSettings(**(raw.get("agent") or {})),
     )
     return _cache
 
@@ -225,6 +253,8 @@ def save_assistant_settings(settings: AssistantSettings) -> AssistantSettings:
         ("email", settings.email),
         ("speech", settings.speech),
         ("delegation", settings.delegation),
+        ("supervisor", settings.supervisor),
+        ("agent", settings.agent),
     ):
         lines.append(f"[{section}]")
         for key, value in model.model_dump().items():
@@ -245,6 +275,8 @@ class AssistantSettingsUpdate(BaseModel):
     email: dict[str, Any] | None = None
     speech: dict[str, Any] | None = None
     delegation: dict[str, Any] | None = None
+    supervisor: dict[str, Any] | None = None
+    agent: dict[str, Any] | None = None
 
 
 def update_assistant_settings(update: AssistantSettingsUpdate) -> AssistantSettings:
@@ -254,7 +286,7 @@ def update_assistant_settings(update: AssistantSettingsUpdate) -> AssistantSetti
 
     if "persona" in payload:
         data["persona"] = payload["persona"]
-    for section in ("tools", "shell", "search", "speech", "delegation"):
+    for section in ("tools", "shell", "search", "speech", "delegation", "supervisor", "agent"):
         if section in payload:
             data[section] = {**data[section], **payload[section]}
     if "email" in payload:

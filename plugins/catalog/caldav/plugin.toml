@@ -1,0 +1,11 @@
+# Optional CalDAV catalog stub — install when you use a remote CalDAV server
+# (Nextcloud, Fastmail, …). For Fedora's built-in calendar prefer gnome-calendar.
+id = "caldav"
+name = "CalDAV Calendar"
+kind = "native"
+description = "List and create events on a CalDAV server (Nextcloud, Fastmail, …)."
+homepage = "https://en.wikipedia.org/wiki/CalDAV"
+worker_id = ""
+cloud = false
+tags = "tools, calendar, caldav"
+entry = "plugin.py"

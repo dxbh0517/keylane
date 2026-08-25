@@ -23,6 +23,7 @@ from app.tools.builtin.email import email_tools
 from app.tools.builtin.files import file_tools
 from app.tools.builtin.shell import shell_tools
 from app.tools.builtin.web import web_tools
+from app.tools.builtin.agent_memory import memory_and_agent_tools
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class ToolRegistry:
         tools += shell_tools()
         tools += email_tools()
         tools += delegation_tools(self.plugins, self.config)
+        tools += memory_and_agent_tools()
         self._builtin = {tool.name: tool for tool in tools}
 
     def _load_plugin_tools(self) -> None:
@@ -173,24 +175,55 @@ class ToolRegistry:
     # slightly longer prompt.
     PROMPT_BUDGET_CHARS = 1800
 
-    def prompt_catalog(self, limit: int = 60, budget: int | None = None) -> str:
+    def prompt_catalog(
+        self,
+        limit: int = 60,
+        budget: int | None = None,
+        *,
+        message: str | None = None,
+    ) -> str:
         """The tool list as the model sees it, kept small enough to follow.
 
         Built-in tools are listed before plugin and MCP tools: a server that
         exposes forty tools must not crowd out ``delegate_to_worker``.
+        When ``message`` hints at mail or calendar, matching MCP tools are
+        force-included so they are not dropped by the budget.
         """
+        from app.intent import preferred_tool_hints
+
         budget = self.PROMPT_BUDGET_CHARS if budget is None else budget
         specs = self.usable_specs()
         builtin = {name for name in self._builtin}
-        specs.sort(key=lambda s: (s.name not in builtin, s.category, s.name))
+        hints = preferred_tool_hints(message or "")
+
+        def _hint_rank(name: str) -> int:
+            if not hints:
+                return 1
+            lowered = name.lower()
+            return 0 if any(h.lower() in lowered for h in hints) else 1
+
+        specs.sort(
+            key=lambda s: (_hint_rank(s.name), s.name not in builtin, s.category, s.name)
+        )
         specs = specs[:limit]
 
         by_category: dict[str, list[str]] = {}
         used = 0
         dropped = 0
+        forced: set[str] = set()
+        # Always reserve space for intent-matching plugin tools.
+        for spec in specs:
+            if _hint_rank(spec.name) == 0 and spec.name not in builtin:
+                forced.add(spec.name)
+
         for spec in specs:
             line = spec.prompt_line()
-            if used + len(line) > budget and spec.name not in builtin:
+            is_forced = spec.name in forced
+            if (
+                used + len(line) > budget
+                and spec.name not in builtin
+                and not is_forced
+            ):
                 dropped += 1
                 continue
             by_category.setdefault(spec.category, []).append(line)
@@ -207,6 +240,13 @@ class ToolRegistry:
             blocks.append(
                 f"({dropped} more plugin tools exist. Ask for them by name if you "
                 f"need one, or delegate the job to the worker that owns them.)"
+            )
+        if hints:
+            blocks.insert(
+                0,
+                "Priority for this request: prefer the matching mail/calendar "
+                "tools above. Do NOT delegate inbox or calendar checks to "
+                "lmstudio or lemonade.",
             )
         return "\n\n".join(blocks)
 

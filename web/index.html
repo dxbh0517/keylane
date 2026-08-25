@@ -6,7 +6,7 @@
   <title>Keylane</title>
   <meta name="description" content="Control panel for the Keylane local AI gateway." />
   <link rel="icon" type="image/png" href="/assets/favicon.png" />
-  <link rel="stylesheet" href="/assets/app.css" />
+  <link rel="stylesheet" href="/assets/app.css?v=20260825" />
   <link rel="stylesheet" id="theme-css" href="/theme.css" />
 </head>
 <body>
@@ -114,7 +114,12 @@
       <section id="tab-status" class="panel is-active">
         <div id="status-banner"></div>
 
-        <div class="status-grid" id="status-grid"></div>
+        <div class="status-grid" id="status-grid" aria-busy="true">
+          <article class="pill skeleton" aria-hidden="true"><div class="label">—</div><div class="value">Checking…</div></article>
+          <article class="pill skeleton" aria-hidden="true"><div class="label">—</div><div class="value">Checking…</div></article>
+          <article class="pill skeleton" aria-hidden="true"><div class="label">—</div><div class="value">Checking…</div></article>
+          <article class="pill skeleton" aria-hidden="true"><div class="label">—</div><div class="value">Checking…</div></article>
+        </div>
 
         <div class="card">
           <div class="section-head">
@@ -160,6 +165,10 @@
             <input name="delegation_follow_up" type="checkbox" />
             <span>Verify delegated results against the original request</span>
           </label>
+          <label class="check">
+            <input name="agent_enabled" type="checkbox" />
+            <span>Always-on agent (standing goals, scheduled mail/calendar checks)</span>
+          </label>
 
           <div class="row wrap">
             <label class="grow">
@@ -177,6 +186,26 @@
             <label class="grow">
               <span>Max delegations per request</span>
               <input name="max_delegations" type="number" min="0" max="5" />
+            </label>
+          </div>
+
+          <div class="row wrap">
+            <label class="grow">
+              <span>Assistant supervisor</span>
+              <select name="supervisor_backend">
+                <option value="auto">Auto — NPU when ready, else local chat</option>
+                <option value="npu">NPU only</option>
+                <option value="lmstudio">Always LM Studio</option>
+                <option value="lemonade">Always Lemonade</option>
+              </select>
+            </label>
+            <label class="grow">
+              <span>Auto fallback chat worker</span>
+              <select name="supervisor_fallback">
+                <option value="auto">Prefer LM Studio, then Lemonade</option>
+                <option value="lmstudio">LM Studio</option>
+                <option value="lemonade">Lemonade</option>
+              </select>
             </label>
           </div>
 
@@ -241,6 +270,12 @@
               <label class="grow" style="flex:2">
                 <span>Voice</span>
                 <select name="speech_voice" id="speech-voice"></select>
+              </label>
+            </div>
+            <div class="row wrap">
+              <label class="grow">
+                <span>Run on <span class="field-help" id="speech-device-help">where synthesis happens</span></span>
+                <select name="speech_device" id="speech-device"></select>
               </label>
             </div>
             <div class="row wrap">

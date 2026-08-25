@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any, Literal
@@ -16,8 +17,12 @@ logger = logging.getLogger(__name__)
 
 ChatWorker = Literal["lmstudio", "lemonade"]
 
+# Health / model-list probes should fail fast when a worker is offline so the
+# control panel does not wait on stacked 3s timeouts.
+PROBE_TIMEOUT = 1.25
 
-async def list_openai_models(base_url: str, *, timeout: float = 3.0) -> list[dict[str, str]]:
+
+async def list_openai_models(base_url: str, *, timeout: float = PROBE_TIMEOUT) -> list[dict[str, str]]:
     url = base_url.rstrip("/")
     if not url.endswith("/v1") and not url.endswith("/api/v1"):
         # tolerate bare host
@@ -42,7 +47,7 @@ async def list_openai_models(base_url: str, *, timeout: float = 3.0) -> list[dic
     return out
 
 
-async def list_comfy_models(base_url: str, *, timeout: float = 3.0) -> list[dict[str, str]]:
+async def list_comfy_models(base_url: str, *, timeout: float = PROBE_TIMEOUT) -> list[dict[str, str]]:
     root = base_url.rstrip("/")
     collected: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -80,9 +85,11 @@ async def available_worker_models(config: AppConfig | None = None) -> dict[str, 
 
     cfg = config or get_config()
     settings = load_models_settings()
-    lmstudio = await list_openai_models(cfg.lmstudio.base_url)
-    lemonade = await list_openai_models(settings.lemonade_base_url or cfg.lemonade.base_url)
-    comfyui = await list_comfy_models(cfg.comfyui.base_url)
+    lmstudio, lemonade, comfyui = await asyncio.gather(
+        list_openai_models(cfg.lmstudio.base_url),
+        list_openai_models(settings.lemonade_base_url or cfg.lemonade.base_url),
+        list_comfy_models(cfg.comfyui.base_url),
+    )
     return {
         "router": installed_router_models(),
         "lmstudio": [m for m in lmstudio if m.get("kind") != "embedding"],

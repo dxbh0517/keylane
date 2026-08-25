@@ -149,6 +149,13 @@ class GatewayClient:
         except Exception:  # noqa: BLE001
             pass
 
+    def clear_session(self, session_id: str) -> None:
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                client.delete(f"{self.base_url}/api/sessions/{session_id}")
+        except Exception:  # noqa: BLE001
+            pass
+
     def transcribe(self, wav_bytes: bytes) -> tuple[str, str]:
         """Returns ``(text, error)``."""
         try:

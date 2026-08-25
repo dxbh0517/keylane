@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import logging
 import shutil
 import sys
+import time
 import tomllib
 from pathlib import Path
 from typing import Any, Iterator
@@ -30,6 +32,13 @@ except ImportError:  # pragma: no cover
 # _load_state(): anything already in plugins.toml counts as installed.
 DEFAULT_ENABLED: dict[str, bool] = {}
 
+# Status and plugin list hit every worker's health endpoint. A short TTL keeps
+# the control panel responsive when several tabs poll at once; probes still
+# run in parallel so a cold miss stays fast. Cache must outlive the probe
+# budget so a slow MCP spawn cannot expire entries mid-flight.
+HEALTH_CACHE_TTL = 12.0
+HEALTH_PROBE_TIMEOUT = 2.0
+
 
 class PluginRegistry:
     def __init__(self, config: AppConfig | None = None) -> None:
@@ -42,6 +51,7 @@ class PluginRegistry:
         self._enabled: dict[str, bool] = dict(DEFAULT_ENABLED)
         self._installed: set[str] = set()
         self._settings: dict[str, dict[str, Any]] = {}
+        self._health_cache: dict[str, tuple[float, PluginHealth]] = {}
         self._load_state()
         self._discover()
 
@@ -64,34 +74,22 @@ class PluginRegistry:
                     self._settings[pid] = settings
 
     def _write_state(self) -> None:
-        lines = [
-            "# Gateway plugin state — edited by the control panel or by hand.",
-            "# See docs/PLUGINS.md for the plugin authoring guide.",
-            "",
-            "[plugins]",
-            "",
-        ]
-        # Prefer tomli_w if available
+        # Persist every installed plugin, even if one failed to load into
+        # ``_plugins`` — otherwise a restart would drop catalog-only entries
+        # like Mailspring the next time settings are saved.
         data: dict[str, Any] = {"plugins": {}}
-        for pid, plugin in sorted(self._plugins.items()) or sorted(
-            {**DEFAULT_ENABLED}.items()
-        ):
-            if isinstance(plugin, BasePlugin):
-                data["plugins"][pid] = {
-                    "installed": True,
-                    "enabled": self._enabled.get(pid, True),
-                    "settings": plugin.settings,
-                }
-            else:
-                data["plugins"][pid] = {
-                    "installed": pid in self._installed,
-                    "enabled": self._enabled.get(pid, True),
-                    "settings": self._settings.get(pid, {}),
-                }
+        for pid in sorted(set(self._plugins) | self._installed):
+            plugin = self._plugins.get(pid)
+            data["plugins"][pid] = {
+                "installed": True,
+                "enabled": self._enabled.get(pid, True),
+                "settings": plugin.settings if plugin is not None else self._settings.get(pid, {}),
+            }
 
-        if not self._plugins:
+        if not data["plugins"]:
             for pid, enabled in DEFAULT_ENABLED.items():
                 data["plugins"][pid] = {
+                    "installed": False,
                     "enabled": enabled,
                     "settings": self._settings.get(pid, {}),
                 }
@@ -106,6 +104,7 @@ class PluginRegistry:
         chunks = ["# Gateway plugin state\n"]
         for pid, entry in data["plugins"].items():
             chunks.append(f"[plugins.{pid}]\n")
+            chunks.append(f"installed = {'true' if entry.get('installed', True) else 'false'}\n")
             chunks.append(f"enabled = {'true' if entry['enabled'] else 'false'}\n")
             settings = entry.get("settings") or {}
             if settings:
@@ -114,6 +113,27 @@ class PluginRegistry:
                     chunks.append(f"{key} = {_toml_literal(value)}\n")
             chunks.append("\n")
         self.state_path.write_text("".join(chunks), encoding="utf-8")
+
+    def _instantiate_from_manifest(
+        self,
+        folder: Path,
+        data: dict[str, Any],
+        settings: dict[str, Any] | None = None,
+    ) -> BasePlugin | None:
+        """Build a plugin from a catalog or community ``plugin.toml``."""
+        entry = str(data.get("entry") or "")
+        if entry.startswith("builtin:"):
+            builtin_id = entry.split(":", 1)[1]
+            plugin = create_builtin_plugins(self.config).get(builtin_id)
+            if plugin is None:
+                raise KeyError(f"No built-in implementation named '{builtin_id}'")
+            if settings:
+                plugin.update_settings(settings)
+            return plugin
+        kind = (data.get("kind") or "mcp").lower()
+        if kind == "mcp":
+            return mcp_plugin_from_manifest(data, settings)
+        return self._load_python_plugin(folder, data, settings or {})
 
     def _discover(self) -> None:
         builtins = create_builtin_plugins(self.config)
@@ -125,19 +145,41 @@ class PluginRegistry:
             self._plugins[pid] = plugin
             self._enabled.setdefault(pid, True)
 
+        # Catalog-only entries (e.g. MCP wrappers with no builtin: entry) are
+        # recorded in plugins.toml on install but live under plugins/catalog/,
+        # not community/. Reload them here or they vanish after a restart.
+        for pid in sorted(self._installed):
+            if pid in self._plugins:
+                continue
+            manifest = self.catalog_dir / pid / "plugin.toml"
+            if not manifest.is_file():
+                logger.warning(
+                    "Installed plugin %s has no catalog or community folder", pid
+                )
+                continue
+            try:
+                with manifest.open("rb") as fh:
+                    data = tomllib.load(fh)
+                plugin = self._instantiate_from_manifest(
+                    manifest.parent, data, self._settings.get(pid)
+                )
+                if plugin is None:
+                    continue
+                self._plugins[pid] = plugin
+                self._enabled.setdefault(pid, True)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Failed to load catalog plugin %s: %s", pid, exc)
+
         for manifest in sorted(self.community_dir.glob("*/plugin.toml")):
             try:
                 with manifest.open("rb") as fh:
                     data = tomllib.load(fh)
                 pid = data.get("id") or manifest.parent.name
-                kind = (data.get("kind") or "mcp").lower()
-                settings = self._settings.get(pid, {})
-                if kind == "mcp":
-                    plugin = mcp_plugin_from_manifest(data, settings)
-                else:
-                    plugin = self._load_python_plugin(manifest.parent, data, settings)
-                    if plugin is None:
-                        continue
+                plugin = self._instantiate_from_manifest(
+                    manifest.parent, data, self._settings.get(pid, {})
+                )
+                if plugin is None:
+                    continue
                 self._plugins[pid] = plugin
                 self._enabled.setdefault(pid, bool(data.get("enabled", True)))
             except Exception as exc:  # noqa: BLE001
@@ -209,17 +251,53 @@ class PluginRegistry:
             for pid, plugin in sorted(self._plugins.items())
         ]
 
+    async def _probe_health(self, pid: str, plugin: BasePlugin) -> PluginHealth:
+        """Run one plugin health check, reusing a short-lived cache entry.
+
+        MCP stdio sessions can ignore cancellation while tearing down a hung
+        child process. We race the probe and abandon it on timeout so
+        ``/api/status`` never waits on cleanup.
+        """
+        now = time.monotonic()
+        cached = self._health_cache.get(pid)
+        if cached and (now - cached[0]) < HEALTH_CACHE_TTL:
+            return cached[1]
+
+        task = asyncio.create_task(plugin.health(), name=f"health:{pid}")
+        try:
+            health = await asyncio.wait_for(asyncio.shield(task), timeout=HEALTH_PROBE_TIMEOUT)
+        except TimeoutError:
+            task.cancel()
+            health = PluginHealth(
+                ok=False,
+                detail=f"Health check timed out after {HEALTH_PROBE_TIMEOUT:.0f}s",
+            )
+        except Exception as exc:  # noqa: BLE001
+            health = PluginHealth(ok=False, detail=str(exc))
+        self._health_cache[pid] = (time.monotonic(), health)
+        return health
+
+    def invalidate_health(self, plugin_id: str | None = None) -> None:
+        if plugin_id is None:
+            self._health_cache.clear()
+        else:
+            self._health_cache.pop(plugin_id, None)
+
     async def list_with_health(self) -> list[PluginInfo]:
+        items = sorted(self._plugins.items())
+
+        async def _maybe_health(pid: str, plugin: BasePlugin, enabled: bool) -> PluginHealth | None:
+            if not enabled:
+                return None
+            return await self._probe_health(pid, plugin)
+
+        healths = await asyncio.gather(
+            *[_maybe_health(pid, plugin, self._enabled.get(pid, True)) for pid, plugin in items]
+        )
         out: list[PluginInfo] = []
-        for pid, plugin in sorted(self._plugins.items()):
+        for (pid, plugin), health in zip(items, healths, strict=True):
             enabled = self._enabled.get(pid, True)
-            health: PluginHealth | None = None
-            if enabled:
-                try:
-                    health = await plugin.health()
-                except Exception as exc:  # noqa: BLE001
-                    health = PluginHealth(ok=False, detail=str(exc))
-            out.append(plugin.info(enabled=enabled, health=health))
+            out.append(plugin.info(enabled=enabled, health=health if enabled else None))
         return out
 
     def get(self, plugin_id: str) -> BasePlugin | None:
@@ -268,23 +346,11 @@ class PluginRegistry:
         with manifest.open("rb") as fh:
             data = tomllib.load(fh)
 
-        entry = str(data.get("entry") or "")
-        if entry.startswith("builtin:"):
-            builtin_id = entry.split(":", 1)[1]
-            builtins = create_builtin_plugins(self.config)
-            plugin = builtins.get(builtin_id)
-            if plugin is None:
-                raise KeyError(f"No built-in implementation named '{builtin_id}'")
-            if plugin_id in self._settings:
-                plugin.update_settings(self._settings[plugin_id])
-        elif (data.get("kind") or "mcp").lower() == "mcp":
-            plugin = mcp_plugin_from_manifest(data, self._settings.get(plugin_id))
-        else:
-            plugin = self._load_python_plugin(
-                manifest.parent, data, self._settings.get(plugin_id, {})
-            )
-            if plugin is None:
-                raise ValueError(f"'{plugin_id}' could not be loaded")
+        plugin = self._instantiate_from_manifest(
+            manifest.parent, data, self._settings.get(plugin_id)
+        )
+        if plugin is None:
+            raise ValueError(f"'{plugin_id}' could not be loaded")
 
         self._plugins[plugin_id] = plugin
         self._installed.add(plugin_id)
@@ -399,20 +465,22 @@ class PluginRegistry:
         return workers
 
     async def available_workers(self, *, local_only: bool = False) -> set[str]:
+        candidates = [
+            (pid, plugin)
+            for pid, plugin in self._plugins.items()
+            if self._enabled.get(pid, False)
+            and plugin.worker_id is not None
+            and not (local_only and plugin.cloud)
+        ]
+        if not candidates:
+            return set()
+        healths = await asyncio.gather(
+            *[self._probe_health(pid, plugin) for pid, plugin in candidates]
+        )
         available: set[str] = set()
-        for pid, plugin in self._plugins.items():
-            if not self._enabled.get(pid, False):
-                continue
-            if plugin.worker_id is None:
-                continue
-            if local_only and plugin.cloud:
-                continue
-            try:
-                health = await plugin.health()
-                if health.ok:
-                    available.add(plugin.worker_id)
-            except Exception:  # noqa: BLE001
-                continue
+        for (_pid, plugin), health in zip(candidates, healths, strict=True):
+            if health.ok and plugin.worker_id:
+                available.add(plugin.worker_id)
         return available
 
     async def run_worker(self, decision: RouteDecision) -> WorkerResult:
@@ -447,6 +515,7 @@ class PluginRegistry:
         A disabled/unhealthy sibling must not overwrite a healthy enabled one.
         """
         status: dict[str, bool] = {}
+        enabled: list[tuple[str, BasePlugin, str]] = []
         for pid, plugin in self._plugins.items():
             if plugin.worker_id is None and plugin.kind != PluginKind.UTILITY:
                 continue
@@ -454,14 +523,16 @@ class PluginRegistry:
             if not self._enabled.get(pid, False):
                 status.setdefault(key, False)
                 continue
-            try:
-                health = await plugin.health()
+            enabled.append((pid, plugin, key))
+        if enabled:
+            healths = await asyncio.gather(
+                *[self._probe_health(pid, plugin) for pid, plugin, _key in enabled]
+            )
+            for (_pid, _plugin, key), health in zip(enabled, healths, strict=True):
                 if health.ok:
                     status[key] = True
                 else:
                     status.setdefault(key, False)
-            except Exception:  # noqa: BLE001
-                status.setdefault(key, False)
         return status
 
 

@@ -40,6 +40,7 @@ timeout_seconds = 30
 enabled = false
 engine = ""
 voice = ""
+device = "auto"
 rate = 100
 pitch = 50
 auto_speak = false
@@ -49,3 +50,11 @@ enabled = true
 follow_up = true
 max_delegations = 2
 prefer = []
+
+[supervisor]
+backend = "auto"
+fallback_worker = "auto"
+
+[agent]
+enabled = true
+tick_seconds = 60

@@ -1,47 +1,46 @@
 /* ==========================================================================
    Keylane control panel
    --------------------------------------------------------------------------
-   Dense developer-tool dashboard. Every colour resolves from the active
-   theme's --ag-* variables (served by /theme.css) so switching a Keylane theme
-   restyles this page as well as the popup. The fallbacks after each var() are
-   what you see before a theme loads, and they follow the system light/dark
-   preference so the panel is never a white flash on a dark desktop.
+   Premium utilitarian dashboard. Colours resolve from the active theme's
+   --ag-* variables (served by /theme.css). Fallbacks follow a warm-monochrome
+   system palette so the panel never flashes white on a dark desktop and stays
+   readable before a theme loads.
    ========================================================================== */
 
 /* --------------------------------------------------------------- tokens -- */
 
 :root {
   /* Neutral scale — overridden by the active theme. */
-  --ag-bg: #f7f8fa;
+  --ag-bg: #f7f6f3;
   --ag-surface: #ffffff;
-  --ag-text: #111318;
-  --ag-muted: #5f6672;
-  --ag-accent: #2563eb;
-  --ag-border: #e3e6eb;
-  --ag-danger: #c62828;
+  --ag-text: #18181b;
+  --ag-muted: #71717a;
+  --ag-accent: #18181b;
+  --ag-border: #eaeaea;
+  --ag-danger: #9f2f2d;
 
   /* Derived roles. color-mix keeps these correct for any theme palette. */
   --bg: var(--ag-bg);
   --surface: var(--ag-surface);
-  --surface-2: color-mix(in srgb, var(--ag-surface) 92%, var(--ag-text));
-  --sunken: color-mix(in srgb, var(--ag-bg) 88%, var(--ag-text));
+  --surface-2: color-mix(in srgb, var(--ag-surface) 94%, var(--ag-text));
+  --sunken: color-mix(in srgb, var(--ag-bg) 90%, var(--ag-text));
   --text: var(--ag-text);
   --muted: var(--ag-muted);
-  --faint: color-mix(in srgb, var(--ag-muted) 65%, transparent);
+  --faint: color-mix(in srgb, var(--ag-muted) 70%, transparent);
   --accent: var(--ag-accent);
-  --accent-contrast: #ffffff;
-  --accent-soft: color-mix(in srgb, var(--ag-accent) 14%, transparent);
-  --accent-line: color-mix(in srgb, var(--ag-accent) 42%, transparent);
+  --accent-contrast: #fafafa;
+  --accent-soft: color-mix(in srgb, var(--ag-accent) 10%, transparent);
+  --accent-line: color-mix(in srgb, var(--ag-accent) 28%, transparent);
   --border: var(--ag-border);
-  --border-strong: color-mix(in srgb, var(--ag-border) 60%, var(--ag-text));
+  --border-strong: color-mix(in srgb, var(--ag-border) 55%, var(--ag-text));
   --danger: var(--ag-danger);
-  --danger-soft: color-mix(in srgb, var(--ag-danger) 13%, transparent);
-  --ok: #16a34a;
-  --ok-soft: color-mix(in srgb, #16a34a 14%, transparent);
-  --warn: #d97706;
-  --warn-soft: color-mix(in srgb, #d97706 16%, transparent);
+  --danger-soft: #fdebec;
+  --ok: #346538;
+  --ok-soft: #edf3ec;
+  --warn: #956400;
+  --warn-soft: #fbf3db;
 
-  /* Dense dashboard spacing scale. */
+  /* Spacing — daily-app density with room to breathe. */
   --s-1: 4px;
   --s-2: 8px;
   --s-3: 12px;
@@ -49,35 +48,42 @@
   --s-5: 24px;
   --s-6: 32px;
 
-  --radius: 10px;
-  --radius-lg: 14px;
+  --radius: 8px;
+  --radius-lg: 12px;
   --radius-pill: 999px;
 
-  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.05);
-  --shadow-2: 0 8px 28px -12px rgb(0 0 0 / 0.28);
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 0.04);
+  --shadow-2: 0 2px 8px rgb(0 0 0 / 0.04);
 
-  --font: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
-    Consolas, "Liberation Mono", monospace;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur: 200ms;
 
-  --rail: 232px;
-  --tap: 40px; /* every control clears this, for pointer and touch alike */
+  --font: "SF Pro Display", "Geist Sans", "Helvetica Neue", ui-sans-serif,
+    system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", "SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular,
+    Menlo, Consolas, "Liberation Mono", monospace;
+
+  --rail: 240px;
+  --tap: 44px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --ag-bg: #0f1116;
-    --ag-surface: #171a21;
-    --ag-text: #e9edf5;
-    --ag-muted: #98a1b3;
-    --ag-accent: #4f8cff;
-    --ag-border: #262b36;
+    --ag-bg: #111113;
+    --ag-surface: #18181b;
+    --ag-text: #f4f4f5;
+    --ag-muted: #a1a1aa;
+    --ag-accent: #fafafa;
+    --ag-border: #27272a;
     --ag-danger: #f87171;
-    --surface-2: color-mix(in srgb, var(--ag-surface) 86%, #ffffff);
-    --sunken: color-mix(in srgb, var(--ag-bg) 82%, #000000);
-    --ok: #34d399;
+    --accent-contrast: #18181b;
+    --surface-2: color-mix(in srgb, var(--ag-surface) 88%, #ffffff);
+    --sunken: color-mix(in srgb, var(--ag-bg) 84%, #000000);
+    --danger-soft: color-mix(in srgb, var(--ag-danger) 16%, transparent);
+    --ok: #4ade80;
+    --ok-soft: color-mix(in srgb, #4ade80 14%, transparent);
     --warn: #fbbf24;
+    --warn-soft: color-mix(in srgb, #fbbf24 14%, transparent);
   }
 }
 
@@ -97,19 +103,40 @@ body {
   color: var(--text);
   font-family: var(--font);
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Quiet atmosphere without flat emptiness. Fixed so scroll never repaints it. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 70% 50% at 12% -10%, rgb(24 24 27 / 0.035), transparent 55%),
+    radial-gradient(ellipse 50% 40% at 100% 0%, rgb(24 24 27 / 0.025), transparent 50%);
+}
+
+@media (prefers-color-scheme: dark) {
+  body::before {
+    background:
+      radial-gradient(ellipse 70% 50% at 12% -10%, rgb(255 255 255 / 0.03), transparent 55%),
+      radial-gradient(ellipse 50% 40% at 100% 0%, rgb(255 255 255 / 0.02), transparent 50%);
+  }
 }
 
 h1, h2, h3, h4 {
   margin: 0;
-  line-height: 1.25;
-  letter-spacing: -0.011em;
-  font-weight: 650;
+  line-height: 1.2;
+  letter-spacing: -0.022em;
+  font-weight: 600;
 }
-h1 { font-size: 1.35rem; }
-h3 { font-size: 0.98rem; }
-h4 { font-size: 0.86rem; }
+h1 { font-size: 1.4rem; }
+h3 { font-size: 0.95rem; }
+h4 { font-size: 0.84rem; }
 
 p { margin: 0; }
 
@@ -121,27 +148,28 @@ code, kbd, pre {
 code {
   background: var(--sunken);
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: 4px;
   padding: 0.08em 0.36em;
 }
 
 kbd {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-bottom-width: 2px;
-  border-radius: 5px;
+  border-radius: 4px;
   padding: 0.1em 0.4em;
   font-size: 0.8em;
 }
 
 a {
-  color: var(--accent);
-  text-decoration-color: var(--accent-line);
-  text-underline-offset: 2px;
+  color: var(--text);
+  text-decoration-color: var(--border-strong);
+  text-underline-offset: 3px;
+  transition: color var(--dur) var(--ease);
 }
+a:hover { color: var(--accent); }
 
 .muted { color: var(--muted); }
-.hint { font-size: 0.84rem; }
+.hint { font-size: 0.84rem; line-height: 1.5; }
 .grow { flex: 1; }
 
 :where(a, button, input, select, textarea, summary):focus-visible {
@@ -155,25 +183,36 @@ a {
 .shell {
   display: grid;
   grid-template-columns: var(--rail) minmax(0, 1fr);
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
 .rail {
   display: flex;
   flex-direction: column;
   gap: var(--s-4);
-  padding: var(--s-5) var(--s-4);
-  background: var(--surface);
+  padding: var(--s-5) var(--s-3);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
   border-right: 1px solid var(--border);
   position: sticky;
   top: 0;
-  height: 100vh;
+  height: 100dvh;
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .rail {
+    background: var(--surface);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: var(--s-3);
+  padding: 0 var(--s-2);
 }
 
 .brand-mark {
@@ -183,13 +222,15 @@ a {
 
 .brand strong {
   display: block;
-  font-size: 0.98rem;
-  letter-spacing: -0.01em;
+  font-size: 0.95rem;
+  letter-spacing: -0.02em;
+  font-weight: 650;
 }
 
 .brand .muted {
   display: block;
-  font-size: 0.74rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.01em;
 }
 
 .nav {
@@ -205,7 +246,7 @@ a {
   min-height: var(--tap);
   padding: 0 var(--s-3);
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--muted);
   font: inherit;
@@ -213,27 +254,30 @@ a {
   font-weight: 500;
   text-align: left;
   cursor: pointer;
-  transition: background 160ms ease, color 160ms ease;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    transform 100ms ease-out;
 }
 
 .nav-item svg {
   width: 17px;
   height: 17px;
   flex: none;
-  stroke-width: 1.7;
+  stroke-width: 1.85;
 }
 
 .nav-item:hover { background: var(--sunken); color: var(--text); }
+.nav-item:active { transform: scale(0.98); }
 
 .nav-item.is-active {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--text);
   font-weight: 600;
 }
 
 .nav-count {
   margin-left: auto;
-  font-size: 0.72rem;
+  font-family: var(--mono);
+  font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
   color: var(--faint);
 }
@@ -244,6 +288,7 @@ a {
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
+  padding: 0 var(--s-2);
 }
 
 .rail-foot .dot { margin-right: 6px; }
@@ -253,7 +298,7 @@ a {
 .main {
   min-width: 0;
   padding: var(--s-5) var(--s-6) var(--s-6);
-  max-width: 1180px;
+  max-width: 1120px;
 }
 
 .top {
@@ -270,7 +315,8 @@ a {
 .lede {
   color: var(--muted);
   font-size: 0.9rem;
-  margin-top: 3px;
+  margin-top: 4px;
+  max-width: 52ch;
 }
 
 .top-actions {
@@ -284,11 +330,11 @@ a {
   display: flex;
   flex-direction: column;
   gap: var(--s-5);
-  animation: rise 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: rise 280ms var(--ease);
 }
 
 @keyframes rise {
-  from { opacity: 0; transform: translateY(6px); }
+  from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: none; }
 }
 
@@ -301,7 +347,7 @@ a {
   gap: 6px;
   min-height: var(--tap);
   padding: 0 var(--s-4);
-  border-radius: 8px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
@@ -310,14 +356,15 @@ a {
   font-weight: 550;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 160ms ease, border-color 160ms ease, transform 120ms ease;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    transform 100ms ease-out, color var(--dur) var(--ease);
 }
 
 .btn:hover { background: var(--sunken); border-color: var(--border-strong); }
-.btn:active { transform: translateY(1px); }
+.btn:active { transform: scale(0.98); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
-.btn svg { width: 15px; height: 15px; stroke-width: 1.8; }
+.btn svg { width: 15px; height: 15px; stroke-width: 1.85; }
 
 .btn.primary {
   background: var(--accent);
@@ -325,17 +372,17 @@ a {
   color: var(--accent-contrast);
 }
 .btn.primary:hover {
-  background: color-mix(in srgb, var(--accent) 86%, #000);
-  border-color: color-mix(in srgb, var(--accent) 86%, #000);
+  background: color-mix(in srgb, var(--accent) 88%, var(--accent-contrast));
+  border-color: color-mix(in srgb, var(--accent) 88%, var(--accent-contrast));
 }
 
 .btn.ghost { background: transparent; }
 .btn.ghost:hover { background: var(--sunken); }
 
-.btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+.btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, var(--border)); }
 .btn.danger:hover { background: var(--danger-soft); }
 
-.btn.small { min-height: 30px; padding: 0 var(--s-3); font-size: 0.8rem; }
+.btn.small { min-height: 32px; padding: 0 var(--s-3); font-size: 0.8rem; }
 
 /* ----------------------------------------------------------------- cards -- */
 
@@ -347,6 +394,12 @@ a {
   display: flex;
   flex-direction: column;
   gap: var(--s-3);
+  box-shadow: var(--shadow-1);
+  transition: box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.card:hover {
+  box-shadow: var(--shadow-2);
 }
 
 .card-head {
@@ -395,13 +448,20 @@ a {
   padding: var(--s-3) var(--s-4);
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
+  transition: box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.pill:hover {
+  box-shadow: var(--shadow-2);
+  border-color: var(--border-strong);
 }
 
 .pill .label {
-  font-size: 0.72rem;
-  font-weight: 650;
-  letter-spacing: 0.05em;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -417,6 +477,15 @@ a {
 .pill .detail {
   font-size: 0.78rem;
   color: var(--muted);
+}
+
+.pill.skeleton {
+  pointer-events: none;
+  opacity: 0.55;
+}
+.pill.skeleton .value {
+  color: var(--faint);
+  font-weight: 500;
 }
 
 .dot {
@@ -505,14 +574,14 @@ select,
 textarea {
   width: 100%;
   min-height: var(--tap);
-  padding: 7px 11px;
-  border-radius: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
   font: inherit;
   font-size: 0.9rem;
-  transition: border-color 160ms ease, box-shadow 160ms ease;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 
 textarea { min-height: 76px; resize: vertical; font-family: var(--mono); font-size: 0.84rem; }
@@ -957,9 +1026,12 @@ details.installer[open] > summary { margin-bottom: var(--s-3); }
     height: auto;
     border-right: 0;
     border-bottom: 1px solid var(--border);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--surface);
   }
-  .nav { flex-direction: row; overflow-x: auto; padding-bottom: 3px; }
-  .nav-item { white-space: nowrap; }
+  .nav { flex-direction: row; overflow-x: auto; padding-bottom: 3px; gap: 4px; }
+  .nav-item { white-space: nowrap; min-height: 40px; }
   .nav-count { display: none; }
   .rail-foot { display: none; }
   .main { padding: var(--s-4); }

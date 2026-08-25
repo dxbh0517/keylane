@@ -20,7 +20,10 @@ if [[ -d "${DEST}" ]]; then
 fi
 
 # Retire artefacts from older Keylane layouts.
-rm -f "${HOME}/.local/share/applications/ai-gateway-launcher.desktop"
+# Older installs shipped two identical menu entries (app.keylane.Launcher +
+# keylane.desktop); keep only the reverse-DNS id that matches StartupWMClass.
+rm -f "${HOME}/.local/share/applications/ai-gateway-launcher.desktop" \
+      "${HOME}/.local/share/applications/keylane.desktop"
 # The launcher belongs to graphical-session.target now; an old default.target
 # symlink would start it before the desktop exists.
 rm -f "${HOME}/.config/systemd/user/default.target.wants/ai-launcher.service"
@@ -118,7 +121,6 @@ cp systemd/ai-launcher.service "${HOME}/.config/systemd/user/"
 
 mkdir -p "${HOME}/.local/share/applications"
 cp scripts/app.keylane.Launcher.desktop "${HOME}/.local/share/applications/"
-cp scripts/app.keylane.Launcher.desktop "${HOME}/.local/share/applications/keylane.desktop"
 
 if [[ -d "${DEST}/assets/icons/hicolor" ]]; then
   mkdir -p "${HOME}/.local/share/icons/hicolor"

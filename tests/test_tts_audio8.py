@@ -196,12 +196,12 @@ async def test_stop_cancels_a_synthesis_still_in_flight(monkeypatch, tmp_path):
     monkeypatch.setattr(tts, "_missing_dependency", lambda: "")
     monkeypatch.setattr(tts, "_player", lambda: ["/bin/true"])
 
-    async def slow_render(text, reference):
+    async def slow_render(text, reference, device=None):
         # Stand in for a minutes-long generate(): the user gives up part way.
         await tts.stop()
         return b"RIFFfake"
 
-    def blocking_render(text, reference):
+    def blocking_render(text, reference, device=None):
         raise AssertionError("should not be reached")
 
     monkeypatch.setattr(tts, "_render_wav", blocking_render)
@@ -233,3 +233,106 @@ def test_a_stale_engine_setting_does_not_discard_a_requested_voice(tmp_path, mon
 
     assert engine is not None and engine.id == "audio8"
     assert voice == str(tmp_path / "british-man.wav")
+
+
+# --------------------------------------------------------------------- device
+
+
+def _devices(monkeypatch, *specs):
+    from app.tts import DeviceInfo
+
+    monkeypatch.setattr(tts, "available_devices", lambda: [DeviceInfo(**s) for s in specs])
+
+
+def test_a_gpu_the_driver_sees_is_listed_even_when_torch_cannot_use_it(monkeypatch):
+    # Hiding a card that is physically present makes a torch build problem
+    # look like missing hardware.
+    monkeypatch.setattr(tts, "_driver_gpus", lambda: ["NVIDIA GeForce RTX 5090"])
+
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return False
+
+    monkeypatch.setitem(__import__("sys").modules, "torch", type("T", (), {"cuda": FakeCuda})())
+
+    found = tts._cuda_devices()
+
+    assert len(found) == 1
+    assert found[0].available is False
+    assert "RTX 5090" in found[0].name
+    assert found[0].install_hint, "an unusable GPU must say how to make it usable"
+
+
+def test_the_npu_is_offered_but_explains_it_cannot_run_this_model(monkeypatch):
+    device = tts._npu_device()
+    # Only meaningful where OpenVINO sees an NPU; skip elsewhere.
+    if device is None:
+        pytest.skip("no NPU on this machine")
+    assert device.available is False
+    assert "OpenVINO" in device.detail
+
+
+def test_auto_prefers_an_accelerator_over_the_cpu(monkeypatch):
+    _devices(
+        monkeypatch,
+        {"id": "cuda:0", "name": "GPU", "available": True},
+        {"id": "cpu", "name": "CPU", "available": True},
+    )
+
+    assert tts.resolve_device("auto") == "cuda:0"
+
+
+def test_auto_falls_back_to_the_cpu_when_nothing_else_works(monkeypatch):
+    _devices(
+        monkeypatch,
+        {"id": "cuda:0", "name": "GPU", "available": False},
+        {"id": "cpu", "name": "CPU", "available": True},
+    )
+
+    assert tts.resolve_device("auto") == "cpu"
+
+
+def test_an_explicit_choice_is_honoured(monkeypatch):
+    _devices(
+        monkeypatch,
+        {"id": "cuda:0", "name": "GPU", "available": True},
+        {"id": "cpu", "name": "CPU", "available": True},
+    )
+
+    assert tts.resolve_device("cpu") == "cpu"
+
+
+def test_a_device_that_went_away_falls_back_rather_than_failing(monkeypatch):
+    # A saved preference for a GPU that is no longer present should still
+    # produce speech, not an error about hardware.
+    _devices(monkeypatch, {"id": "cpu", "name": "CPU", "available": True})
+
+    assert tts.resolve_device("cuda:3") == "cpu"
+
+
+def test_selecting_the_npu_falls_back_instead_of_erroring(monkeypatch):
+    _devices(
+        monkeypatch,
+        {"id": "cpu", "name": "CPU", "available": True},
+        {"id": "npu", "name": "Intel NPU", "available": False, "detail": "no export"},
+    )
+
+    assert tts.resolve_device("npu") == "cpu"
+
+
+def test_the_text_cap_follows_the_device(monkeypatch):
+    _devices(
+        monkeypatch,
+        {"id": "cuda:0", "name": "GPU", "available": True},
+        {"id": "cpu", "name": "CPU", "available": True},
+    )
+
+    assert tts.speak_cap("cuda:0") == tts.MAX_SPEAK_CHARS_GPU
+    assert tts.speak_cap("cpu") == tts.MAX_SPEAK_CHARS_CPU
+
+
+def test_accelerated_means_anything_but_the_cpu():
+    assert tts.is_accelerated("cuda:1") is True
+    assert tts.is_accelerated("xpu:0") is True
+    assert tts.is_accelerated("cpu") is False

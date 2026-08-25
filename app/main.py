@@ -136,6 +136,11 @@ async def lifespan(_app: FastAPI):
 
     mcp_task = asyncio.create_task(discover_mcp_tools())
 
+    from app.agent_scheduler import get_agent_scheduler
+
+    scheduler = get_agent_scheduler()
+    scheduler.start()
+
     logger.info(
         "Keylane gateway ready on %s:%s (local_only=%s, tools=%s)",
         config.gateway.host,
@@ -147,6 +152,7 @@ async def lifespan(_app: FastAPI):
 
     # Belt and braces: the signal handler normally sets this first.
     shutting_down.set()
+    await scheduler.stop()
     mcp_task.cancel()
     with suppress(asyncio.CancelledError):
         await mcp_task
@@ -511,7 +517,9 @@ class PluginEnableBody(BaseModel):
 @app.post("/api/plugins/{plugin_id}/enable")
 async def enable_plugin(plugin_id: str, body: PluginEnableBody) -> dict[str, Any]:
     try:
-        info = get_plugin_registry().set_enabled(plugin_id, body.enabled)
+        registry = get_plugin_registry()
+        info = registry.set_enabled(plugin_id, body.enabled)
+        registry.invalidate_health(plugin_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     # A plugin that just came or went changes what the assistant can do.
@@ -999,6 +1007,7 @@ class SpeakBody(BaseModel):
     text: str = Field(min_length=1)
     engine: str = ""
     voice: str = ""
+    device: str = ""
     rate: int | None = Field(default=None, ge=25, le=400)
     pitch: int | None = Field(default=None, ge=0, le=99)
 
@@ -1006,25 +1015,31 @@ class SpeakBody(BaseModel):
 @app.get("/api/speech")
 async def speech_options() -> dict[str, Any]:
     """Which speech engines and voices this machine actually has."""
-    from app.tts import probe_engines
+    from app.tts import available_devices, probe_engines, resolve_device
 
     settings = load_assistant_settings().speech
     engines = probe_engines()
+    devices = available_devices()
     return {
         "settings": settings.model_dump(),
         "engines": [e.model_dump() for e in engines],
         "available": any(e.available for e in engines),
+        "devices": [d.model_dump() for d in devices],
+        "resolved_device": resolve_device(settings.device or "auto"),
     }
 
 
 @app.post("/api/speech/refresh")
 async def refresh_speech() -> dict[str, Any]:
-    from app.tts import probe_engines
+    from app.tts import available_devices, probe_engines, resolve_device
 
+    settings = load_assistant_settings().speech
     engines = probe_engines(refresh=True)
     return {
         "engines": [e.model_dump() for e in engines],
         "available": any(e.available for e in engines),
+        "devices": [d.model_dump() for d in available_devices()],
+        "resolved_device": resolve_device(settings.device or "auto"),
     }
 
 
@@ -1046,6 +1061,7 @@ async def speak_text(body: SpeakBody) -> dict[str, Any]:
             voice_id=body.voice or settings.voice,
             rate=body.rate if body.rate is not None else settings.rate,
             pitch=body.pitch if body.pitch is not None else settings.pitch,
+            device=body.device or settings.device,
         )
     except SpeakError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1096,6 +1112,66 @@ async def route(request: RouteRequest) -> dict[str, Any]:
 @app.post("/api/chat", response_model=TaskResponse)
 async def chat(request: ChatRequest) -> TaskResponse:
     return await _orch().chat(request)
+
+
+@app.get("/api/sessions")
+async def list_sessions() -> dict[str, Any]:
+    from app.sessions import get_session_store
+
+    sessions = get_session_store().list_recent()
+    return {
+        "sessions": [
+            {
+                "session_id": s.session_id,
+                "title": s.title,
+                "turns": len(s.turns),
+                "updated_at": s.updated_at.isoformat(),
+            }
+            for s in sessions
+        ]
+    }
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str) -> dict[str, Any]:
+    from app.sessions import get_session_store
+
+    session = get_session_store().get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session.model_dump(mode="json")
+
+
+@app.delete("/api/sessions/{session_id}")
+async def clear_session(session_id: str) -> dict[str, Any]:
+    from app.sessions import get_session_store
+
+    get_session_store().clear(session_id)
+    return {"ok": True, "session_id": session_id}
+
+
+@app.get("/api/agent")
+async def agent_status() -> dict[str, Any]:
+    from app.agent_scheduler import get_agent_scheduler
+    from app.supervisor import get_supervisor
+
+    status = get_agent_scheduler().status()
+    supervisor = get_supervisor()
+    status["supervisor"] = {
+        "preference": supervisor.preference,
+        "active": supervisor.active_backend(),
+        "npu_ready": supervisor.npu_ready,
+    }
+    return status
+
+
+@app.post("/api/agent/tick")
+async def agent_tick() -> dict[str, Any]:
+    """Run due goals immediately (control panel / tests)."""
+    from app.agent_scheduler import get_agent_scheduler
+
+    results = await get_agent_scheduler().tick()
+    return {"results": results}
 
 
 @app.post("/api/tasks", response_model=TaskResponse)

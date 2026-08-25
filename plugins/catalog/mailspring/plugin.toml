@@ -1,0 +1,34 @@
+# Keylane catalog entry. Present in the repository but not installed
+# until the user asks for it, so a fresh install ships with nothing
+# reaching out to a worker or the network.
+#
+# Wraps Mailspring's built-in MCP server (Preferences → MCP Server).
+# Keylane speaks stdio; Mailspring speaks Streamable HTTP — mcp-remote
+# bridges them, using the same args Mailspring writes for Claude Desktop.
+#
+# After install: enable the MCP server in Mailspring, then set AUTH_HEADER
+# in plugin settings to "Bearer <token>" from Preferences → MCP Server.
+id = "mailspring"
+name = "Mailspring"
+kind = "mcp"
+description = "Search, read and manage mail through Mailspring's local MCP server. Contributes mail tools to the assistant; not a routing destination."
+homepage = "https://github.com/Foundry376/Mailspring"
+worker_id = ""
+cloud = false
+tags = "tools, local, mail, mcp"
+
+command = "npx"
+args = [
+  "--registry=https://registry.npmjs.org/",
+  "--yes",
+  "mcp-remote@latest",
+  "http://127.0.0.1:2587/mcp",
+  "--allow-http",
+  "--transport",
+  "http-only",
+  "--header",
+  "Authorization:${AUTH_HEADER}",
+]
+health_tool = "list_folders"
+run_tool = "search_mail"
+env = { AUTH_HEADER = "Bearer REPLACE_WITH_MAILSPRING_TOKEN" }

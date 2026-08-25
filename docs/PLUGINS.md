@@ -41,6 +41,9 @@ unregisters it and keeps your settings unless you purge.
 | `lemonade` | `lemonade` | Your machine |
 | `comfyui` | `comfyui` | Your machine (MCP) |
 | `comfyui-http` | `comfyui` | Your machine (legacy HTTP) |
+| `mailspring` | — (tools only) | Your machine (Mailspring MCP) |
+| `gnome-calendar` | — (tools only) | Fedora / GNOME Calendar (Evolution Data Server) |
+| `caldav` | — (tools only) | Remote CalDAV (Nextcloud, Fastmail, …) |
 | `claude` | `claude` | **Anthropic** |
 | `cursor` | `cursor` | **Cursor** |
 

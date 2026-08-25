@@ -28,8 +28,11 @@ from pydantic import BaseModel, Field
 
 from app.assistant_settings import load_assistant_settings
 from app.config import AppConfig, get_config
+from app.intent import is_calendar_intent, is_mail_intent, pick_calendar_tool, pick_mail_tool
+from app.memory_store import get_memory_store
 from app.npu.pipeline import get_pipeline
 from app.skills import get_skill_registry
+from app.supervisor import get_supervisor
 from app.tools.registry import ConfirmationRequired, ToolRegistry, get_tool_registry
 
 logger = logging.getLogger(__name__)
@@ -42,7 +45,8 @@ For every request, in order:
 
 1. DO IT YOURSELF if you can. You have real tools: open an app, search the web,
    read a file, check the system, use the clipboard, send configured email, run
-   an allowlisted command.
+   an allowlisted command, search mail (mailspring.*), list/create calendar
+   events, search/write long-term memory, and manage standing goals.
 2. DELEGATE what is beyond you. Code across files, deep reasoning, long writing,
    images -> `delegate_to_worker`. Call `list_workers` if unsure which. Give a
    complete instruction; the worker cannot see this conversation.
@@ -50,6 +54,17 @@ For every request, in order:
    does the output exist, did it exit cleanly, does it answer the question? Use
    `verify_result` if unsure. If it is wrong, delegate again with specific
    feedback. Only then answer the user.
+
+Hard rules for mail and calendar:
+- Inbox / unread / "any new emails" MUST use mailspring.* (or another mail
+  tool). NEVER delegate mail or calendar checks to lmstudio, lemonade, claude,
+  or cursor.
+- When mail or a meeting invite looks actionable, ASK before drafting a reply
+  or creating an event.
+
+Standing goals and memory:
+- Ongoing watches (email, reminders, briefings) → `set_goal`, not a promise.
+- Lasting facts about people or preferences → `memory_write`.
 
 Rules:
 - Reply with ONE JSON object. No text outside it.
@@ -231,6 +246,7 @@ class AssistantService:
         self.config = config or get_config()
         self.tools = tools or get_tool_registry(self.config)
         self.pipeline = get_pipeline("router", self.config)
+        self.supervisor = get_supervisor(self.config)
 
     # ------------------------------------------------------------- prompting
 
@@ -238,7 +254,7 @@ class AssistantService:
         settings = load_assistant_settings()
         parts = [ASSISTANT_SYSTEM_PROMPT]
 
-        catalog = self.tools.prompt_catalog()
+        catalog = self.tools.prompt_catalog(message=message)
         parts.append(f"\n## Tools you can call\n\n{catalog}\n")
 
         if not settings.delegation.enabled:
@@ -250,6 +266,10 @@ class AssistantService:
         skills = get_skill_registry().prompt_section(message)
         if skills:
             parts.append(skills)
+
+        memory_block = get_memory_store().prompt_block(message)
+        if memory_block:
+            parts.append(f"\n{memory_block}\n")
 
         if settings.persona.strip():
             parts.append(f"\n## House rules\n\n{settings.persona.strip()}\n")
@@ -263,14 +283,18 @@ class AssistantService:
         *,
         project: str | None,
         local_only: bool,
+        history: str = "",
     ) -> str:
         """The user turn: the request, the situation, and what has happened."""
         lines = [
             f"project_directory: {project or 'none selected'}",
             f"local_only_mode: {local_only}",
             "",
-            f"User request: {message}",
         ]
+        if history.strip():
+            lines.append(history.strip())
+            lines.append("")
+        lines.append(f"User request: {message}")
         if steps:
             lines.append("\nWhat you have done so far:")
             for step in steps:
@@ -301,34 +325,41 @@ class AssistantService:
         confirmed_tools: set[str] | None = None,
         prior_steps: list[AssistantStep] | None = None,
         on_step: Any = None,
+        history: str = "",
+        agent_mode: bool = False,
     ) -> AssistantOutcome:
         """Execute the agent loop for one user request.
 
         ``prior_steps`` resumes an interrupted run — after a confirmation, the
         assistant needs to see what it already did or it will start over.
+        ``history`` is prior conversation turns from the session store.
         """
         settings = load_assistant_settings()
         confirmed = confirmed_tools or set()
-        outcome = AssistantOutcome(used_model=self.pipeline.loaded)
+        outcome = AssistantOutcome(used_model=False)
         outcome.steps.extend(prior_steps or [])
 
         if not settings.tools.enabled:
             outcome.error = "The assistant tool layer is disabled."
             return outcome
 
-        if not self.pipeline.loaded:
+        backend = self.supervisor.active_backend()
+        model_ready = backend != "none"
+        outcome.used_model = model_ready and backend == "npu"
+
+        if not model_ready:
             if outcome.steps:
                 # A resumed heuristic run: the confirmed tool already ran.
                 outcome.answer = self._summarize(outcome.steps)
                 return outcome
-            # No NPU model: fall back to a single deterministic decision so the
-            # feature still works on machines without an OpenVINO export.
+            # No NPU and no chat supervisor: keyword path only.
             return await self._heuristic_run(
                 message,
                 project=project,
                 local_only=local_only,
                 confirmed=confirmed,
                 on_step=on_step,
+                history=history,
             )
 
         max_steps = max(1, min(settings.tools.max_steps, 12))
@@ -337,13 +368,21 @@ class AssistantService:
 
         for index in range(start, start + max_steps):
             try:
-                raw = self.pipeline.generate_chat(
+                raw, used_backend = self.supervisor.generate_chat(
                     self.system_prompt(message),
                     self._build_context(
-                        message, outcome.steps, project=project, local_only=local_only
+                        message,
+                        outcome.steps,
+                        project=project,
+                        local_only=local_only,
+                        history=history,
                     ),
                     max_new_tokens=384,
                 )
+                outcome.used_model = used_backend == "npu" or used_backend in {
+                    "lmstudio",
+                    "lemonade",
+                }
                 decision = _extract_json(raw)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Assistant model output unusable (%s)", exc)
@@ -356,12 +395,31 @@ class AssistantService:
                     local_only=local_only,
                     confirmed=confirmed,
                     on_step=on_step,
+                    history=history,
                 )
 
             action, tool_name, arguments = interpret_decision(
                 decision, set(self.tools.all_names())
             )
             thought = str(decision.get("thought") or decision.get("reasoning") or "")[:400]
+
+            # Guardrail: never let mail/calendar checks become chat delegations.
+            if (
+                action == "tool"
+                and tool_name == "delegate_to_worker"
+                and (is_mail_intent(message) or is_calendar_intent(message))
+                and not agent_mode
+            ):
+                redirect = pick_mail_tool(self.tools.all_names()) if is_mail_intent(message) else None
+                if redirect is None and is_calendar_intent(message):
+                    redirect = pick_calendar_tool(self.tools.all_names())
+                if redirect:
+                    tool_name = redirect
+                    arguments = _default_args_for_tool(redirect, message)
+                    thought = (
+                        thought
+                        + " (redirected: mail/calendar must use local tools, not a chat worker)"
+                    )[:400]
 
             if action == "final":
                 outcome.canvas, outcome.answer = self._finalise(decision, outcome.steps)
@@ -558,16 +616,19 @@ class AssistantService:
         local_only: bool,
         confirmed: set[str],
         on_step: Any = None,
+        history: str = "",
     ) -> AssistantOutcome:
-        """Keyword routing for machines without an NPU model export.
+        """Keyword routing for machines without an NPU / chat supervisor.
 
         This is intentionally simple: recognise a handful of unambiguous desktop
-        intents, and otherwise delegate to whichever chat worker is available.
+        intents (including mail/calendar when those tools exist), and otherwise
+        return empty so the orchestrator can decide whether fallthrough is safe.
         """
+        del history  # reserved for future heuristic context
         outcome = AssistantOutcome(used_model=False)
         text = message.lower().strip()
 
-        plan = _heuristic_plan(text, message, project)
+        plan = _heuristic_plan(text, message, project, set(self.tools.all_names()))
         if plan is None:
             outcome.answer = ""
             return outcome
@@ -596,7 +657,8 @@ class AssistantService:
 
 
 # Patterns the fallback recognises without a model. Deliberately conservative:
-# anything not matched here goes back to the normal worker router.
+# anything not matched here goes back to the normal worker router — except mail
+# and calendar, which must never fall through to a chat worker.
 _OPEN_APP = re.compile(
     r"^(?:please\s+)?(?:open|launch|start|run)\s+(?:the\s+)?(?:app\s+|application\s+)?(.+?)"
     r"(?:\s+(?:app|application|please))?[.!]?$"
@@ -607,9 +669,40 @@ _SEARCH = re.compile(
 )
 
 
+def _default_args_for_tool(tool_name: str, message: str) -> dict[str, Any]:
+    lowered = tool_name.lower()
+    if "search_mail" in lowered or lowered.endswith(".search"):
+        return {"query": "is:unread", "limit": 10}
+    if "list_folder" in lowered:
+        return {}
+    if "list_thread" in lowered:
+        return {"limit": 10}
+    if "list_upcoming" in lowered or "list_events" in lowered:
+        return {"days": 7}
+    if "create_event" in lowered:
+        return {"summary": message[:120]}
+    return {}
+
+
 def _heuristic_plan(
-    text: str, original: str, project: str | None
+    text: str,
+    original: str,
+    project: str | None,
+    tool_names: set[str] | None = None,
 ) -> tuple[str, dict[str, Any]] | None:
+    del project
+    names = tool_names or set()
+
+    if is_mail_intent(original) or is_mail_intent(text):
+        mail_tool = pick_mail_tool(names)
+        if mail_tool:
+            return mail_tool, _default_args_for_tool(mail_tool, original)
+
+    if is_calendar_intent(original) or is_calendar_intent(text):
+        cal_tool = pick_calendar_tool(names)
+        if cal_tool:
+            return cal_tool, _default_args_for_tool(cal_tool, original)
+
     match = _OPEN_URL.match(text)
     if match:
         url = match.group(1)

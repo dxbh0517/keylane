@@ -22,7 +22,7 @@ class LmStudioWorker:
 
     async def health(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(timeout=1.25) as client:
                 response = await client.get(f"{self.base_url}/models")
                 return response.status_code < 500
         except Exception:  # noqa: BLE001

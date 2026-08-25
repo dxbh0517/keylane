@@ -106,7 +106,8 @@ def test_assistant_endpoint_exposes_the_system_prompt(client):
     assert "FOLLOW UP" in prompt
     assert "delegate_to_worker" in prompt
     # And it has to stay small enough for a 1.5B model to actually follow.
-    assert len(prompt) < 6000, f"system prompt grew to {len(prompt)} chars"
+    # Budget raised slightly to leave room for memory/goal tools and mail hints.
+    assert len(prompt) < 7500, f"system prompt grew to {len(prompt)} chars"
 
 
 def test_activity_snapshot_shape(client):
