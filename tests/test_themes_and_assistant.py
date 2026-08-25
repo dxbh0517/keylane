@@ -584,10 +584,10 @@ def test_speech_text_is_capped_at_a_sentence():
     assert cut.endswith(".")
 
 
-def test_engine_probe_reports_every_engine():
+def test_engine_probe_reports_the_speech_engine():
     engines = {e.id for e in probe_engines(refresh=True)}
-    # Present or not, all three must be described so the panel can explain.
-    assert engines == {"piper", "espeak", "flite"}
+    # Present or not, it must be described so the panel can explain itself.
+    assert engines == {"audio8"}
 
 
 def test_unavailable_engine_names_how_to_install_it():

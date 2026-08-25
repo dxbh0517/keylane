@@ -31,3 +31,7 @@ plugins/community/*
 !assets/**
 !launcher/assets/**
 !web/assets/**
+
+# Voice reference clips for read-aloud cloning are per-machine.
+voices/*
+!voices/.gitkeep

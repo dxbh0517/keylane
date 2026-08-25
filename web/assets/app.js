@@ -551,13 +551,28 @@ async function loadSpeech(settings) {
   if (s.engine && usable.some((e) => e.id === s.engine)) $("#speech-engine").value = s.engine;
   renderVoices($("#speech-engine").value, s.voice);
 
+  // Audio8 has no speed or pitch control. Leaving the inputs live would let
+  // someone set a rate that silently does nothing, so grey them out and say so
+  // rather than pretending.
+  const chosen = speechEngines.find((e) => e.id === $("#speech-engine").value);
+  for (const [field, supported] of [
+    ["speech_rate", chosen?.supports_rate],
+    ["speech_pitch", chosen?.supports_pitch],
+  ]) {
+    const input = form[field];
+    if (!input) continue;
+    input.disabled = chosen ? !supported : false;
+    const help = input.closest("label")?.querySelector(".field-help");
+    if (help && chosen && !supported) help.textContent = "not adjustable on this engine";
+  }
+
   // Say what is missing and how to get it, rather than showing an empty list.
-  const missing = speechEngines.filter((e) => !e.available && e.install_hint);
+  const unavailable = speechEngines.filter((e) => !e.available && e.install_hint);
   $("#speech-note").textContent = usable.length
-    ? missing.length
-      ? `Also available: ${missing.map((e) => `${e.name} — ${e.install_hint}`).join(" · ")}`
-      : ""
-    : "No speech engine installed. Try: sudo dnf install espeak-ng piper";
+    ? chosen?.detail || ""
+    : unavailable.length
+      ? `${unavailable[0].name}: ${unavailable[0].detail} — ${unavailable[0].install_hint}`
+      : "No speech engine is available.";
 }
 
 $("#speech-engine").addEventListener("change", (e) => renderVoices(e.target.value, ""));

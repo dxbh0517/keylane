@@ -31,19 +31,26 @@
         <h1>Speech</h1>
 <p>Keylane can read answers aloud, locally. No cloud service is involved and nothing leaves the machine — the same rule the rest of Keylane follows.</p>
 <p>Turn it on under <strong>Control panel → Assistant → Read aloud</strong>.</p>
-<h2>Engines</h2>
-<p>Three are supported. Keylane probes for them at startup and lists whatever this machine actually has, so the panel never offers something that is not installed.</p>
-<div class="table-wrap"><table><thead><tr><th>Engine</th><th>Sounds like</th><th>Install</th></tr></thead><tbody><tr><td><strong>Piper</strong></td><td>Neural, natural. The best of the three.</td><td><code>sudo dnf install piper</code> plus a voice</td></tr><tr><td><strong>eSpeak NG</strong></td><td>Robotic, instant, 140+ languages</td><td><code>sudo dnf install espeak-ng</code></td></tr><tr><td><strong>Flite</strong></td><td>Small and fast, a few English voices</td><td><code>sudo dnf install flite</code></td></tr></tbody></table></div>
-<p>If the engine you picked is missing, Keylane falls back to the best one present rather than failing silently.</p>
-<h3>Piper voices</h3>
-<p>Piper needs a voice model — the binary alone cannot speak. Download an <code>.onnx</code> and its <code>.onnx.json</code> into <code>~/.local/share/piper/voices</code>:</p>
-<span class="code-label">bash</span><pre><code>mkdir -p ~/.local/share/piper/voices &amp;&amp; cd ~/.local/share/piper/voices
-BASE=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alba/medium
-curl -LO $BASE/en_GB-alba-medium.onnx
-curl -LO $BASE/en_GB-alba-medium.onnx.json</code></pre>
-<p>Press <strong>Rediscover</strong> on the Assistant tab and it appears in the voice list. Voices for other languages are in the same repository under their language code.</p>
+<h2>The engine</h2>
+<p>Speech is <strong>Audio8 TTS</strong> (<code>Audio8/Audio8-TTS-Preview-0.1b</code>), a 0.1B neural model that runs in the gateway process on torch. It replaces the shell-out synthesisers Keylane used before — there is one engine now, not three.</p>
+<p>It is <strong>zero-shot</strong>: rather than shipping a fixed set of voices, it clones one from a short recording you provide. Out of the box it speaks in its own voice, which needs no setup.</p>
+<h3>Getting the model</h3>
+<p>The weights are about 1.7 GB and are not bundled. Download them into <code>models/tts/Audio8-TTS-Preview-0.1b</code> under the gateway&#x27;s directory:</p>
+<span class="code-label">bash</span><pre><code>cd ~/.local/share/ai-gateway
+./.venv/bin/python -c &quot;from huggingface_hub import snapshot_download; \
+  snapshot_download(&#x27;Audio8/Audio8-TTS-Preview-0.1b&#x27;, \
+  local_dir=&#x27;models/tts/Audio8-TTS-Preview-0.1b&#x27;)&quot;</code></pre>
+<p>Until it is there the Assistant tab says so, and read-aloud stays off rather than failing at the moment you press the button.</p>
+<p>The Python side needs <code>torch</code>, <code>transformers</code>, <code>soundfile</code> and <code>safetensors</code> (see <code>requirements.txt</code>). If one is missing the panel names it.</p>
+<h3>Cloning a voice</h3>
+<p>Put a clean recording in the <code>voices/</code> directory beside a <code>.txt</code> file holding</p>
+<p><strong>exactly</strong> what the clip says:</p>
+<pre><code>voices/alba.wav      a few seconds of clear speech
+voices/alba.txt      the words spoken in alba.wav</code></pre>
+<p>Press <strong>Rediscover</strong> and &quot;Alba&quot; appears in the voice list. A clip without a matching transcript is skipped rather than half-used — the model conditions on the transcript, and a wrong one degrades the clone badly.</p>
+<p>Ten to thirty seconds of clean, single-speaker audio works well. Background noise is cloned along with the voice.</p>
 <h2>Settings</h2>
-<div class="table-wrap"><table><thead><tr><th>Setting</th><th>Meaning</th></tr></thead><tbody><tr><td>Show a read-aloud button</td><td>Adds the speaker button to answers</td></tr><tr><td>Read every answer automatically</td><td>Speaks each answer as it arrives</td></tr><tr><td>Engine</td><td>Which synthesiser to use</td></tr><tr><td>Voice</td><td>Engine-specific; Piper voices are files, eSpeak&#x27;s are language codes</td></tr><tr><td>Rate</td><td>Percent of the engine&#x27;s normal speed</td></tr><tr><td>Pitch</td><td>0–99, eSpeak only</td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>Setting</th><th>Meaning</th></tr></thead><tbody><tr><td>Show a read-aloud button</td><td>Adds the speaker button to answers</td></tr><tr><td>Read every answer automatically</td><td>Speaks each answer as it arrives</td></tr><tr><td>Engine</td><td>Audio8 TTS — the only engine</td></tr><tr><td>Voice</td><td>The built-in voice, or one cloned from <code>voices/</code></td></tr><tr><td>Rate</td><td><strong>Ignored.</strong> Audio8 has no speed control; the panel greys it out</td></tr><tr><td>Pitch</td><td><strong>Ignored.</strong> Audio8 has no pitch control</td></tr></tbody></table></div>
 <p><strong>Test</strong> speaks a sample line so you can hear a voice before committing to it.</p>
 <h2>What actually gets read</h2>
 <p>Answers are <a href="canvas.html">canvases</a>, not prose, so they are flattened for speech rather than read literally:</p>
@@ -55,7 +62,7 @@ curl -LO $BASE/en_GB-alba-medium.onnx.json</code></pre>
 <li>Markdown, URLs and bullet characters are stripped, so the synthesiser reads</li>
 </ul>
 <p>words rather than punctuation.</p>
-<p>Long answers are cut at a sentence boundary rather than mid-word.</p>
+<p>Long answers are cut at a sentence boundary rather than mid-word, and what survives is split into sentence-sized chunks before synthesis — one generation pass cannot cover an arbitrarily long answer, so the pieces are synthesised in turn and stitched with a short gap.</p>
 <h2>API</h2>
 <span class="code-label">http</span><pre><code>GET  /api/speech            engines, voices and current settings
 POST /api/speech/refresh    re-probe (after installing an engine or a voice)
@@ -64,13 +71,25 @@ POST /api/speech/stop       silence whatever is speaking</code></pre>
 <p><code>speak</code> blocks until the speech finishes, and its timeout scales with the length of the text.</p>
 <h2>Notes</h2>
 <ul>
-<li>Playback goes through PipeWire (<code>pw-play</code> / <code>pw-cat</code>), falling back to</li>
+<li>Playback goes through PipeWire (<code>pw-play</code>), falling back to PulseAudio or</li>
 </ul>
-<p>PulseAudio or ALSA. If none is present Keylane says so rather than appearing to work.</p>
+<p>ALSA. If none is present Keylane says so rather than appearing to work.</p>
 <ul>
-<li>Flite takes its text as a command-line argument rather than on stdin —</li>
+<li>Synthesis runs on a worker thread, so the gateway keeps answering while it</li>
 </ul>
-<p>worth knowing if you add another engine, since piping to it silently produces an empty audio file.</p>
+<p>speaks. The model loads on first use and stays resident — the first line spoken after a restart is slower than the rest.</p>
+<ul>
+<li><strong>Speed depends entirely on the device.</strong> Measured on a CPU-only torch</li>
+</ul>
+<p>build, synthesis runs about <strong>10x slower than realtime</strong> — 43 s of compute for 4 s of speech. The read-aloud cap follows suit: 320 characters on CPU, 2400 on CUDA. The Assistant tab says which device it found. Installing a CUDA build of torch in the gateway venv is the single biggest improvement available: <code>.venv/bin/pip install --index-url https://download.pytorch.org/whl/cu130 torch</code></p>
+<ul>
+<li><code>stop</code> silences playback <em>and</em> cancels a synthesis still running. The</li>
+</ul>
+<p>generation thread cannot be interrupted, but its audio is thrown away rather than spoken a minute after you gave up.</p>
+<ul>
+<li>The model is under the Audio8 Community License: free for non-commercial use</li>
+</ul>
+<p>and for companies under $2M revenue, separate licence above that.</p>
         <nav class="page-nav"><a href="skills.html"><span class="dir">Previous</span><span class="name">Skills</span></a><a class="next" href="canvas.html"><span class="dir">Next</span><span class="name">Canvas answers</span></a></nav>
       </article>
     </main>
