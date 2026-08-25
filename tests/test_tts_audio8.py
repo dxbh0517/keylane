@@ -214,3 +214,22 @@ async def test_stop_cancels_a_synthesis_still_in_flight(monkeypatch, tmp_path):
     result = await tts.speak("some words to read")
 
     assert result.get("stopped") is True
+
+
+def test_a_stale_engine_setting_does_not_discard_a_requested_voice(tmp_path, monkeypatch):
+    """Falling back on the engine must not silently drop the caller's voice.
+
+    Anyone upgrading still has engine="flite" saved. Asking to speak as a
+    named voice used to fall back to the engine *and* the default voice,
+    quietly ignoring the choice that was actually made.
+    """
+    (tmp_path / "british-man.wav").write_bytes(b"RIFF")
+    (tmp_path / "british-man.txt").write_text("Some words.", encoding="utf-8")
+    monkeypatch.setattr(tts, "voices_dir", lambda: tmp_path)
+    monkeypatch.setattr(tts, "model_installed", lambda: True)
+    monkeypatch.setattr(tts, "_missing_dependency", lambda: "")
+
+    engine, voice = resolve("flite", str(tmp_path / "british-man.wav"))
+
+    assert engine is not None and engine.id == "audio8"
+    assert voice == str(tmp_path / "british-man.wav")

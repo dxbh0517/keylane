@@ -33,10 +33,45 @@ than failing at the moment you press the button.
 The Python side needs `torch`, `transformers`, `soundfile` and `safetensors`
 (see `requirements.txt`). If one is missing the panel names it.
 
-### Cloning a voice
+### The bundled voice pack
 
-Put a clean recording in the `voices/` directory beside a `.txt` file holding
-**exactly** what the clip says:
+Nine reference clips are built by a script rather than shipped in the repo —
+the source corpora are CC BY-SA and CC BY, so fetching them keeps their
+attribution and share-alike terms with the audio where they belong:
+
+```bash
+scripts/fetch_voices.py            # build all nine into voices/
+scripts/fetch_voices.py --list     # see them without downloading
+scripts/fetch_voices.py --only british-man --force
+```
+
+| Voice | Accent | Source |
+| --- | --- | --- |
+| `british-man` | Southern English | Google/CSTR UK & Ireland English |
+| `british-woman` | Southern English | Google/CSTR UK & Ireland English |
+| `american-woman` | American, young adult | LibriTTS-R |
+| `american-man` | American | LibriTTS-R |
+| `northern-english-man` | Northern English | Google/CSTR UK & Ireland English |
+| `scottish-man` | Scottish | Google/CSTR UK & Ireland English |
+| `scottish-woman` | Scottish | Google/CSTR UK & Ireland English |
+| `irish-man` | Irish | Google/CSTR UK & Ireland English |
+| `welsh-woman` | Welsh | Google/CSTR UK & Ireland English |
+
+All are real human speech, not synthesised. The script pulls a handful of
+utterances from one speaker through Hugging Face's row API — so it downloads
+seconds of audio rather than the whole corpus — concatenates them to about
+twenty seconds, and writes the joined transcript alongside. It writes a
+`CREDITS.md` naming every source.
+
+The two corpora label region and gender but not age, so the American voices
+are chosen by **measured pitch**: the script estimates each candidate
+speaker's F0 and takes one inside a target band. "Young adult" is an
+approximation from voice register, not a documented fact about the speaker.
+
+### Adding your own
+
+Put a clean recording in `voices/` beside a `.txt` file holding **exactly**
+what the clip says:
 
 ```
 voices/alba.wav      a few seconds of clear speech
@@ -48,7 +83,10 @@ matching transcript is skipped rather than half-used — the model conditions on
 the transcript, and a wrong one degrades the clone badly.
 
 Ten to thirty seconds of clean, single-speaker audio works well. Background
-noise is cloned along with the voice.
+noise is cloned along with the voice. Longer references cost more per
+sentence: measured here, a 28-second reference took about 25% longer to
+synthesise from than an 11-second one, and cloning of any length costs
+noticeably more than the built-in voice.
 
 ## Settings
 

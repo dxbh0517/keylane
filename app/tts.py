@@ -472,9 +472,10 @@ def resolve(engine_id: str, voice_id: str) -> tuple[EngineInfo | None, str]:
     engine = engines.get(engine_id)
     if engine is None or not engine.available:
         # A settings file written when piper or espeak was the engine must not
-        # strand the user on an id that no longer exists.
+        # strand the user on an id that no longer exists. The voice survives
+        # this: a caller that asked for one explicitly still means it, and the
+        # check below drops it anyway if it belongs to the retired engine.
         engine = engines.get(default_engine())
-        voice_id = ""
     if engine is None:
         return None, ""
     if voice_id and any(v.id == voice_id for v in engine.voices):
