@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 MAX_HISTORY = 40
 MAX_QUEUE = 64
+# Per task. Enough to follow a long tool chain, bounded so a runaway loop
+# cannot grow the snapshot without limit — every SSE frame carries it.
+MAX_STEPS = 40
 
 # Task states that still count as "the assistant is working".
 BUSY_STATES = {"pending", "routing", "running", "verifying", "retrying", "thinking"}
@@ -44,6 +47,22 @@ class ActivityEvent(BaseModel):
     at: str = Field(default_factory=_now)
 
 
+class ActivityStep(BaseModel):
+    """One thing the assistant did, as it happens.
+
+    The control panel replays these to show *how* an answer was reached, so
+    they carry the tool's arguments and what came back — not just its name.
+    """
+
+    index: int = 0
+    thought: str = ""
+    tool: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    observation: str = ""
+    ok: bool = True
+    at: str = Field(default_factory=_now)
+
+
 class ActivityTask(BaseModel):
     task_id: str
     title: str
@@ -54,6 +73,11 @@ class ActivityTask(BaseModel):
     updated_at: str = Field(default_factory=_now)
     finished_at: str | None = None
     error: str | None = None
+    # What the task is asking permission to do. Approving a bare tool name is
+    # not consent — the panel has to be able to show the arguments too.
+    pending_tool: str | None = None
+    pending_arguments: dict[str, Any] = Field(default_factory=dict)
+    steps: list[ActivityStep] = Field(default_factory=list)
 
     @property
     def busy(self) -> bool:
@@ -116,6 +140,9 @@ class ActivityBus:
         worker: str | None = None,
         step: str | None = None,
         error: str | None = None,
+        pending_tool: str | None = None,
+        pending_arguments: dict[str, Any] | None = None,
+        clear_pending: bool = False,
     ) -> None:
         async with self._lock:
             task = self._tasks.get(task_id)
@@ -129,6 +156,15 @@ class ActivityBus:
                 task.step = step[:200]
             if error is not None:
                 task.error = error[:500]
+            if pending_tool is not None:
+                task.pending_tool = pending_tool
+            if pending_arguments is not None:
+                task.pending_arguments = pending_arguments
+            if clear_pending:
+                # Approved or denied — the question is answered, and leaving it
+                # on the task would offer the buttons a second time.
+                task.pending_tool = None
+                task.pending_arguments = {}
             task.updated_at = _now()
 
             finished = task.status in {"completed", "failed", "cancelled"}
@@ -144,6 +180,46 @@ class ActivityBus:
                     status=task.status,
                     title=task.title,
                     detail=task.step,
+                    worker=task.worker,
+                )
+            )
+
+    async def record_step(
+        self,
+        task_id: str,
+        *,
+        thought: str = "",
+        tool: str | None = None,
+        arguments: dict[str, Any] | None = None,
+        observation: str = "",
+        ok: bool = True,
+    ) -> None:
+        """Append one completed step to a live task, and fan it out."""
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return
+            step = ActivityStep(
+                index=len(task.steps) + 1,
+                thought=thought[:200],
+                tool=tool,
+                arguments=arguments or {},
+                observation=observation[:600],
+                ok=ok,
+            )
+            task.steps.append(step)
+            if len(task.steps) > MAX_STEPS:
+                del task.steps[0]
+            task.step = f"{tool}: {'ok' if ok else 'failed'}" if tool else thought[:200]
+            task.updated_at = _now()
+            self._publish(
+                ActivityEvent(
+                    type="step",
+                    task_id=task_id,
+                    status=task.status,
+                    title=task.step,
+                    detail=step.observation,
+                    tool=tool,
                     worker=task.worker,
                 )
             )

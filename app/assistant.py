@@ -324,7 +324,11 @@ class AssistantService:
             # No NPU model: fall back to a single deterministic decision so the
             # feature still works on machines without an OpenVINO export.
             return await self._heuristic_run(
-                message, project=project, local_only=local_only, confirmed=confirmed
+                message,
+                project=project,
+                local_only=local_only,
+                confirmed=confirmed,
+                on_step=on_step,
             )
 
         max_steps = max(1, min(settings.tools.max_steps, 12))
@@ -351,6 +355,7 @@ class AssistantService:
                     project=project,
                     local_only=local_only,
                     confirmed=confirmed,
+                    on_step=on_step,
                 )
 
             action, tool_name, arguments = interpret_decision(
@@ -552,6 +557,7 @@ class AssistantService:
         project: str | None,
         local_only: bool,
         confirmed: set[str],
+        on_step: Any = None,
     ) -> AssistantOutcome:
         """Keyword routing for machines without an NPU model export.
 
@@ -569,6 +575,14 @@ class AssistantService:
         tool_name, arguments = plan
         step = await self._call_tool(1, "heuristic match", tool_name, arguments, confirmed)
         outcome.steps.append(step)
+        # The heuristic path is what runs whenever the NPU model is degraded,
+        # so it has to report progress too — otherwise the panel goes blank in
+        # exactly the situation the user most wants to watch.
+        if on_step is not None:
+            try:
+                await on_step(step)
+            except Exception:  # noqa: BLE001
+                logger.debug("on_step callback failed", exc_info=True)
         if step.action == "confirm":
             outcome.needs_confirmation = True
             outcome.pending_tool = tool_name

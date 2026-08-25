@@ -115,6 +115,49 @@ def test_activity_snapshot_shape(client):
         assert key in data, key
 
 
+def test_approving_an_unknown_task_does_not_500(client):
+    # The panel can always be a moment behind the gateway — a stale Allow
+    # button must report the truth, not crash.
+    response = client.post("/api/tasks/nope-not-a-task/approve")
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+
+
+def test_denying_an_unknown_task_is_a_404(client):
+    assert client.post("/api/tasks/nope-not-a-task/deny").status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_denying_records_that_a_person_said_no():
+    """A denial is not the same event as a cancellation, and reads differently."""
+    from app.orchestrator import GatewayOrchestrator
+    from app.schemas import TaskRecord, TaskStatus
+
+    orch = GatewayOrchestrator()
+    task = TaskRecord(message="rm -rf /", status=TaskStatus.WAITING_CONFIRMATION)
+    await orch.store.put(task)
+
+    result = await orch.cancel(task.task_id, reason="Denied")
+
+    assert result is not None
+    assert result.status == TaskStatus.CANCELLED
+    assert result.error == "Denied"
+
+
+@pytest.mark.asyncio
+async def test_a_plain_cancel_still_reads_as_cancelled():
+    from app.orchestrator import GatewayOrchestrator
+    from app.schemas import TaskRecord, TaskStatus
+
+    orch = GatewayOrchestrator()
+    task = TaskRecord(message="build the thing", status=TaskStatus.RUNNING)
+    await orch.store.put(task)
+
+    result = await orch.cancel(task.task_id)
+
+    assert result.error == "Cancelled"
+
+
 def test_active_theme_exposes_the_popup_spec(client):
     data = client.get("/api/themes/active").json()
     assert data["popup"]["mode"] in {"bar", "panel", "window", "orb"}

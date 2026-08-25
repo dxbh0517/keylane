@@ -644,18 +644,106 @@ details.installer[open] > summary { margin-bottom: var(--s-3); }
 .activity-list { display: flex; flex-direction: column; gap: var(--s-2); }
 
 .activity-row {
-  display: flex;
-  align-items: center;
-  gap: var(--s-3);
-  padding: var(--s-3) var(--s-4);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   font-size: 0.88rem;
 }
 
+/* The row itself is now a container; the clickable summary line is the head. */
+.activity-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  min-height: var(--tap);
+}
+
+.activity-head.expandable { cursor: pointer; }
+.activity-head.expandable:hover { background: var(--sunken); border-radius: var(--radius); }
+
 .activity-row .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-row time { font-variant-numeric: tabular-nums; font-size: 0.78rem; color: var(--faint); }
+.activity-row .chevron { color: var(--faint); font-size: 0.75rem; flex: none; }
+.activity-row .small { font-size: 0.78rem; }
+
+/* A task blocked on a person is the one thing here that must not be missed. */
+.activity-row.needs-you {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 3px var(--warn-soft);
+}
+
+.activity-detail {
+  padding: 0 var(--s-4) var(--s-4);
+  border-top: 1px solid var(--border);
+  margin-top: var(--s-1);
+  padding-top: var(--s-3);
+}
+
+.error-line {
+  color: var(--danger);
+  font-size: 0.82rem;
+  margin: 0 0 var(--s-3);
+}
+
+/* ----- approval ----- */
+
+.approval {
+  background: var(--warn-soft);
+  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  border-radius: var(--radius);
+  padding: var(--s-3);
+  margin-bottom: var(--s-3);
+}
+
+.approval-head { display: flex; gap: var(--s-2); align-items: flex-start; }
+.approval-head svg { width: 17px; height: 17px; flex: none; stroke-width: 1.8; color: var(--warn); }
+.approval-head code { font-family: var(--mono); font-size: 0.82rem; }
+.approval-actions { display: flex; gap: var(--s-2); margin-top: var(--s-3); }
+
+/* ----- steps ----- */
+
+.step-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.step {
+  border-left: 2px solid var(--border);
+  padding: var(--s-2) 0 var(--s-2) var(--s-3);
+}
+
+.step-head { display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; }
+.step-index { color: var(--faint); font-variant-numeric: tabular-nums; font-size: 0.78rem; }
+.step-tool { font-family: var(--mono); font-size: 0.8rem; color: var(--accent); }
+.step-thought { color: var(--muted); font-size: 0.82rem; }
+
+.step-observation {
+  margin: var(--s-2) 0 0;
+  padding: var(--s-2) var(--s-3);
+  background: var(--sunken);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 12em;
+  overflow-y: auto;
+}
+
+.arg-list { margin: var(--s-2) 0 0; display: flex; flex-direction: column; gap: var(--s-1); }
+.arg-list > div { display: flex; gap: var(--s-2); align-items: baseline; }
+.arg-list dt { color: var(--muted); font-size: 0.78rem; min-width: 5.5em; flex: none; }
+.arg-list dd { margin: 0; min-width: 0; }
+.arg-list dd code {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  word-break: break-word;
+}
 
 .spinner {
   width: 13px;

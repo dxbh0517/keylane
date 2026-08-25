@@ -141,24 +141,137 @@ async function loadStatus() {
 
 /* ————————————————————————————————————————————— activity ——— */
 
+// Which task rows the user has opened. Snapshots arrive continuously and
+// replace the list wholesale, so expansion has to live outside the markup or
+// every row would slam shut a few times a second.
+const expandedTasks = new Set();
+// The most recent snapshot, kept so a purely visual change (opening a row)
+// can re-render without asking the gateway again.
+let lastSnapshot = null;
+
+function argumentList(args) {
+  const entries = Object.entries(args || {}).filter(
+    ([, value]) => value !== "" && value !== null && value !== undefined
+  );
+  if (!entries.length) return `<p class="muted small">No arguments.</p>`;
+  return `<dl class="arg-list">${entries
+    .map(([key, value]) => {
+      const shown = typeof value === "string" ? value : JSON.stringify(value);
+      return `<div><dt>${esc(key)}</dt><dd><code>${esc(shown)}</code></dd></div>`;
+    })
+    .join("")}</dl>`;
+}
+
+function elapsed(task) {
+  const start = Date.parse(task.started_at || "");
+  const end = Date.parse(task.finished_at || task.updated_at || "") || Date.now();
+  if (!start || end < start) return "";
+  const seconds = Math.round((end - start) / 1000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function stepRow(step) {
+  const mark = step.ok
+    ? `<span class="dot ok"></span>`
+    : `<span class="dot bad"></span>`;
+  const args = Object.keys(step.arguments || {}).length
+    ? argumentList(step.arguments)
+    : "";
+  return `<li class="step">
+    <div class="step-head">
+      ${mark}
+      <span class="step-index">${esc(step.index)}</span>
+      ${step.tool ? `<code class="step-tool">${esc(step.tool)}</code>` : ""}
+      ${step.thought ? `<span class="step-thought">${esc(step.thought)}</span>` : ""}
+    </div>
+    ${args}
+    ${
+      step.observation
+        ? `<pre class="step-observation">${esc(step.observation)}</pre>`
+        : ""
+    }
+  </li>`;
+}
+
+// A tool name on its own is not enough to consent to. Show the arguments, and
+// make approving and refusing equally reachable.
+function approvalBlock(task) {
+  return `<div class="approval">
+    <div class="approval-head">
+      <svg viewBox="0 0 24 24"><use href="#i-alert" /></svg>
+      <div>
+        <strong>Waiting for you.</strong>
+        Keylane wants to run
+        <code>${esc(task.pending_tool || "an action")}</code>
+        ${task.worker ? `via <strong>${esc(task.worker)}</strong>` : ""}.
+      </div>
+    </div>
+    ${argumentList(task.pending_arguments)}
+    <div class="approval-actions">
+      <button class="btn primary task-approve" data-task="${esc(task.task_id)}">Allow</button>
+      <button class="btn danger task-deny" data-task="${esc(task.task_id)}">Deny</button>
+    </div>
+  </div>`;
+}
+
 function activityRow(task, { live }) {
+  const waiting = task.status === "waiting_confirmation";
   const icon = live
     ? `<span class="spinner"></span>`
-    : `<span class="dot ${task.status === "completed" ? "ok" : task.status === "failed" ? "bad" : "warn"}"></span>`;
+    : `<span class="dot ${
+        task.status === "completed" ? "ok" : task.status === "failed" ? "bad" : "warn"
+      }"></span>`;
   const when = task.finished_at || task.updated_at || task.started_at || "";
   const time = when ? new Date(when).toLocaleTimeString() : "";
-  const detail = task.step || task.error || task.worker || task.status;
-  return `<div class="activity-row">
-    ${icon}
-    <span class="title">${esc(task.title || "(untitled)")}</span>
-    <span class="badge">${esc(detail || task.status)}</span>
-    <time>${esc(time)}</time>
+  const steps = task.steps || [];
+  const open = expandedTasks.has(task.task_id);
+  const took = elapsed(task);
+
+  // Only offer the disclosure when there is genuinely something behind it.
+  const hasDetail = steps.length > 0 || waiting || !!task.error;
+
+  return `<div class="activity-row ${open ? "is-open" : ""} ${waiting ? "needs-you" : ""}"
+    data-task="${esc(task.task_id)}">
+    <div class="activity-head ${hasDetail ? "expandable" : ""}"
+      ${hasDetail ? `data-expand="${esc(task.task_id)}"` : ""}>
+      ${icon}
+      <span class="title">${esc(task.title || "(untitled)")}</span>
+      ${task.worker ? `<span class="badge">${esc(task.worker)}</span>` : ""}
+      <span class="badge ${waiting ? "warn" : ""}">${esc(task.step || task.status)}</span>
+      ${steps.length ? `<span class="badge muted">${steps.length} step${steps.length === 1 ? "" : "s"}</span>` : ""}
+      ${took ? `<span class="muted small">${esc(took)}</span>` : ""}
+      <time>${esc(time)}</time>
+      ${live && !waiting ? `<button class="btn small task-cancel" data-task="${esc(task.task_id)}">Stop</button>` : ""}
+      ${hasDetail ? `<span class="chevron">${open ? "▾" : "▸"}</span>` : ""}
+    </div>
+    ${
+      open
+        ? `<div class="activity-detail">
+            ${waiting ? approvalBlock(task) : ""}
+            ${task.error ? `<p class="error-line">${esc(task.error)}</p>` : ""}
+            ${
+              steps.length
+                ? `<ol class="step-list">${steps.map(stepRow).join("")}</ol>`
+                : waiting
+                  ? ""
+                  : `<p class="muted small">No steps recorded yet.</p>`
+            }
+          </div>`
+        : ""
+    }
   </div>`;
 }
 
 function renderActivity(snapshot) {
+  lastSnapshot = snapshot;
   const active = snapshot.active || [];
   const recent = snapshot.recent || [];
+
+  // A task that is blocked on a person should never be hiding behind a
+  // disclosure triangle — open it the first time it appears.
+  for (const task of active) {
+    if (task.status === "waiting_confirmation") expandedTasks.add(task.task_id);
+  }
 
   $("#activity-active").innerHTML = active.length
     ? active.map((t) => activityRow(t, { live: t.status !== "waiting_confirmation" })).join("")
@@ -180,6 +293,61 @@ function renderActivity(snapshot) {
       ? `${snapshot.active_count} running`
       : "Idle";
   rail.innerHTML = `<span class="dot ${kind}"></span>${esc(label)}`;
+}
+
+// Expanding a row is a local concern, so re-render from the snapshot already
+// in hand rather than paying a round trip to learn what we were just told.
+async function refreshActivity({ local = false } = {}) {
+  if (local && lastSnapshot) {
+    renderActivity(lastSnapshot);
+    return;
+  }
+  try {
+    renderActivity(await api("/api/activity"));
+  } catch {
+    /* the stream will catch up */
+  }
+}
+
+// One delegated handler for both lists: rows are replaced on every snapshot,
+// so anything bound to a row directly would not survive the next frame.
+for (const id of ["#activity-active", "#activity-recent"]) {
+  $(id).addEventListener("click", async (e) => {
+    const expand = e.target.closest("[data-expand]");
+    const approve = e.target.closest(".task-approve");
+    const deny = e.target.closest(".task-deny");
+    const cancel = e.target.closest(".task-cancel");
+
+    if (approve || deny || cancel) {
+      const button = approve || deny || cancel;
+      const taskId = button.dataset.task;
+      const [path, verb] = approve
+        ? [`/api/tasks/${taskId}/approve`, "Allowed"]
+        : deny
+          ? [`/api/tasks/${taskId}/deny`, "Denied"]
+          : [`/api/tasks/${taskId}/cancel`, "Stopped"];
+      // Approving runs the tool, which can take a while — make it obvious the
+      // click landed rather than leaving a live-looking button.
+      button.disabled = true;
+      button.textContent = approve ? "Running…" : "…";
+      try {
+        await api(path, { method: "POST" });
+        toast(`${verb}.`);
+      } catch (err) {
+        toast(err.message);
+      } finally {
+        refreshActivity();
+      }
+      return;
+    }
+
+    if (expand) {
+      const taskId = expand.dataset.expand;
+      if (expandedTasks.has(taskId)) expandedTasks.delete(taskId);
+      else expandedTasks.add(taskId);
+      refreshActivity({ local: true });
+    }
+  });
 }
 
 function connectActivityStream() {

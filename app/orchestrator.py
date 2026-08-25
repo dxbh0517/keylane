@@ -86,21 +86,31 @@ class GatewayOrchestrator:
             message, project=project, local_only=local_only
         )
 
+    async def approve(self, task_id: str) -> TaskResponse:
+        """Let a task waiting on confirmation proceed.
+
+        Separate from :meth:`chat` because saying yes needs no message — the
+        panel approves a task it is looking at, and has nothing to re-send.
+        """
+        task = await self.store.get(task_id)
+        if task is None:
+            return TaskResponse(
+                task_id=task_id,
+                status=TaskStatus.FAILED,
+                error="Unknown task_id",
+            )
+        if task.status != TaskStatus.WAITING_CONFIRMATION:
+            # Already answered, or never asked. Report where it actually is
+            # rather than running it a second time.
+            return self._to_response(task)
+        if task.pending_tool:
+            return await self._resume_assistant(task)
+        return await self._execute_with_retries(task)
+
     async def chat(self, request: ChatRequest) -> TaskResponse:
         # Resume confirmation
         if request.task_id and request.confirmed:
-            task = await self.store.get(request.task_id)
-            if task is None:
-                return TaskResponse(
-                    task_id=request.task_id,
-                    status=TaskStatus.FAILED,
-                    error="Unknown task_id",
-                )
-            if task.status != TaskStatus.WAITING_CONFIRMATION:
-                return self._to_response(task)
-            if task.pending_tool:
-                return await self._resume_assistant(task)
-            return await self._execute_with_retries(task)
+            return await self.approve(request.task_id)
 
         task = TaskRecord(
             message=request.message,
@@ -179,7 +189,17 @@ class GatewayOrchestrator:
             )
             await self.store.update(task)
             await self.activity.update_task(
-                task.task_id, status="waiting_confirmation", worker=decision.worker
+                task.task_id,
+                status="waiting_confirmation",
+                worker=decision.worker,
+                # A delegation is a decision to approve too, so describe it the
+                # same way a tool call is described.
+                pending_tool=decision.action or decision.worker,
+                pending_arguments={
+                    "worker": decision.worker,
+                    "project": decision.working_directory or "",
+                    **(decision.arguments or {}),
+                },
             )
             return self._to_response(task)
 
@@ -198,12 +218,16 @@ class GatewayOrchestrator:
         await self.activity.update_task(task.task_id, status="thinking")
 
         async def on_step(step) -> None:
-            await self.activity.note(
-                "step",
-                f"{step.tool}: {'ok' if step.ok else 'failed'}",
-                detail=step.observation[:200],
-                task_id=task.task_id,
+            # Record the whole step, not just a one-line summary: the control
+            # panel shows the reasoning, the arguments and the result so a run
+            # can be followed while it happens rather than explained after.
+            await self.activity.record_step(
+                task.task_id,
+                thought=getattr(step, "thought", "") or "",
                 tool=step.tool,
+                arguments=dict(getattr(step, "arguments", {}) or {}),
+                observation=step.observation or "",
+                ok=step.ok,
             )
 
         try:
@@ -253,7 +277,11 @@ class GatewayOrchestrator:
             )
             await self.store.update(task)
             await self.activity.update_task(
-                task.task_id, status="waiting_confirmation", worker="assistant"
+                task.task_id,
+                status="waiting_confirmation",
+                worker="assistant",
+                pending_tool=outcome.pending_tool,
+                pending_arguments=dict(outcome.pending_arguments or {}),
             )
             return self._to_response(task)
 
@@ -294,7 +322,10 @@ class GatewayOrchestrator:
         task.status = TaskStatus.RUNNING
         await self.store.update(task)
         await self.activity.update_task(
-            task.task_id, status="running", step=f"approved {pending}"
+            task.task_id,
+            status="running",
+            step=f"approved {pending}",
+            clear_pending=True,
         )
 
         # Replay what already happened so the model does not start over, then
@@ -360,6 +391,8 @@ class GatewayOrchestrator:
         assert task.route is not None
         decision = task.route
         context_extras: dict[str, Any] = {}
+        # Reaching here past a confirmation pause means it was approved.
+        await self.activity.update_task(task.task_id, clear_pending=True)
 
         # Multi-step plan execution
         if task.plan and len(task.plan.steps) > 1:
@@ -530,7 +563,7 @@ class GatewayOrchestrator:
         await self.activity.update_task(task.task_id, status="completed")
         return self._to_response(task)
 
-    async def cancel(self, task_id: str) -> TaskResponse | None:
+    async def cancel(self, task_id: str, *, reason: str = "Cancelled") -> TaskResponse | None:
         self._cancel.add(task_id)
         task = await self.store.get(task_id)
         if task is None:
@@ -541,9 +574,11 @@ class GatewayOrchestrator:
             TaskStatus.CANCELLED,
         }:
             task.status = TaskStatus.CANCELLED
-            task.error = "Cancelled"
+            task.error = reason
             await self.store.update(task)
-            await self.activity.update_task(task.task_id, status="cancelled")
+            await self.activity.update_task(
+                task.task_id, status="cancelled", error=reason, clear_pending=True
+            )
         return self._to_response(task)
 
     async def get_task(self, task_id: str) -> TaskResponse | None:

@@ -13,6 +13,14 @@ import threading
 from pathlib import Path
 
 from app.config import AppConfig, get_config
+from app.npu.probe import (
+    WARM_TIMEOUT,
+    cache_dir,
+    failure_detail,
+    failure_kind,
+    probe,
+    static_objection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +84,7 @@ class NpuPipeline:
         self.status = "not loaded"
         self.degraded_reason: str | None = None
         self._lock = threading.Lock()
+        self._warming: threading.Thread | None = None
         self._init()
 
     # ------------------------------------------------------------------ load
@@ -152,13 +161,60 @@ class NpuPipeline:
             logger.warning("%s: %s", self.role, self.status)
             return
 
+        # A model the user chose must never be able to kill the gateway, and
+        # OpenVINO has more than one way to die without raising. Rule out the
+        # known-fatal shapes on sight, then let a subprocess take the risk of
+        # the first construction.
+        objection = static_objection(model_path)
+        if objection is not None:
+            self.status = "unsupported model"
+            self.degraded_reason = f"{model_path.name} was not loaded because {objection}"
+            logger.warning(
+                "%s: refusing %s — %s Using the heuristic path.",
+                self.role,
+                model_path.name,
+                objection,
+            )
+            return
+
+        blob_cache = cache_dir(self.config)
+
         failures: list[str] = []
         for device in candidates:
+            ok, reason = probe(model_path, device, cache=blob_cache)
+            if not ok:
+                kind = failure_kind(reason)
+                detail = failure_detail(reason)
+                failures.append(f"{device}: {detail[:160]}")
+                if kind == "timeout":
+                    # Almost always a cold blob cache rather than a bad model:
+                    # an uncached NPU compile of a 4B model runs to minutes.
+                    # Warm it off the request path and reload when it lands,
+                    # so startup is never held hostage to a compile.
+                    logger.info(
+                        "%s: %s has not been compiled for %s yet — warming the cache "
+                        "in the background.",
+                        self.role,
+                        model_path.name,
+                        device,
+                    )
+                    self.status = "compiling"
+                    self._warm_in_background(model_path, device, blob_cache)
+                    return
+                logger.warning(
+                    "%s could not load on %s — %s", self.role, device, failures[-1]
+                )
+                continue
+
             try:
                 import openvino_genai as ov_genai
 
-                pipeline = ov_genai.LLMPipeline(str(model_path), device)
+                pipeline = ov_genai.LLMPipeline(
+                    str(model_path), device, CACHE_DIR=str(blob_cache)
+                )
             except Exception as exc:  # noqa: BLE001
+                # The probe just did this successfully, so reaching here means
+                # something changed underneath us rather than a bad model.
                 lines = str(exc).strip().splitlines()
                 failures.append(f"{device}: {(lines[-1] if lines else str(exc))[:160]}")
                 logger.warning("%s could not load on %s — %s", self.role, device, failures[-1])
@@ -185,6 +241,42 @@ class NpuPipeline:
         self.status = "no device could compile this model"
         self.degraded_reason = "; ".join(failures)
         logger.error("%s failed on every device: %s", self.role, self.degraded_reason)
+
+    def _warm_in_background(self, model_path: Path, device: str, blob_cache: Path) -> None:
+        """Compile into the blob cache off the request path, then reload.
+
+        The gateway answers on the heuristic path throughout; when the compile
+        lands, ``_init`` runs again and finds a cache hit that costs seconds.
+        """
+        if self._warming is not None and self._warming.is_alive():
+            return
+
+        def run() -> None:
+            ok, reason = probe(model_path, device, cache=blob_cache, timeout=WARM_TIMEOUT)
+            if not ok:
+                detail = failure_detail(reason)
+                self.status = "no device could compile this model"
+                self.degraded_reason = f"{device}: {detail}"
+                logger.warning(
+                    "%s: warming %s for %s failed — %s",
+                    self.role,
+                    model_path.name,
+                    device,
+                    detail,
+                )
+                return
+            logger.info(
+                "%s: %s is compiled and cached for %s — loading it now.",
+                self.role,
+                model_path.name,
+                device,
+            )
+            self.reload()
+
+        self._warming = threading.Thread(
+            target=run, name=f"keylane-warm-{self.role}", daemon=True
+        )
+        self._warming.start()
 
     def reload(self) -> None:
         with self._lock:

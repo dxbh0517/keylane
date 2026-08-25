@@ -14,6 +14,10 @@ outputs/
 models/*/*
 !models/*/.gitkeep
 
+# Compiled OpenVINO blobs. Large, and only valid for the machine and driver
+# that produced them — always regenerable by recompiling.
+cache/
+
 # Generated at runtime by the theme manager.
 themes/active-*.css
 themes/active-*.json

@@ -1119,6 +1119,31 @@ async def cancel_task(task_id: str) -> TaskResponse:
     return result
 
 
+@app.post("/api/tasks/{task_id}/approve", response_model=TaskResponse)
+async def approve_task(task_id: str) -> TaskResponse:
+    """Let a task waiting on confirmation go ahead.
+
+    The same thing a re-POST to /api/chat with ``confirmed`` does, named for
+    what it means so the control panel does not have to re-send the original
+    message just to say yes.
+    """
+    return await _orch().approve(task_id)
+
+
+@app.post("/api/tasks/{task_id}/deny", response_model=TaskResponse)
+async def deny_task(task_id: str) -> TaskResponse:
+    """Refuse a task waiting on confirmation.
+
+    Distinct from cancel only in what it records: "denied" says a person was
+    asked and said no, which is worth telling apart from a task that was
+    stopped or timed out.
+    """
+    result = await _orch().cancel(task_id, reason="Denied")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return result
+
+
 @app.post("/api/transcribe")
 async def transcribe(file: UploadFile = File(...)) -> dict[str, str]:
     data = await file.read()
