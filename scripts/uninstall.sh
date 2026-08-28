@@ -105,6 +105,14 @@ if command -v gsettings >/dev/null 2>&1; then
     gsettings reset org.gnome.desktop.wm.keybindings switch-input-source-backward 2>/dev/null || true
     echo "    restored GNOME's default Super+Space"
   fi
+
+  if gsettings list-schemas 2>/dev/null | grep -qx org.freedesktop.ibus.general.hotkey; then
+    IBUS_TRIGGERS="$(gsettings get org.freedesktop.ibus.general.hotkey triggers 2>/dev/null || echo '[]')"
+    if [[ "${IBUS_TRIGGERS}" == "@as []" || "${IBUS_TRIGGERS}" == "[]" ]]; then
+      gsettings set org.freedesktop.ibus.general.hotkey triggers "['<Super>space']" 2>/dev/null || true
+      echo "    restored IBUS Super+Space"
+    fi
+  fi
 fi
 
 # --------------------------------------------------------------- files -----

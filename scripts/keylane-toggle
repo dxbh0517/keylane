@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Toggle Keylane spotlight — used by Super+Space GNOME keybinding.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VENV="${KEYLANE_VENV:-$ROOT/.venv}"
+PYTHON="$("${ROOT}/scripts/_ui_python.sh")"
+UI="${ROOT}/ui/main.py"
+
+export PYTHONPATH="${ROOT}${PYTHONPATH:+:$PYTHONPATH}"
+if [[ "$PYTHON" == "python3" ]]; then
+  export PYTHONPATH="${VENV}/lib64/python3.14/site-packages:${VENV}/lib/python3.14/site-packages${PYTHONPATH:+:$PYTHONPATH}"
+fi
+export KEYLANE_DATA="${KEYLANE_DATA:-$ROOT/data}"
+
+exec "$PYTHON" "$UI" --toggle

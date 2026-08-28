@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Keylane settings CLI."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from daemon.config import all_settings, reset_settings, save_settings  # noqa: E402
+
+
+def cmd_list(_args: argparse.Namespace) -> None:
+    print(json.dumps(all_settings(), indent=2, ensure_ascii=False))
+
+
+def cmd_get(args: argparse.Namespace) -> None:
+    data = all_settings()
+    section = data.get(args.section, {})
+    if args.key:
+        print(section.get(args.key, ""))
+    else:
+        print(json.dumps(section, indent=2, ensure_ascii=False))
+
+
+def cmd_set(args: argparse.Namespace) -> None:
+    section, _, key = args.path.partition(".")
+    if not key:
+        print("usage: keylane-settings set section.key value", file=sys.stderr)
+        sys.exit(1)
+    value: object = args.value
+    if value.lower() in {"true", "false"}:
+        value = value.lower() == "true"
+    elif value.isdigit():
+        value = int(value)
+    save_settings(section, {key: value})
+    print(f"saved {section}.{key}={value}")
+
+
+def cmd_reset(args: argparse.Namespace) -> None:
+    reset_settings(args.section)
+    print("reset ok")
+
+
+def cmd_wizard_web(_args: argparse.Namespace) -> None:
+    print("Web search wizard")
+    backend = input("Search backend [searxng/ddgs] (searxng): ").strip() or "searxng"
+    url = input("SearXNG URL (http://127.0.0.1:8080): ").strip() or "http://127.0.0.1:8080"
+    fallback = input("Enable DDGS fallback? [Y/n]: ").strip().lower() not in {"n", "no"}
+    save_settings(
+        "research",
+        {
+            "search_backend": backend,
+            "searxng_url": url,
+            "keyless_fallback": fallback,
+        },
+    )
+    print("Web settings saved.")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="keylane-settings")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("list").set_defaults(func=cmd_list)
+
+    p_get = sub.add_parser("get")
+    p_get.add_argument("section")
+    p_get.add_argument("key", nargs="?")
+    p_get.set_defaults(func=cmd_get)
+
+    p_set = sub.add_parser("set")
+    p_set.add_argument("path")
+    p_set.add_argument("value")
+    p_set.set_defaults(func=cmd_set)
+
+    p_reset = sub.add_parser("reset")
+    p_reset.add_argument("section", nargs="?")
+    p_reset.set_defaults(func=cmd_reset)
+
+    wiz = sub.add_parser("wizard")
+    wiz_sub = wiz.add_subparsers(dest="wizard_cmd", required=True)
+    wiz_sub.add_parser("web").set_defaults(func=cmd_wizard_web)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

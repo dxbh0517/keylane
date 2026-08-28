@@ -1,0 +1,11 @@
+services:
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: keylane-searxng
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng:Z
+    environment:
+      - SEARXNG_BASE_URL=http://127.0.0.1:8080/
+    restart: unless-stopped

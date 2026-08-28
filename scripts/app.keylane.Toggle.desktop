@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Keylane Toggle
+Comment=Show or hide the Keylane spotlight bar
+Exec=KEYLANE_ROOT_PLACEHOLDER/scripts/keylane-toggle
+Icon=keylane
+Terminal=false
+Type=Application
+NoDisplay=true
+StartupNotify=false
+Categories=Utility;

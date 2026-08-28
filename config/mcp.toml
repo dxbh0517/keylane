@@ -1,0 +1,6 @@
+# User MCP servers — tools appear as mcp.<id>.<tool_name>
+# [[servers]]
+# id = "example"
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]

@@ -1,38 +1,38 @@
-# Keylane model + device preferences
-[devices]
-primary = "npu"
-npu_device = "NPU"
-gpu_device = "GPU"
-fallback = "CPU"
+# Curated OpenVINO INT4 models for Intel NPU (~7–9B)
+default = "qwen2.5-7b-instruct"
+device = "NPU"
 
-[router]
-model_id = "qwen2.5-1.5b-instruct-int4"
-model_path = "./models/router"
+[[models]]
+id = "qwen2.5-7b-instruct"
+name = "Qwen 2.5 7B Instruct"
+hf_repo = "OpenVINO/Qwen2.5-7B-Instruct-int4-ov"
+params_b = 7
+description = "General-purpose assistant; good default."
 
-[verifier]
-model_id = ""
-model_path = ""
+[[models]]
+id = "qwen2.5-7b-npu"
+name = "Qwen 2.5 7B (NPU-tested)"
+hf_repo = "FluidInference/qwen2.5-7b-int4-npu-ov"
+params_b = 7
+description = "Same family, validated on Intel NPU."
 
-[chat]
-preferred_worker = "auto"
+[[models]]
+id = "qwen2.5-coder-7b"
+name = "Qwen 2.5 Coder 7B"
+hf_repo = "OpenVINO/Qwen2.5-Coder-7B-Instruct-int4-ov"
+params_b = 7
+description = "Code and technical tasks."
 
-[lmstudio]
-mode = "auto"
-model = ""
+[[models]]
+id = "qwen3.5-9b"
+name = "Qwen 3.5 9B"
+hf_repo = "OpenVINO/Qwen3.5-9B-int4-ov"
+params_b = 9
+description = "Larger model; needs OpenVINO 2026.2+."
 
-[lemonade]
-mode = "auto"
-model = ""
-base_url = "http://127.0.0.1:13305/api/v1"
-
-[comfyui]
-mode = "auto"
-model = ""
-
-[speech]
-whisper_model = "base"
-
-[startup]
-gateway = true
-launcher = false
-open_panel = false
+[[models]]
+id = "gemma-2-9b-it"
+name = "Gemma 2 9B Instruct"
+hf_repo = "OpenVINO/gemma-2-9b-it-int4-ov"
+params_b = 9
+description = "Google Gemma 2 instruction-tuned."

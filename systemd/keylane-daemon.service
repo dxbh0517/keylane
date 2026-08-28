@@ -1,0 +1,16 @@
+[Unit]
+Description=Keylane daemon (NPU agent)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%KEYLANE_ROOT%
+Environment=PYTHONPATH=%KEYLANE_ROOT%
+Environment=KEYLANE_DATA=%KEYLANE_ROOT%/data
+ExecStart=%KEYLANE_ROOT%/scripts/keylane-daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

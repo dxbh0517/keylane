@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Start Keylane daemon (NPU agent API).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VENV="${KEYLANE_VENV:-$ROOT/.venv}"
+PYTHON="${VENV}/bin/python"
+
+export PYTHONPATH="${ROOT}${PYTHONPATH:+:$PYTHONPATH}"
+export KEYLANE_DATA="${KEYLANE_DATA:-$ROOT/data}"
+
+if [[ ! -x "$PYTHON" ]]; then
+  PYTHON=python3
+fi
+
+exec "$PYTHON" -m daemon.main

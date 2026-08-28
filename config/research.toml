@@ -1,0 +1,16 @@
+[research]
+searxng_url = "http://127.0.0.1:8080"
+search_backend = "searxng"
+extract_backend = "local"
+keyless_fallback = true
+cache_ttl_minutes = 15
+freshness = "month"
+language = "en"
+max_search_queries = 3
+max_candidates_per_query = 20
+max_urls_per_round = 8
+max_fetch_rounds = 2
+timeout_seconds = 25
+max_page_chars = 12000
+playwright_url = "http://127.0.0.1:3001/fetch"
+playwright_enabled = false

@@ -1,41 +1,9 @@
-ai-gateway
-*.pyc
-__pycache__/
-.pytest_cache/
-.venv/
-venv/
-outputs/
-*.egg-info/
-.mypy_cache/
-.ruff_cache/
-.cursor/
-
-# Downloaded weights — large, and specific to each machine.
-models/*/*
-!models/*/.gitkeep
-
-# Compiled OpenVINO blobs. Large, and only valid for the machine and driver
-# that produced them — always regenerable by recompiling.
-cache/
-
-# Generated at runtime by the theme manager.
-themes/active-*.css
-themes/active-*.json
-
-# Community plugins are installed by the user, not shipped.
-plugins/community/*
-!plugins/community/.gitkeep
-
-*.wav
-*.png
-!assets/**
-!launcher/assets/**
-!web/assets/**
-
-# Voice reference clips for read-aloud cloning are per-machine.
-voices/*
-!voices/.gitkeep
-
-# Per-machine agent state and long-term memory vault.
+# Keylane Jarvis — runtime data (models, cache, db, memory)
 data/
-memory/
+outputs/
+.pytest_cache/
+__pycache__/
+*.pyc
+.venv/
+models/
+!config/models.toml

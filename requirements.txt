@@ -9,12 +9,11 @@ openvino-genai
 openvino-tokenizers
 mcp
 tomli-w
-# PyGObject: install via dnf (python3-gobject), not pip — see scripts/install.sh
+apscheduler
+# PyGObject: install via dnf (python3-gobject), not pip
 sounddevice
 numpy
 openai-whisper
-# Read-aloud: Audio8 TTS runs in-process on torch. The upper bound on
-# transformers is the model card's own — its custom code targets the 4.x API.
 torch>=2.5.0
 torchaudio>=2.5.0
 transformers>=4.57.0,<5
@@ -22,5 +21,8 @@ soundfile>=0.12
 safetensors>=0.4
 tomli; python_version < "3.11"
 huggingface_hub
+trafilatura>=1.12
+ddgs>=9.0
+playwright>=1.40
 pytest
 pytest-asyncio
