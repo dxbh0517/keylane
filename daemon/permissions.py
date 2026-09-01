@@ -24,18 +24,28 @@ _lock = threading.Lock()
 _pending: dict[str, PendingPermission] = {}
 
 
-def create_pending(tool_name: str, arguments: dict[str, Any]) -> PendingPermission | None:
-    mode = permission_mode(tool_name)
-    if mode == "auto":
-        return None
-    if mode == "deny":
-        return PendingPermission(id="", tool=tool_name, arguments=arguments, approved=False, resolved=True)
+def create_prompt(tool_name: str, arguments: dict[str, Any]) -> PendingPermission:
+    """Register a prompt the interface must answer, whatever the tool's mode.
 
+    Used by `ask_user`, where the prompt *is* the point. Permission modes decide
+    whether a dangerous action needs approval; they have nothing to say about a
+    question the model is asking.
+    """
     pid = str(uuid.uuid4())[:12]
     pending = PendingPermission(id=pid, tool=tool_name, arguments=arguments)
     with _lock:
         _pending[pid] = pending
     return pending
+
+
+def create_pending(tool_name: str, arguments: dict[str, Any]) -> PendingPermission | None:
+    """Register an approval prompt if this tool's mode calls for one."""
+    mode = permission_mode(tool_name)
+    if mode == "auto":
+        return None
+    if mode == "deny":
+        return PendingPermission(id="", tool=tool_name, arguments=arguments, approved=False, resolved=True)
+    return create_prompt(tool_name, arguments)
 
 
 def wait_pending(pending: PendingPermission, *, timeout: float = 120.0) -> bool:

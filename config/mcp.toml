@@ -1,6 +1,19 @@
 # User MCP servers — tools appear as mcp.<id>.<tool_name>
+#
+# stdio transport:
 # [[servers]]
-# id = "example"
+# id = "files"
 # transport = "stdio"
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+#
+# Streamable HTTP transport — e.g. Mailspring's built-in MCP server.
+# Enable it in Mailspring: Preferences → MCP Server, then paste the token
+# below. A bare UUID is fine; Keylane adds the "Bearer " scheme itself.
+# This is what gives Keylane your mail and calendar.
+#
+# [[servers]]
+# id = "mailspring"
+# transport = "http"
+# url = "http://127.0.0.1:2587/mcp"
+# auth_header = ""

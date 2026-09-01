@@ -7,8 +7,11 @@ TOGGLE="${ROOT}/scripts/keylane-toggle"
 DESKTOP_SRC="$(dirname "$0")/app.keylane.Toggle.desktop"
 DESKTOP_DEST="${HOME}/.local/share/applications/app.keylane.Toggle.desktop"
 HOTKEY="${KEYLANE_HOTKEY:-<Super>space}"
+MIC_HOTKEY="${KEYLANE_MIC_HOTKEY:-<Ctrl><Shift>m}"
+MIC_TOGGLE="${ROOT}/scripts/keylane-mic"
+MIC_BINDING_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/keylane-mic/"
 
-chmod +x "$TOGGLE"
+chmod +x "$TOGGLE" "$MIC_TOGGLE"
 
 if ! command -v gsettings >/dev/null 2>&1; then
   echo "gsettings not found — set Super+Space manually to: $TOGGLE"
@@ -54,5 +57,21 @@ gsettings set "${SCHEMA}.custom-keybinding:${BINDING_PATH}" name "Keylane"
 gsettings set "${SCHEMA}.custom-keybinding:${BINDING_PATH}" command "$TOGGLE"
 gsettings set "${SCHEMA}.custom-keybinding:${BINDING_PATH}" binding "$HOTKEY"
 
+# Microphone toggle (global — shows spotlight if hidden, then toggles mic).
+if [[ "${EXISTING}" != *"keylane-mic"* ]]; then
+  EXISTING="$(gsettings get "${SCHEMA}" custom-keybindings 2>/dev/null || echo '[]')"
+  if [[ "${EXISTING}" == "@as []" || "${EXISTING}" == "[]" ]]; then
+    MERGED="['${MIC_BINDING_PATH}']"
+  else
+    MERGED="${EXISTING%]*}, '${MIC_BINDING_PATH}']"
+  fi
+  gsettings set "${SCHEMA}" custom-keybindings "${MERGED}"
+fi
+
+gsettings set "${SCHEMA}.custom-keybinding:${MIC_BINDING_PATH}" name "Keylane Mic"
+gsettings set "${SCHEMA}.custom-keybinding:${MIC_BINDING_PATH}" command "$MIC_TOGGLE"
+gsettings set "${SCHEMA}.custom-keybinding:${MIC_BINDING_PATH}" binding "$MIC_HOTKEY"
+
 echo "Super+Space -> $TOGGLE"
+echo "${MIC_HOTKEY} -> $MIC_TOGGLE"
 echo "Install root: $ROOT"

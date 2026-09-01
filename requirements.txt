@@ -21,6 +21,7 @@ soundfile>=0.12
 safetensors>=0.4
 tomli; python_version < "3.11"
 huggingface_hub
+Pillow
 trafilatura>=1.12
 ddgs>=9.0
 playwright>=1.40

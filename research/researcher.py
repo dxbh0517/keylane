@@ -1,4 +1,8 @@
-"""Agentic web research — search, read, synthesize, cite."""
+"""Agentic web research — plan, search, read, compress, synthesize.
+
+Sources travel beside the answer rather than inside it; the interface renders
+attribution, so nothing here writes a Sources section or a [1] marker.
+"""
 
 from __future__ import annotations
 
@@ -10,9 +14,15 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from daemon.config import research_settings
-from models.catalog import get_runtime
+from seams import get_context
+from npu.thinking import sanitize_response
 from research.events import emit_research
-from research.provider import bm25_score, get_extract_provider, search_with_fallback
+from research.provider import (
+    bm25_scores,
+    coverage_score,
+    get_extract_provider,
+    search_with_fallback,
+)
 from research.search import diversify_candidates
 
 logger = logging.getLogger(__name__)
@@ -54,8 +64,8 @@ def _plan_queries_heuristic(question: str, *, max_queries: int) -> list[str]:
 
 
 def _plan_queries(question: str, *, max_queries: int) -> list[str]:
-    runtime = get_runtime()
-    if not runtime.status.get("ready"):
+    llm = get_context().llm
+    if not llm.is_ready("utility"):
         return _plan_queries_heuristic(question, max_queries=max_queries)
 
     _emit("Planning search queries…")
@@ -65,7 +75,7 @@ def _plan_queries(question: str, *, max_queries: int) -> list[str]:
         f"Question: {question}"
     )
     try:
-        raw = runtime.generate(prompt, max_new_tokens=128)
+        raw = llm.generate(prompt, route="utility", max_new_tokens=128)
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if match:
             data = json.loads(match.group())
@@ -79,15 +89,17 @@ def _plan_queries(question: str, *, max_queries: int) -> list[str]:
 
 
 def _score_relevance(question: str, text: str) -> float:
-    return bm25_score(question, text)
+    """Absolute relevance in [0, 1] — safe to compare against a threshold."""
+    return coverage_score(question, text)
 
 
 def _prerank_candidates(question: str, candidates: list[dict[str, str]]) -> list[dict[str, str]]:
-    scored = []
-    for c in candidates:
-        blob = f"{c.get('title', '')} {c.get('snippet', '')}"
-        scored.append((bm25_score(question, blob), c))
-    scored.sort(key=lambda x: x[0], reverse=True)
+    """Rank candidates against each other; the candidate set is the corpus."""
+    if not candidates:
+        return []
+    blobs = [f"{c.get('title', '')} {c.get('snippet', '')}" for c in candidates]
+    scored = list(zip(bm25_scores(question, blobs), candidates))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
     return [c for _, c in scored]
 
 
@@ -101,8 +113,8 @@ def _select_urls(
 
     ranked = _prerank_candidates(question, candidates)
     diversified = diversify_candidates(ranked, max_urls * 2)
-    runtime = get_runtime()
-    if not runtime.status.get("ready"):
+    llm = get_context().llm
+    if not llm.is_ready("utility"):
         return diversify_candidates(ranked, max_urls)
 
     listing = "\n".join(
@@ -115,7 +127,7 @@ def _select_urls(
         f"Format: one line per number, e.g. '1 yes\\n2 no'\n\n{listing}"
     )
     try:
-        raw = runtime.generate(prompt, max_new_tokens=128)
+        raw = llm.generate(prompt, route="utility", max_new_tokens=128)
         picked: list[dict[str, str]] = []
         for line in raw.splitlines():
             m = re.match(r"\s*(\d+)\s*(yes|y|true|1)", line, re.IGNORECASE)
@@ -160,12 +172,20 @@ def _compress_evidence(
     pages: list[dict[str, str]],
     sources: list[Source],
 ) -> str:
-    scored_chunks: list[tuple[float, int, str, Source]] = []
+    chunks: list[tuple[str, Source]] = []
     for page, source in zip(pages, sources):
         for chunk in _chunk_text(page.get("text", "")):
-            score = _score_relevance(question, chunk)
-            scored_chunks.append((score, source.index, chunk, source))
+            chunks.append((chunk, source))
+    if not chunks:
+        return ""
 
+    # Every chunk from every page is one corpus, so a phrase that appears in
+    # one chunk outweighs one repeated across all of them.
+    ranked = bm25_scores(question, [text for text, _ in chunks])
+    scored_chunks = [
+        (score, source.index, text, source)
+        for score, (text, source) in zip(ranked, chunks)
+    ]
     scored_chunks.sort(key=lambda x: x[0], reverse=True)
     top = scored_chunks[:_MAX_CHUNKS]
 
@@ -183,30 +203,37 @@ def _synthesize(
     pages: list[dict[str, str]],
     sources: list[Source],
 ) -> str:
-    runtime = get_runtime()
+    llm = get_context().llm
     evidence = _compress_evidence(question, pages, sources)
 
-    if runtime.status.get("ready") and evidence:
+    if llm.is_ready("background") and evidence:
         _emit("Synthesizing answer…")
+        # Attribution is the interface's job: the HUD renders the source list
+        # from the `sources` event, and ui/canvas.py strips any [1] markers and
+        # Sources heading the model writes anyway. Asking for citations here
+        # only spent tokens the NPU budget cannot spare, and put this prompt in
+        # direct conflict with the system prompt's output contract.
         prompt = (
             "You are a research assistant. Answer the user's question directly using ONLY "
-            "the evidence below. Use inline citations like [1] [2] for specific claims. "
-            "End with a Sources section listing each [n] title and URL.\n\n"
+            "the evidence below. Write the answer itself — no citation markers, no Sources "
+            "section, no preamble.\n\n"
             f"Question: {question}\n\nEvidence:\n{evidence[:2800]}\n\nAnswer:"
         )
         try:
-            return runtime.generate(prompt, max_new_tokens=800).strip()
+            return sanitize_response(
+                llm.generate(prompt, route="background", max_new_tokens=800).strip()
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("synthesis failed: %s", exc)
 
-    lines = [f"Based on {len(sources)} sources:\n"]
-    for s, p in zip(sources, pages):
-        snippet = p["text"][:400].replace("\n", " ")
-        lines.append(f"[{s.index}] {snippet}…")
-    lines.append("\nSources")
-    for s in sources:
-        lines.append(f"[{s.index}] {s.title} — {s.url}")
-    return "\n".join(lines)
+    # Fallback when no model is loaded: the excerpts themselves, unattributed
+    # in the text because the sources travel beside the answer.
+    lines: list[str] = []
+    for page in pages:
+        snippet = page["text"][:400].replace("\n", " ").strip()
+        if snippet:
+            lines.append(f"{snippet}…")
+    return sanitize_response("\n\n".join(lines))
 
 
 def _domain_label(url: str) -> str:
@@ -269,6 +296,11 @@ async def research_web(
             except Exception as exc:  # noqa: BLE001
                 trace.append(f"fetch failed {cand['url']}: {exc}")
                 continue
+            status = int(page.get("status_code") or 200)
+            if status >= 400:
+                # A 404 body is an error page; its text would pollute the evidence.
+                trace.append(f"skipped HTTP {status} {cand['url']}")
+                continue
             rel = _score_relevance(question, page["text"])
             if rel < 0.05 and len(pages) >= 2:
                 trace.append(f"skipped low relevance {cand['url']} ({rel:.2f})")
@@ -298,19 +330,27 @@ async def research_web(
             trace=trace,
         )
 
+    # No Sources section is appended: `sources` rides alongside the answer and
+    # the interface renders it.
     answer = _synthesize(question, pages, sources)
-    if "Sources" not in answer:
-        answer += "\n\nSources\n" + "\n".join(
-            f"[{s.index}] {s.title} — {s.url}" for s in sources
-        )
-
     return ResearchResult(answer=answer, sources=sources, trace=trace)
 
 
 def research_web_sync(question: str, depth: str = "quick") -> dict[str, Any]:
+    """Sync wrapper — safe to call from threads; not from a running event loop."""
     import asyncio
+    from concurrent.futures import ThreadPoolExecutor
 
-    result = asyncio.run(research_web(question, depth=depth))
+    def _run() -> ResearchResult:
+        return asyncio.run(research_web(question, depth=depth))
+
+    try:
+        asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            result = pool.submit(_run).result()
+    except RuntimeError:
+        result = _run()
+
     return {
         "answer": result.answer,
         "sources": [
