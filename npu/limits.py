@@ -9,12 +9,20 @@ the VLM budget said 10000 characters while the compiled limit was 1024 tokens.
 
 from __future__ import annotations
 
+import os
+
 from npu.kind import PipelineKind
 
-# Tokens compiled into an NPU pipeline. Raising it costs compile time and NPU
-# memory, so it buys headroom for the system prompt and a few turns of history,
-# not a large context.
-NPU_MAX_PROMPT_TOKENS = 4096
+# Tokens compiled into an NPU pipeline. This is not a soft limit: it is built
+# into the compiled model, so raising it costs compile time and memory, and on
+# the VLM path the cost is steep — 1024 to 4096 took one VLM load from about
+# thirteen seconds to roughly half an hour of CPU work on a warm cache.
+#
+# The prompt's required sections need about 1700 tokens, so anything below
+# ~2048 cannot serve a turn at all. Override with KEYLANE_NPU_MAX_PROMPT_TOKENS
+# if the trade lands differently on your machine; changing it invalidates the
+# compile cache, so the next load is slow whichever way you move it.
+NPU_MAX_PROMPT_TOKENS = int(os.environ.get("KEYLANE_NPU_MAX_PROMPT_TOKENS", "4096"))
 
 # Characters per token, deliberately pessimistic. Prose runs nearer 4, but a
 # prompt full of punctuation, JSON and tool names runs far lower — the system

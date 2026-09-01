@@ -1333,72 +1333,98 @@ window.settings-window.style-dark popover {
   border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-popover.settings-dropdown-menu.style-dark,
-window.settings-window.style-dark popover.settings-dropdown-menu {
+/* The dropdown menu.
+   A popover is its own surface, so `window.settings-window.style-dark` does not
+   reach it; the window stamps style-dark / style-light onto each popover and
+   these rules key off that. The selectors below follow the real widget tree —
+   a box of buttons — which an earlier listbox/row markup left behind. */
+
+popover.settings-dropdown-menu.style-dark {
   background-color: #2a2a2c;
   color: #f4f4f5;
   border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
+/* The popover's pointer is a separate subnode and keeps the theme default
+   unless it is styled too — a white triangle over a dark menu. */
+popover.settings-dropdown-menu.style-dark > arrow {
+  background-color: #2a2a2c;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+popover.settings-dropdown-menu.style-dark > contents,
 popover.settings-dropdown-menu.style-dark scrolledwindow,
 popover.settings-dropdown-menu.style-dark viewport,
-popover.settings-dropdown-menu.style-dark listbox.settings-dropdown-list,
-window.settings-window.style-dark popover.settings-dropdown-menu scrolledwindow,
-window.settings-window.style-dark popover.settings-dropdown-menu viewport,
-window.settings-window.style-dark popover.settings-dropdown-menu listbox.settings-dropdown-list {
+popover.settings-dropdown-menu.style-dark .settings-dropdown-menu-box {
   background-color: #2a2a2c;
   color: #f4f4f5;
 }
 
-popover.settings-dropdown-menu.style-dark listbox.settings-dropdown-list row,
-window.settings-window.style-dark popover.settings-dropdown-menu listbox.settings-dropdown-list row {
-  background-color: transparent;
+popover.settings-dropdown-menu.style-dark button.settings-dropdown-option {
+  background-color: #2a2a2c;
+  background-image: none;
   color: #f4f4f5;
-  padding: 2px 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  min-height: 34px;
+  padding: 0 12px;
 }
 
-popover.settings-dropdown-menu.style-dark listbox.settings-dropdown-list row:hover,
-window.settings-window.style-dark popover.settings-dropdown-menu listbox.settings-dropdown-list row:hover {
-  background-color: rgba(255, 255, 255, 0.06);
-}
-
-popover.settings-dropdown-menu.style-dark listbox.settings-dropdown-list row.selected-default,
-window.settings-window.style-dark popover.settings-dropdown-menu listbox.settings-dropdown-list row.selected-default {
-  background-color: rgba(255, 255, 255, 0.1);
-}
-
-popover.settings-dropdown-menu.style-dark .settings-dropdown-item,
-window.settings-window.style-dark popover.settings-dropdown-menu .settings-dropdown-item {
+popover.settings-dropdown-menu.style-dark button.settings-dropdown-option label {
   color: #f4f4f5;
 }
 
-popover.settings-dropdown-menu.style-light,
-window.settings-window.style-light popover.settings-dropdown-menu {
+popover.settings-dropdown-menu.style-dark button.settings-dropdown-option:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+popover.settings-dropdown-menu.style-dark button.settings-dropdown-option.selected-default {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+popover.settings-dropdown-menu.style-light {
   background-color: #ffffff;
   color: #18181b;
   border: 1px solid rgba(0, 0, 0, 0.1);
 }
 
+popover.settings-dropdown-menu.style-light > arrow {
+  background-color: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+popover.settings-dropdown-menu.style-light > contents,
 popover.settings-dropdown-menu.style-light scrolledwindow,
 popover.settings-dropdown-menu.style-light viewport,
-popover.settings-dropdown-menu.style-light listbox.settings-dropdown-list,
-window.settings-window.style-light popover.settings-dropdown-menu scrolledwindow,
-window.settings-window.style-light popover.settings-dropdown-menu viewport,
-window.settings-window.style-light popover.settings-dropdown-menu listbox.settings-dropdown-list {
+popover.settings-dropdown-menu.style-light .settings-dropdown-menu-box {
   background-color: #ffffff;
   color: #18181b;
 }
 
-popover.settings-dropdown-menu.style-light listbox.settings-dropdown-list row,
-window.settings-window.style-light popover.settings-dropdown-menu listbox.settings-dropdown-list row {
-  background-color: transparent;
+popover.settings-dropdown-menu.style-light button.settings-dropdown-option {
+  background-color: #ffffff;
+  background-image: none;
+  color: #18181b;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+popover.settings-dropdown-menu.style-light button.settings-dropdown-option label {
   color: #18181b;
 }
 
-popover.settings-dropdown-menu.style-light .settings-dropdown-item,
-window.settings-window.style-light popover.settings-dropdown-menu .settings-dropdown-item {
-  color: #18181b;
+popover.settings-dropdown-menu.style-light button.settings-dropdown-option:hover {
+  background-color: rgba(0, 0, 0, 0.05);
 }
+
+popover.settings-dropdown-menu.style-light button.settings-dropdown-option.selected-default {
+  background-color: rgba(0, 0, 0, 0.08);
+}
+
 
 window.settings-window.style-dark popover listview row {
   background-color: transparent;

@@ -223,3 +223,56 @@ def test_the_composed_prompt_fits_an_npu_budget() -> None:
     # The non-negotiable parts are still there.
     assert "<tool_call>" in system
     assert "First line is the answer" in system
+
+
+# ── the tool index ───────────────────────────────────────────────────────
+
+
+def test_the_tool_index_bounds_each_description() -> None:
+    """Thirty full descriptions is most of an NPU pipeline's whole budget."""
+    from tools.registry import Tool, ToolRegistry
+
+    reg = ToolRegistry()
+    reg.register(
+        Tool(
+            name="verbose",
+            description="Do the thing. " + "And then a great deal more detail. " * 20,
+            parameters={"type": "object", "properties": {"a": {"type": "string"}}},
+            handler=lambda a: a,
+        )
+    )
+    line = reg.describe_for_prompt()
+    assert line.startswith("- verbose(a): Do the thing.")
+    assert len(line) < 200
+
+
+def test_a_short_description_is_left_alone() -> None:
+    from tools.registry import Tool, ToolRegistry
+
+    reg = ToolRegistry()
+    reg.register(
+        Tool(
+            name="recall",
+            description="Search saved memories.",
+            parameters={"type": "object", "properties": {}},
+            handler=lambda: "",
+        )
+    )
+    assert reg.describe_for_prompt() == "- recall(): Search saved memories."
+
+
+def test_a_long_first_sentence_is_truncated_not_kept_whole() -> None:
+    from tools.registry import ToolRegistry
+
+    summary = ToolRegistry._summarize("x" * 400)
+    assert len(summary) <= ToolRegistry.DESCRIPTION_CAP + 1
+    assert summary.endswith("…")
+
+
+def test_the_required_prompt_fits_a_modest_npu_pipeline() -> None:
+    """A user trading compile time for context must still get a usable prompt."""
+    from seams import build_context
+
+    required = build_context().prompt.assemble(budget_chars=1).system
+    assert len(required) / 2.8 < 2048
+    assert "<tool_call>" in required

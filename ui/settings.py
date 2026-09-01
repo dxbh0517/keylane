@@ -52,13 +52,12 @@ class SettingsWindow(Gtk.Window):
         self._block_save = False
         self._poll_id: int | None = None
         self._textview_provider: Gtk.CssProvider | None = None
-        self._dropdown_menu_provider: Gtk.CssProvider | None = None
         self._activating_model_id: str | None = None
         self._model_rows: dict[str, Gtk.ListBoxRow] = {}
         self._model_load_progress: str = ""
         self._default_model_ids: list[str] = []
         self._adapters: list[dict[str, Any]] = []
-        self._themed_dropdown_widgets: list[Gtk.Widget] = []
+        self._dropdown_popovers: list[Gtk.Popover] = []
         self._gpu_models: list[str] = []
         self._gpu_model_id: str = ""
         self._route_rows: dict[str, Gtk.Label] = {}
@@ -199,9 +198,9 @@ class SettingsWindow(Gtk.Window):
             widget.remove_css_class("style-dark")
             widget.add_css_class("style-dark" if dark else "style-light")
         self._apply_textview_theme()
-        self._apply_default_model_menu_theme()
-        popover = getattr(self, "_default_model_popover", None)
-        if popover is not None:
+        # Every dropdown popover is its own surface, so the window's own style
+        # class does not reach it — each is stamped directly.
+        for popover in self._dropdown_popovers:
             popover.remove_css_class("style-light")
             popover.remove_css_class("style-dark")
             popover.add_css_class("style-dark" if dark else "style-light")
@@ -210,93 +209,6 @@ class SettingsWindow(Gtk.Window):
 
     def _attach_css_provider(self, provider: Gtk.CssProvider, widget: Gtk.Widget) -> None:
         widget.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_USER)
-
-    def _apply_default_model_menu_theme(self) -> None:
-        if not hasattr(self, "_default_model_menu_box"):
-            return
-        dark = effective_prefers_dark()
-        if dark:
-            css = """
-popover.settings-dropdown-menu {
-  background-color: #2a2a2c;
-  color: #f4f4f5;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-}
-.settings-dropdown-menu-box,
-.settings-dropdown-scroll,
-.settings-dropdown-scroll viewport {
-  background-color: #2a2a2c;
-  color: #f4f4f5;
-}
-button.settings-dropdown-option {
-  background-color: #2a2a2c;
-  color: #f4f4f5;
-  border: none;
-  border-radius: 0;
-  min-height: 34px;
-  padding: 0 12px;
-  box-shadow: none;
-}
-button.settings-dropdown-option:hover {
-  background-color: rgba(255, 255, 255, 0.06);
-}
-button.settings-dropdown-option.selected-default {
-  background-color: rgba(255, 255, 255, 0.1);
-}
-button.settings-dropdown-option label {
-  color: #f4f4f5;
-}
-button.settings-dropdown-trigger {
-  background-color: #2a2a2c;
-  color: #f4f4f5;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
-  min-height: 36px;
-  padding: 0 12px;
-  box-shadow: none;
-}
-button.settings-dropdown-trigger:hover {
-  background-color: #323234;
-}
-button.settings-dropdown-trigger label {
-  color: #f4f4f5;
-}
-label.settings-dropdown-chevron {
-  color: #a1a1aa;
-}
-"""
-        else:
-            css = """
-popover.settings-dropdown-menu {
-  background-color: #ffffff;
-  color: #18181b;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-}
-.settings-dropdown-menu-box,
-.settings-dropdown-scroll,
-.settings-dropdown-scroll viewport {
-  background-color: #ffffff;
-  color: #18181b;
-}
-button.settings-dropdown-option {
-  background-color: #ffffff;
-  color: #18181b;
-  border: none;
-  border-radius: 0;
-  min-height: 34px;
-  padding: 0 12px;
-  box-shadow: none;
-}
-button.settings-dropdown-option label {
-  color: #18181b;
-}
-"""
-        if self._dropdown_menu_provider is None:
-            self._dropdown_menu_provider = Gtk.CssProvider()
-        for widget in self._themed_dropdown_widgets:
-            self._attach_css_provider(self._dropdown_menu_provider, widget)
-        self._themed_dropdown_widgets.clear()
-        self._dropdown_menu_provider.load_from_string(css)
 
     def _apply_textview_theme(self) -> None:
         if not hasattr(self, "_allowlist"):
@@ -446,7 +358,8 @@ button.settings-dropdown-option label {
         scroll.set_child(menu_box)
         popover.set_child(scroll)
 
-        self._themed_dropdown_widgets.extend([popover, menu_box, scroll])
+        self._dropdown_popovers.append(popover)
+        self._apply_theme()  # stamp the new popover before it is ever shown
         return trigger, label, popover, menu_box
 
     @staticmethod
@@ -679,32 +592,12 @@ button.settings-dropdown-option label {
             "Startup",
             "Which model the daemon loads automatically when it starts.",
         )
-        self._default_model_trigger = Gtk.Button()
-        self._default_model_trigger.add_css_class("settings-dropdown-trigger")
-        self._default_model_trigger.add_css_class("settings-control")
-        self._default_model_trigger.set_halign(Gtk.Align.FILL)
-        self._default_model_trigger.set_hexpand(True)
-        trigger_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self._default_model_label = Gtk.Label(label="—", xalign=0, hexpand=True)
-        chevron = Gtk.Label(label="▾", xalign=1)
-        chevron.add_css_class("settings-dropdown-chevron")
-        trigger_box.append(self._default_model_label)
-        trigger_box.append(chevron)
-        self._default_model_trigger.set_child(trigger_box)
-
-        self._default_model_popover = Gtk.Popover()
-        self._default_model_popover.add_css_class("settings-dropdown-menu")
-        self._default_model_popover.set_parent(self._default_model_trigger)
-        self._default_model_popover.connect("notify::visible", self._on_default_model_popover_visible)
-        self._default_model_trigger.connect("clicked", lambda *_: self._default_model_popover.popup())
-        menu_scroll = Gtk.ScrolledWindow()
-        menu_scroll.add_css_class("settings-dropdown-scroll")
-        menu_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        menu_scroll.set_max_content_height(280)
-        self._default_model_menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self._default_model_menu_box.add_css_class("settings-dropdown-menu-box")
-        menu_scroll.set_child(self._default_model_menu_box)
-        self._default_model_popover.set_child(menu_scroll)
+        (
+            self._default_model_trigger,
+            self._default_model_label,
+            self._default_model_popover,
+            self._default_model_menu_box,
+        ) = self._make_dropdown()
 
         self._field(
             startup,
@@ -712,8 +605,6 @@ button.settings-dropdown-option label {
             self._default_model_trigger,
             "Takes effect on the next daemon restart. Undownloaded models are skipped at startup.",
         )
-        self._dropdown_menu_provider = None
-        self._apply_default_model_menu_theme()
 
         section = self._section(
             page,
@@ -728,10 +619,6 @@ button.settings-dropdown-option label {
         section.append(self._model_list)
 
         self._build_routes(page)
-
-    def _on_default_model_popover_visible(self, popover: Gtk.Popover, _pspec: object) -> None:
-        if popover.get_visible():
-            self._apply_default_model_menu_theme()
 
     def _model_row_box(self, model: dict[str, Any]) -> Gtk.Box:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -1064,7 +951,6 @@ button.settings-dropdown-option label {
 
     def _on_gpu_menu_visible(self, popover: Gtk.Popover, _pspec: object) -> None:
         if popover.get_visible():
-            self._apply_default_model_menu_theme()
             self._load_gpu_models()
 
     def _set_gpu_model(self, model_id: str) -> None:
