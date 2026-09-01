@@ -88,4 +88,4 @@ request — that just adds a round trip."""
 
 
 def register_subagent_sections(prompt: Any) -> None:
-    prompt.section("subagent", SUBAGENT_GUIDANCE)
+    prompt.section("subagent", SUBAGENT_GUIDANCE, required=False)

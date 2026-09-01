@@ -146,4 +146,4 @@ check finds nothing worth reporting, stay quiet."""
 
 
 def register_scheduler_sections(prompt: Any) -> None:
-    prompt.section("schedule", SCHEDULE_GUIDANCE)
+    prompt.section("schedule", SCHEDULE_GUIDANCE, required=False)

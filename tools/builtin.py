@@ -383,10 +383,10 @@ of them. Neither replaces answering the question."""
 
 def register_builtin_sections(prompt: Any) -> None:
     """Contribute the builtin capabilities' prompt guidance."""
-    prompt.section("memory", MEMORY_GUIDANCE)
-    prompt.section("skills", SKILL_GUIDANCE)
-    prompt.section("shell", SHELL_GUIDANCE)
-    prompt.section("mcp", NOTIFY_GUIDANCE)
+    prompt.section("memory", MEMORY_GUIDANCE, required=False)
+    prompt.section("skills", SKILL_GUIDANCE, required=False)
+    prompt.section("shell", SHELL_GUIDANCE, required=False)
+    prompt.section("mcp", NOTIFY_GUIDANCE, required=False)
 
     from research.tools import register_research_sections
     from tools.ask_user import register_ask_user_sections

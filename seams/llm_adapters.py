@@ -41,6 +41,11 @@ class NpuAdapter:
             "progress": state.get("progress"),
         }
 
+    @property
+    def prompt_budget_chars(self) -> int:
+        """The prompt length compiled into the current pipeline."""
+        return self._runtime._prompt_budget_chars()  # noqa: SLF001
+
     def generate(self, prompt: str, **kwargs: Any) -> str:
         return self._runtime.generate(prompt, **kwargs)
 

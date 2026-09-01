@@ -148,10 +148,13 @@ def assemble_for_turn(
     prompt: SystemPrompt | None = None,
     *,
     extra_contexts: list[str] | None = None,
+    budget_chars: int = 0,
 ) -> Assembly:
     from seams import get_context
 
-    return (prompt or get_context().prompt).assemble(extra_contexts=extra_contexts)
+    return (prompt or get_context().prompt).assemble(
+        extra_contexts=extra_contexts, budget_chars=budget_chars
+    )
 
 
 def build_system_prompt(

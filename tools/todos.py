@@ -142,5 +142,5 @@ that is a single step."""
 
 
 def register_todo_sections(prompt: Any) -> None:
-    prompt.section("todo", TODO_GUIDANCE)
+    prompt.section("todo", TODO_GUIDANCE, required=False)
     prompt.context("todos", render_todos)
