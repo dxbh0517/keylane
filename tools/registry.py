@@ -197,13 +197,31 @@ class ToolRegistry:
             for t in self.visible().values()
         ]
 
+    # A tool's full description can run to a paragraph. Thirty of those is most
+    # of an NPU pipeline's whole prompt budget, and the budget is compiled into
+    # the pipeline, so it costs compile time and VRAM as well as context. The
+    # list is an index: the lead sentence says what the tool is for, and the
+    # nuance lives in the capability guidance section, which assembly can drop
+    # under pressure. The full text still reaches the model when it matters.
+    DESCRIPTION_CAP = 170
+
+    @classmethod
+    def _summarize(cls, description: str) -> str:
+        text = " ".join(description.split())
+        if len(text) <= cls.DESCRIPTION_CAP:
+            return text
+        lead, sep, _ = text.partition(". ")
+        if sep and len(lead) <= cls.DESCRIPTION_CAP:
+            return f"{lead}."
+        return text[: cls.DESCRIPTION_CAP].rstrip() + "…"
+
     def describe_for_prompt(self) -> str:
-        """Compact tool list for NPU context limits (~1024 tokens)."""
+        """Compact tool index, bounded so it cannot crowd out the prompt."""
         lines = []
         for t in self.visible().values():
             props = t.parameters.get("properties", {})
             keys = ", ".join(props.keys()) if props else ""
-            lines.append(f"- {t.name}({keys}): {t.description}")
+            lines.append(f"- {t.name}({keys}): {self._summarize(t.description)}")
         return "\n".join(lines)
 
     # ── execution ────────────────────────────────────────────────────────
