@@ -57,6 +57,8 @@ class SettingsWindow(Gtk.Window):
         self._model_rows: dict[str, Gtk.ListBoxRow] = {}
         self._model_load_progress: str = ""
         self._default_model_ids: list[str] = []
+        self._adapters: list[dict[str, Any]] = []
+        self._route_rows: dict[str, Gtk.Label] = {}
 
         shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         shell.add_css_class("settings-shell")
@@ -164,7 +166,7 @@ class SettingsWindow(Gtk.Window):
     def _apply_theme(self) -> None:
         apply_scheme_classes(self)
         dark = effective_prefers_dark()
-        for widget in (getattr(self, "_allowlist", None),):
+        for widget in (getattr(self, "_allowlist", None), getattr(self, "_read_roots", None)):
             if widget is None:
                 continue
             widget.remove_css_class("style-light")
@@ -308,10 +310,12 @@ label.settings-dropdown-chevron {
             )
         if self._textview_provider is None:
             self._textview_provider = Gtk.CssProvider()
-            self._allowlist.get_style_context().add_provider(
-                self._textview_provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_USER,
-            )
+            for view in (self._allowlist, getattr(self, "_read_roots", None)):
+                if view is not None:
+                    view.get_style_context().add_provider(
+                        self._textview_provider,
+                        Gtk.STYLE_PROVIDER_PRIORITY_USER,
+                    )
         self._textview_provider.load_from_string(css)
 
     def _toast(self, message: str) -> None:
@@ -348,6 +352,7 @@ label.settings-dropdown-chevron {
             self._stack.set_visible_child_name(page_id)
             if page_id == "model":
                 self._load_models()
+                self._load_routes()
             elif page_id == "skills_tools":
                 self._load_skills_tools()
             elif page_id == "mcp":
@@ -460,6 +465,21 @@ label.settings-dropdown-chevron {
             "Iteration budget",
             self._budget_spin,
             "Maximum tool/reasoning steps per request.",
+        )
+
+        self._auto_learn = Gtk.CheckButton(label="Let Keylane propose reusable skills")
+        self._auto_learn.connect(
+            "toggled",
+            lambda *_: self._patch(
+                "assistant", {"auto_learn_skills": self._auto_learn.get_active()}
+            ),
+        )
+        self._field(
+            section,
+            "Learn from tasks",
+            self._auto_learn,
+            "After a multi-step task, Keylane may offer to save what it did as a "
+            "skill. It always asks before writing the file. Off by default.",
         )
 
         appearance = self._section(
@@ -630,6 +650,8 @@ label.settings-dropdown-chevron {
         self._model_list.set_selection_mode(Gtk.SelectionMode.NONE)
         self._model_list.set_can_focus(False)
         section.append(self._model_list)
+
+        self._build_routes(page)
 
     def _on_default_model_popover_visible(self, popover: Gtk.Popover, _pspec: object) -> None:
         if popover.get_visible():
@@ -893,6 +915,103 @@ label.settings-dropdown-chevron {
         elif self._activating_model_id:
             self._refresh_model_ui()
 
+    def _build_routes(self, page: Gtk.Box) -> None:
+        """Model routing: which model serves which kind of work."""
+        section = self._section(
+            page,
+            "Model routing",
+            "Keylane picks a model by what the work is, not by name. The spotlight "
+            "answer stays on the NPU; longer work can go to a larger model.",
+        )
+
+        self._route_rows: dict[str, Gtk.Label] = {}
+        for route, blurb in (
+            ("interactive", "The answer you are waiting for"),
+            ("background", "Subagents, scheduled work, research synthesis"),
+            ("utility", "Query planning and URL selection"),
+        ):
+            value = Gtk.Label(label="—", xalign=1)
+            value.add_css_class("settings-field-hint")
+            self._route_rows[route] = value
+            self._field(section, route.capitalize(), value, blurb)
+
+        gpu = self._section(
+            page,
+            "Larger model (optional)",
+            "Any server speaking the OpenAI chat-completions API — LM Studio, "
+            "llama.cpp, Ollama, vLLM. Once enabled it takes the background work "
+            "and leaves the NPU free for the spotlight.",
+        )
+
+        self._gpu_enabled = Gtk.CheckButton(label="Use a larger model for background work")
+        self._gpu_enabled.connect("toggled", lambda *_: self._save_gpu_adapter())
+        self._field(gpu, "Enabled", self._gpu_enabled)
+
+        self._gpu_url = Gtk.Entry()
+        self._gpu_url.set_placeholder_text("http://127.0.0.1:1234/v1")
+        self._gpu_url.add_css_class("settings-entry")
+        self._gpu_url.connect("changed", lambda *_: self._save_gpu_adapter())
+        self._field(gpu, "Server URL", self._gpu_url, "The API base, ending in /v1.")
+
+        self._gpu_model = Gtk.Entry()
+        self._gpu_model.set_placeholder_text("qwen2.5-14b-instruct")
+        self._gpu_model.add_css_class("settings-entry")
+        self._gpu_model.connect("changed", lambda *_: self._save_gpu_adapter())
+        self._field(gpu, "Model name", self._gpu_model, "Exactly as the server reports it.")
+
+        test = Gtk.Button(label="Test connection")
+        test.add_css_class("settings-button")
+        test.connect("clicked", self._test_gpu_model)
+        self._field(gpu, "", test)
+
+    def _save_gpu_adapter(self) -> None:
+        if self._block_save:
+            return
+        # The whole adapter list is replaced, so any other adapters are carried
+        # through unchanged rather than dropped by a partial write.
+        adapters = [a for a in self._adapters if a.get("id") != "gpu"]
+        adapters.append(
+            {
+                "id": "gpu",
+                "kind": "openai",
+                "base_url": self._gpu_url.get_text().strip(),
+                "model": self._gpu_model.get_text().strip(),
+                "enabled": self._gpu_enabled.get_active(),
+            }
+        )
+        self._adapters = adapters
+        self._patch("models", {"adapters": adapters})
+
+    def _test_gpu_model(self, *_args) -> None:
+        base = self._gpu_url.get_text().strip().rstrip("/")
+        if not base:
+            self._toast("Set a server URL first")
+            return
+        try:
+            resp = httpx.get(f"{base}/models", timeout=10)
+            resp.raise_for_status()
+            names = [m.get("id", "?") for m in resp.json().get("data", [])]
+        except Exception as exc:  # noqa: BLE001
+            self._toast(f"Cannot reach {base}: {exc}"[:72])
+            return
+        wanted = self._gpu_model.get_text().strip()
+        if wanted and wanted not in names:
+            self._toast(f"Reachable, but {wanted!r} is not served there")
+        else:
+            self._toast(f"OK — {len(names)} model(s) available")
+
+    def _load_routes(self) -> None:
+        try:
+            health = httpx.get(f"{DAEMON}/settings/health", timeout=8).json()
+        except Exception:  # noqa: BLE001
+            return
+        routes = health.get("models", {}).get("routes", {})
+        for route, label in self._route_rows.items():
+            info = routes.get(route, {})
+            resolved = info.get("resolved")
+            preference = " → ".join(info.get("preference", []))
+            label.set_text(resolved or f"none ready ({preference})")
+
     def _build_web(self) -> None:
         page = self._page("web")
         section = self._section(
@@ -1001,7 +1120,10 @@ label.settings-dropdown-chevron {
         skills_section = self._section(
             page,
             "Skills",
-            "Reusable agent instructions stored in data/skills/.",
+            "Reusable instructions loaded only when a task needs them. Kept in "
+            "data/skills/, .keylane/skills/ in a project, or the bundled skills/ "
+            "folder — a <name>/SKILL.md bundle or a flat <name>.md. Type /name in "
+            "the spotlight bar to apply one directly.",
         )
         self._skills_list = Gtk.ListBox()
         self._skills_list.add_css_class("settings-item-list")
@@ -1011,7 +1133,8 @@ label.settings-dropdown-chevron {
         tools_section = self._section(
             page,
             "Tools",
-            "Built-in and MCP tools available to the agent.",
+            "Built-in and MCP tools available to the agent. Ones marked "
+            "\u201cAsks first\u201d prompt for permission before they run.",
         )
         self._tools_list = Gtk.ListBox()
         self._tools_list.add_css_class("settings-item-list")
@@ -1049,11 +1172,38 @@ label.settings-dropdown-chevron {
         row = Gtk.ListBoxRow()
         row.add_css_class("settings-item-row")
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        title = Gtk.Label(label=skill.get("name") or skill.get("id", "?"), xalign=0)
+
+        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        name = skill.get("name") or skill.get("id", "?")
+        title = Gtk.Label(label=name, xalign=0, hexpand=True)
         title.add_css_class("settings-item-title")
-        box.append(title)
+        top.append(title)
+        top.append(self._badge(str(skill.get("source", "user")), "muted"))
+
+        model_ok = skill.get("model_invocable", True)
+        user_ok = skill.get("user_invocable", True)
+        if not model_ok and not user_ok:
+            top.append(self._badge("Off", "warn"))
+        elif not model_ok:
+            # Reachable only by typing /name — worth saying, since it will never
+            # appear in the model's catalog.
+            top.append(self._badge(f"/{name} only", "muted"))
+        elif not user_ok:
+            top.append(self._badge("Model only", "muted"))
+        box.append(top)
+
         desc = skill.get("description") or "No description"
         box.append(Gtk.Label(label=desc, xalign=0, wrap=True, css_classes=["settings-field-hint"]))
+        when = skill.get("when_to_use")
+        if when:
+            box.append(
+                Gtk.Label(
+                    label=f"Use when: {when}",
+                    xalign=0,
+                    wrap=True,
+                    css_classes=["settings-field-hint"],
+                )
+            )
         row.set_child(box)
         return row
 
@@ -1067,8 +1217,10 @@ label.settings-dropdown-chevron {
         top.append(title)
         source = tool.get("source", "builtin")
         top.append(self._badge(source, "muted"))
-        if tool.get("dangerous"):
-            top.append(self._badge("Dangerous", "warn"))
+        if tool.get("gated"):
+            # What actually matters to the user: this one goes through the
+            # permission gate, whatever its dangerous flag says.
+            top.append(self._badge("Asks first", "warn"))
         box.append(top)
         box.append(
             Gtk.Label(
@@ -1106,6 +1258,27 @@ label.settings-dropdown-chevron {
             "One command per line. Only listed commands may run when shell is restricted.",
         )
         self._allowlist.get_buffer().connect("changed", lambda *_: self._save_allowlist())
+
+        self._read_roots = Gtk.TextView()
+        self._read_roots.add_css_class("settings-textview")
+        self._read_roots.set_size_request(-1, 90)
+        self._read_roots.set_left_margin(12)
+        self._read_roots.set_right_margin(12)
+        self._read_roots.set_top_margin(10)
+        self._read_roots.set_bottom_margin(10)
+        roots_scroll = Gtk.ScrolledWindow()
+        roots_scroll.add_css_class("settings-text-scroll")
+        roots_scroll.set_child(self._read_roots)
+        self._field(
+            section,
+            "Readable directories",
+            roots_scroll,
+            "One path per line; ~ is expanded. Every file argument a shell command "
+            "is given must resolve inside one of these. Leave empty for the Keylane "
+            "install directory only — an allowlist of command names alone lets `cat` "
+            "read anything on disk.",
+        )
+        self._read_roots.get_buffer().connect("changed", lambda *_: self._save_read_roots())
 
         perm_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         perm_box.add_css_class("settings-segmented")
@@ -1275,14 +1448,21 @@ label.settings-dropdown-chevron {
 
         threading.Thread(target=_work, daemon=True).start()
 
+    @staticmethod
+    def _lines(view: Gtk.TextView) -> list[str]:
+        buf = view.get_buffer()
+        start, end = buf.get_bounds()
+        return [ln.strip() for ln in buf.get_text(start, end, False).splitlines() if ln.strip()]
+
     def _save_allowlist(self) -> None:
         if self._block_save:
             return
-        buf = self._allowlist.get_buffer()
-        start, end = buf.get_bounds()
-        text = buf.get_text(start, end, False)
-        commands = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        self._patch("security", {"shell_allowlist": commands})
+        self._patch("security", {"shell_allowlist": self._lines(self._allowlist)})
+
+    def _save_read_roots(self) -> None:
+        if self._block_save:
+            return
+        self._patch("security", {"shell_read_roots": self._lines(self._read_roots)})
 
     def _test_searx(self, *_args) -> None:
         try:
@@ -1318,6 +1498,7 @@ label.settings-dropdown-chevron {
         self._name_entry.set_text(str(assistant.get("name", "Keylane")))
         self._user_name_entry.set_text(str(assistant.get("user_name", "") or ""))
         self._budget_spin.set_value(int(assistant.get("iteration_budget", 12)))
+        self._auto_learn.set_active(bool(assistant.get("auto_learn_skills", False)))
 
         ui = data.get("ui", {})
         theme = str(ui.get("theme", "system"))
@@ -1343,6 +1524,15 @@ label.settings-dropdown-chevron {
         security = data.get("security", {})
         allowlist = security.get("shell_allowlist", [])
         self._allowlist.get_buffer().set_text("\n".join(allowlist))
+        roots = security.get("shell_read_roots", []) or []
+        self._read_roots.get_buffer().set_text("\n".join(str(r) for r in roots))
+
+        models_cfg = data.get("models", {})
+        self._adapters = list(models_cfg.get("adapters", []) or [])
+        gpu = next((a for a in self._adapters if a.get("id") == "gpu"), {})
+        self._gpu_enabled.set_active(bool(gpu.get("enabled", False)))
+        self._gpu_url.set_text(str(gpu.get("base_url", "") or ""))
+        self._gpu_model.set_text(str(gpu.get("model", "") or ""))
 
         perms = data.get("permissions", {})
         modes = ["auto", "ask", "deny"]
@@ -1355,4 +1545,5 @@ label.settings-dropdown-chevron {
         self._block_save = False
         self._apply_theme()
         self._load_models()
+        self._load_routes()
         self._load_mcp_servers()
