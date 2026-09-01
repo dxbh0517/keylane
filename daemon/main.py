@@ -196,20 +196,22 @@ def list_skills_route() -> dict[str, Any]:
 
 @app.get("/tools")
 def list_tools_route() -> dict[str, Any]:
-    from tools.registry import get_registry
+    from seams import get_context
+    from tools.registry import ALWAYS_GATED, get_registry
 
-    reg = get_registry()
-    if not reg._tools:  # noqa: SLF001
-        from tools.builtin import register_builtin_tools
-
-        register_builtin_tools()
+    get_context()  # composes the registry if this is the first read
     tools = []
-    for tool in reg._tools.values():  # noqa: SLF001
+    for tool in get_registry().visible().values():
         tools.append(
             {
                 "name": tool.name,
                 "description": tool.description,
                 "dangerous": tool.dangerous,
+                # Whether this tool goes through the permission gate at all —
+                # the mode of an ungated tool is not consulted.
+                "gated": tool.dangerous or tool.name in ALWAYS_GATED,
+                "timeout_ms": tool.timeout_ms,
+                "concurrency_safe": tool.concurrency_safe,
                 "source": "mcp" if tool.name.startswith("mcp.") else "builtin",
             }
         )
