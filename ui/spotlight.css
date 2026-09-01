@@ -1055,7 +1055,7 @@ window.settings-window.style-dark .settings-status-line {
 
 .settings-entry,
 .settings-spin,
-.settings-dropdown {
+.settings-dropdown-trigger {
   min-height: 36px;
   border-radius: 8px;
   padding: 0 12px;
@@ -1065,7 +1065,7 @@ window.settings-window.style-dark .settings-status-line {
 
 window.settings-window.style-light .settings-entry,
 window.settings-window.style-light .settings-spin,
-window.settings-window.style-light .settings-dropdown {
+window.settings-window.style-light button.settings-dropdown-trigger {
   background: #ffffff;
   color: #18181b;
   border: 1px solid rgba(0, 0, 0, 0.1);
@@ -1074,7 +1074,7 @@ window.settings-window.style-light .settings-dropdown {
 
 window.settings-window.style-dark .settings-entry,
 window.settings-window.style-dark .settings-spin,
-window.settings-window.style-dark .settings-dropdown {
+window.settings-window.style-dark button.settings-dropdown-trigger {
   background: rgba(255, 255, 255, 0.06);
   color: #f4f4f5;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -1095,6 +1095,50 @@ window.settings-window.style-dark .settings-entry:focus-within,
 window.settings-window.style-dark .settings-spin:focus-within {
   border-color: rgba(255, 255, 255, 0.22);
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+}
+
+button.settings-dropdown-trigger {
+  background-image: none;
+  box-shadow: none;
+  text-shadow: none;
+}
+
+window.settings-window.style-light button.settings-dropdown-trigger:hover {
+  background: #f4f4f5;
+}
+
+window.settings-window.style-dark button.settings-dropdown-trigger:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+window.settings-window.style-light button.settings-dropdown-trigger:focus-visible {
+  outline: none;
+  border-color: rgba(0, 0, 0, 0.22);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.06);
+}
+
+window.settings-window.style-dark button.settings-dropdown-trigger:focus-visible {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+}
+
+/* The label and chevron inherit from the button, so they follow the theme
+   rather than the window's default text colour. */
+window.settings-window.style-light button.settings-dropdown-trigger label {
+  color: #18181b;
+}
+
+window.settings-window.style-dark button.settings-dropdown-trigger label {
+  color: #f4f4f5;
+}
+
+window.settings-window.style-light .settings-dropdown-chevron {
+  color: rgba(0, 0, 0, 0.45);
+}
+
+window.settings-window.style-dark .settings-dropdown-chevron {
+  color: rgba(255, 255, 255, 0.5);
 }
 
 .settings-text-scroll {

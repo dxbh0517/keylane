@@ -406,6 +406,30 @@ label.settings-dropdown-chevron {
 
         section.append(row)
 
+    def _status_row(self, section: Gtk.Box, label: str, value: Gtk.Label, hint: str = "") -> None:
+        """A read-only row: name on the left, current value on the right.
+
+        `_field` stacks its widget under the label, which reads as an orphaned
+        value when the widget is just text rather than a control.
+        """
+        row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        row.add_css_class("settings-field")
+
+        line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        lbl = Gtk.Label(label=label, xalign=0, hexpand=True)
+        lbl.add_css_class("settings-field-label")
+        line.append(lbl)
+        value.set_xalign(1)
+        line.append(value)
+        row.append(line)
+
+        if hint:
+            hint_lbl = Gtk.Label(label=hint, xalign=0, wrap=True)
+            hint_lbl.add_css_class("settings-field-hint")
+            row.append(hint_lbl)
+
+        section.append(row)
+
     def _secondary_btn(self, label: str) -> Gtk.Button:
         btn = Gtk.Button(label=label)
         btn.add_css_class("settings-btn-secondary")
@@ -468,6 +492,7 @@ label.settings-dropdown-chevron {
         )
 
         self._auto_learn = Gtk.CheckButton(label="Let Keylane propose reusable skills")
+        self._auto_learn.add_css_class("settings-check")
         self._auto_learn.connect(
             "toggled",
             lambda *_: self._patch(
@@ -931,9 +956,9 @@ label.settings-dropdown-chevron {
             ("utility", "Query planning and URL selection"),
         ):
             value = Gtk.Label(label="—", xalign=1)
-            value.add_css_class("settings-field-hint")
+            value.add_css_class("settings-item-title")
             self._route_rows[route] = value
-            self._field(section, route.capitalize(), value, blurb)
+            self._status_row(section, route.capitalize(), value, blurb)
 
         gpu = self._section(
             page,
@@ -944,6 +969,7 @@ label.settings-dropdown-chevron {
         )
 
         self._gpu_enabled = Gtk.CheckButton(label="Use a larger model for background work")
+        self._gpu_enabled.add_css_class("settings-check")
         self._gpu_enabled.connect("toggled", lambda *_: self._save_gpu_adapter())
         self._field(gpu, "Enabled", self._gpu_enabled)
 
@@ -959,8 +985,7 @@ label.settings-dropdown-chevron {
         self._gpu_model.connect("changed", lambda *_: self._save_gpu_adapter())
         self._field(gpu, "Model name", self._gpu_model, "Exactly as the server reports it.")
 
-        test = Gtk.Button(label="Test connection")
-        test.add_css_class("settings-button")
+        test = self._secondary_btn("Test connection")
         test.connect("clicked", self._test_gpu_model)
         self._field(gpu, "", test)
 
@@ -1273,10 +1298,8 @@ label.settings-dropdown-chevron {
             section,
             "Readable directories",
             roots_scroll,
-            "One path per line; ~ is expanded. Every file argument a shell command "
-            "is given must resolve inside one of these. Leave empty for the Keylane "
-            "install directory only — an allowlist of command names alone lets `cat` "
-            "read anything on disk.",
+            "One path per line; ~ is expanded. Shell commands may only read files "
+            "inside these. Empty means the Keylane install directory only.",
         )
         self._read_roots.get_buffer().connect("changed", lambda *_: self._save_read_roots())
 
