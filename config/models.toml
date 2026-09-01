@@ -28,7 +28,7 @@ id = "qwen3.5-9b"
 name = "Qwen 3.5 9B"
 hf_repo = "OpenVINO/Qwen3.5-9B-int4-ov"
 params_b = 9
-description = "Larger model; needs OpenVINO 2026.2+."
+description = "Multimodal VLM (text-only in Keylane). First NPU compile can take 60–90+ minutes."
 
 [[models]]
 id = "gemma-2-9b-it"
@@ -36,3 +36,26 @@ name = "Gemma 2 9B Instruct"
 hf_repo = "OpenVINO/gemma-2-9b-it-int4-ov"
 params_b = 9
 description = "Google Gemma 2 instruction-tuned."
+
+# ── Model routing ────────────────────────────────────────────────────────
+# Call sites ask for a purpose, not a model. Each route lists the adapters to
+# try in order; the first available one serves the request. The order is
+# declared here so resolution never depends on which adapter registered first.
+[routes]
+# The HUD is waiting on this one — keep it on the NPU.
+interactive = ["npu"]
+# Subagents, compaction, scheduled work: quality matters more than latency.
+background = ["gpu", "npu"]
+# Query planning, URL selection, titles: short, frequent, disposable.
+utility = ["npu", "gpu"]
+
+# A larger model served over the OpenAI chat-completions API — LM Studio,
+# llama.cpp's server, Ollama and vLLM all speak it. Set `model`, flip
+# `enabled`, and the background route starts using it.
+[[adapters]]
+id = "gpu"
+kind = "openai"
+base_url = "http://127.0.0.1:1234/v1"
+model = ""
+enabled = false
+timeout_seconds = 180

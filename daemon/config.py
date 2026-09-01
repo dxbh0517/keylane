@@ -19,7 +19,7 @@ _lock = threading.RLock()
 
 # Sections users may override via PATCH /settings
 ALLOWED_SECTIONS = frozenset(
-    {"assistant", "notify", "speech", "security", "research", "permissions", "mcp", "ui"}
+    {"assistant", "notify", "speech", "security", "research", "permissions", "mcp", "ui", "models"}
 )
 
 
@@ -58,6 +58,7 @@ def _save_overrides(data: dict[str, Any]) -> None:
 def _defaults() -> dict[str, Any]:
     assistant = load_toml("assistant.toml")
     research_raw = load_toml("research.toml")
+    models_raw = load_toml("models.toml")
     return {
         "assistant": assistant.get("assistant", {}),
         "notify": assistant.get("notify", {}),
@@ -76,11 +77,20 @@ def _defaults() -> dict[str, Any]:
             "shell": "ask",
             "memory_write": "ask",
             "schedule_task": "ask",
+            "watch_create": "ask",
+            "remember": "auto",
+            "remind_me": "auto",
             "run_background": "auto",
             "default": "auto",
         },
         "mcp": {"disabled_tools": [], "servers": []},
         "ui": {"theme": "system"},
+        "models": {
+            "default": models_raw.get("default", ""),
+            "device": models_raw.get("device", "NPU"),
+            "routes": models_raw.get("routes", {}),
+            "adapters": models_raw.get("adapters", []),
+        },
     }
 
 
@@ -138,6 +148,11 @@ def research_settings() -> dict[str, Any]:
     return get_section("research")
 
 
+def model_settings() -> dict[str, Any]:
+    """Model routes and adapters, merged over config/models.toml."""
+    return get_section("models")
+
+
 def _config_mcp_servers() -> list[dict[str, Any]]:
     return [dict(s, source="config") for s in load_toml("mcp.toml").get("servers", [])]
 
@@ -160,18 +175,32 @@ def list_mcp_servers() -> list[dict[str, Any]]:
 
 
 def add_mcp_server(server: dict[str, Any]) -> list[dict[str, Any]]:
+    """Persist a user MCP server. stdio needs a command, http needs a url."""
     sid = str(server.get("id", "")).strip()
     command = str(server.get("command", "")).strip()
-    if not sid or not command:
-        raise ValueError("id and command are required")
-    entry = {
-        "id": sid,
-        "transport": str(server.get("transport", "stdio")),
-        "command": command,
-        "args": list(server.get("args", [])),
-    }
-    if server.get("env"):
-        entry["env"] = dict(server["env"])
+    url = str(server.get("url", "")).strip()
+    transport = str(server.get("transport", "")).strip().lower()
+    if not transport:
+        transport = "http" if url else "stdio"
+    if not sid:
+        raise ValueError("id is required")
+
+    entry: dict[str, Any] = {"id": sid, "transport": transport}
+    if transport in {"http", "streamable-http", "sse"}:
+        if not url:
+            raise ValueError("url is required for http transport")
+        entry["url"] = url
+        if server.get("auth_header"):
+            entry["auth_header"] = str(server["auth_header"])
+        if server.get("headers"):
+            entry["headers"] = {str(k): str(v) for k, v in server["headers"].items()}
+    else:
+        if not command:
+            raise ValueError("command is required for stdio transport")
+        entry["command"] = command
+        entry["args"] = list(server.get("args", []))
+        if server.get("env"):
+            entry["env"] = dict(server["env"])
     with _lock:
         overrides = _load_overrides()
         mcp = overrides.get("mcp", {})

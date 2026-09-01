@@ -8,6 +8,7 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Any
 
+import base64
 import json
 
 from fastapi import FastAPI, HTTPException
@@ -19,8 +20,9 @@ from agent.loop import AIAgent
 from daemon.config import add_mcp_server, all_settings, list_mcp_servers, remove_mcp_server, reset_settings, save_settings
 from daemon.health import settings_health
 from daemon.paths import ensure_data_dirs
-from models.catalog import get_model, get_runtime, load_catalog
-from scheduler.jobs import get_scheduler
+from models.catalog import default_model_id, get_model, get_runtime, load_catalog
+from npu.kind import model_kind
+from scheduler.jobs import get_scheduler, restore_scheduled_tasks
 
 logger = logging.getLogger(__name__)
 HOST = "127.0.0.1"
@@ -30,6 +32,7 @@ PORT = 9100
 class ChatRequest(BaseModel):
     message: str
     session_id: str | None = None
+    images: list[str] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
@@ -44,10 +47,15 @@ class ModelSelectRequest(BaseModel):
 
 class McpServerRequest(BaseModel):
     id: str
-    command: str
+    transport: str = ""
+    # stdio
+    command: str = ""
     args: list[str] = Field(default_factory=list)
-    transport: str = "stdio"
     env: dict[str, str] | None = None
+    # streamable http
+    url: str = ""
+    auth_header: str = ""
+    headers: dict[str, str] | None = None
 
 
 class SettingsPatchRequest(BaseModel):
@@ -68,8 +76,12 @@ class PermissionRespondRequest(BaseModel):
 async def lifespan(app: FastAPI):
     ensure_data_dirs()
     get_scheduler()
+    try:
+        restore_scheduled_tasks()
+    except Exception:  # noqa: BLE001
+        logger.exception("could not restore scheduled tasks")
     from tools.builtin import register_builtin_tools
-    from mcp.client import load_mcp_tools
+    from mcpbridge.client import load_mcp_tools
     from tools.registry import get_registry
 
     register_builtin_tools()
@@ -78,18 +90,25 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         logger.exception("MCP tool load failed")
 
-    default_id, _, _ = load_catalog()
+    default_id = default_model_id()
     runtime = get_runtime()
 
     def _warm() -> None:
         try:
+            entry = get_model(default_id)
+            if entry is None:
+                logger.warning("Default model %s is unknown — skipping warm-up", default_id)
+                return
+            if not entry.is_downloaded():
+                logger.info("Default model %s not downloaded — skipping warm-up", default_id)
+                return
             runtime.load(default_id, progress=lambda m: logger.info("npu: %s", m))
         except Exception:  # noqa: BLE001
             logger.exception("NPU warm-up failed")
 
     threading.Thread(target=_warm, daemon=True).start()
     yield
-    from mcp.client import shutdown_mcp
+    from mcpbridge.client import shutdown_mcp
 
     await shutdown_mcp()
 
@@ -114,8 +133,10 @@ def list_models() -> dict[str, Any]:
     runtime = get_runtime()
     downloads = runtime.download_status()
     active = runtime.status.get("model_id")
+    startup_default = default_model_id()
     return {
-        "default": default,
+        "default": startup_default,
+        "catalog_default": default,
         "device": device,
         "active": active,
         "models": [
@@ -125,10 +146,12 @@ def list_models() -> dict[str, Any]:
                 "description": e.description,
                 "params_b": e.params_b,
                 "hf_repo": e.hf_repo,
+                "pipeline": model_kind(e.local_path) if e.local_path.is_dir() else "llm",
                 "downloaded": e.is_downloaded(),
                 "downloading": downloads.get(e.id, {}).get("downloading", False),
                 "download_progress": downloads.get(e.id, {}).get("progress", ""),
                 "download_percent": downloads.get(e.id, {}).get("percent"),
+                "download_file": downloads.get(e.id, {}).get("file", ""),
                 "download_error": downloads.get(e.id, {}).get("error", ""),
                 "active": e.id == active,
             }
@@ -153,9 +176,22 @@ def download_model_route(body: ModelSelectRequest) -> dict[str, Any]:
 
 @app.get("/skills")
 def list_skills_route() -> dict[str, Any]:
-    from memory.store import list_skills
+    from seams import get_context
 
-    return {"skills": list_skills()}
+    return {
+        "skills": [
+            {
+                "id": s.name,
+                "name": s.name,
+                "description": s.description,
+                "when_to_use": s.when_to_use,
+                "source": s.source,
+                "model_invocable": s.invocation.model_invocable,
+                "user_invocable": s.invocation.user_invocable,
+            }
+            for s in get_context().skills.list()
+        ]
+    }
 
 
 @app.get("/tools")
@@ -198,10 +234,11 @@ async def mcp_servers_route() -> dict[str, Any]:
 @app.post("/mcp/servers")
 async def mcp_add_server(body: McpServerRequest) -> dict[str, Any]:
     try:
-        servers = add_mcp_server(body.model_dump(exclude_none=True))
+        payload = {k: v for k, v in body.model_dump(exclude_none=True).items() if v != ""}
+        servers = add_mcp_server(payload)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    from mcp.client import reload_mcp_tools
+    from mcpbridge.client import reload_mcp_tools
     from tools.builtin import register_builtin_tools
     from tools.registry import get_registry
 
@@ -213,7 +250,7 @@ async def mcp_add_server(body: McpServerRequest) -> dict[str, Any]:
 @app.delete("/mcp/servers/{server_id}")
 async def mcp_remove_server(server_id: str) -> dict[str, Any]:
     servers = remove_mcp_server(server_id)
-    from mcp.client import reload_mcp_tools
+    from mcpbridge.client import reload_mcp_tools
     from tools.builtin import register_builtin_tools
     from tools.registry import get_registry
 
@@ -224,7 +261,7 @@ async def mcp_remove_server(server_id: str) -> dict[str, Any]:
 
 @app.post("/mcp/reload")
 async def mcp_reload_route() -> dict[str, Any]:
-    from mcp.client import reload_mcp_tools
+    from mcpbridge.client import reload_mcp_tools
     from tools.builtin import register_builtin_tools
     from tools.registry import get_registry
 
@@ -249,8 +286,14 @@ def select_model(body: ModelSelectRequest) -> dict[str, Any]:
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(body: ChatRequest) -> ChatResponse:
+    image_bytes: list[bytes] = []
+    for encoded in body.images:
+        try:
+            image_bytes.append(base64.b64decode(encoded))
+        except Exception:  # noqa: BLE001
+            continue
     agent = AIAgent(session_id=body.session_id)
-    result = await agent.run(body.message)
+    result = await agent.run(body.message, images=image_bytes or None)
     return ChatResponse(
         answer=result.answer,
         session_id=result.session_id,
@@ -264,6 +307,12 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
 
     async def run_agent() -> None:
         sources: list[dict[str, Any]] = []
+        image_bytes: list[bytes] = []
+        for encoded in body.images:
+            try:
+                image_bytes.append(base64.b64decode(encoded))
+            except Exception:  # noqa: BLE001
+                continue
         try:
             agent = AIAgent(session_id=body.session_id)
 
@@ -273,7 +322,11 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
                     sources = payload.get("sources", sources)
                 queue.put_nowait({"type": kind, **payload})
 
-            result = await agent.run(body.message, on_event=on_event)
+            result = await agent.run(
+                body.message,
+                on_event=on_event,
+                images=image_bytes or None,
+            )
             queue.put_nowait(
                 {
                     "type": "done",
@@ -388,6 +441,86 @@ def permission_pending() -> dict[str, Any]:
     from daemon.permissions import get_pending
 
     return {"pending": get_pending()}
+
+
+# ── Reminders, background work, memory, inbox ────────────────────────────
+
+
+class ReminderRequest(BaseModel):
+    text: str
+    when: str
+
+
+class MemoryRequest(BaseModel):
+    text: str
+    kind: str = "fact"
+
+
+@app.get("/tasks")
+def tasks_route() -> dict[str, Any]:
+    from scheduler.jobs import background_jobs, list_tasks
+
+    return {"scheduled": list_tasks(), "background": background_jobs()}
+
+
+@app.post("/tasks/reminder")
+def create_reminder_route(body: ReminderRequest) -> dict[str, Any]:
+    from scheduler.jobs import create_reminder
+
+    result = create_reminder(body.text, body.when)
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.delete("/tasks/{task_id}")
+def cancel_task_route(task_id: str) -> dict[str, Any]:
+    from scheduler.jobs import cancel_task
+
+    result = cancel_task(task_id)
+    if "error" in result:
+        raise HTTPException(404, result["error"])
+    return result
+
+
+@app.get("/memories")
+def memories_route(kind: str = "") -> dict[str, Any]:
+    from memory.store import list_memories
+
+    return {"memories": list_memories(kind or None)}
+
+
+@app.post("/memories")
+def memory_add_route(body: MemoryRequest) -> dict[str, Any]:
+    from memory.store import save_memory
+
+    try:
+        return save_memory(body.text, kind=body.kind)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.delete("/memories/{memory_id}")
+def memory_delete_route(memory_id: str) -> dict[str, Any]:
+    from memory.store import forget_memory
+
+    if not forget_memory(memory_id):
+        raise HTTPException(404, "unknown memory")
+    return {"forgotten": memory_id}
+
+
+@app.get("/inbox")
+def inbox_route(unread_only: bool = True) -> dict[str, Any]:
+    from memory.store import list_inbox
+
+    return {"items": list_inbox(unread_only)}
+
+
+@app.post("/inbox/read")
+def inbox_read_route(item_id: str | None = None) -> dict[str, Any]:
+    from memory.store import mark_inbox_read
+
+    return {"marked": mark_inbox_read(item_id)}
 
 
 def main() -> None:

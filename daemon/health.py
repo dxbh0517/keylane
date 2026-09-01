@@ -28,7 +28,7 @@ async def check_searxng() -> dict[str, Any]:
 
 
 async def check_mcp_servers() -> list[dict[str, Any]]:
-    from mcp.client import probe_mcp_server
+    from mcpbridge.client import probe_mcp_server
 
     servers = mcp_settings().get("servers", [])
     out: list[dict[str, Any]] = []
@@ -47,8 +47,15 @@ async def settings_health() -> dict[str, Any]:
     mcp = await check_mcp_servers()
     runtime = get_runtime()
     cfg = research_settings()
+    from seams import get_context
+
+    ctx = get_context()
     return {
         "npu": runtime.status,
+        # Which adapter each purpose currently resolves to — the answer to
+        # "is background work actually on the GPU model?"
+        "models": ctx.llm.status(),
+        "subagents": ctx.subagents.status(),
         "searxng": searx,
         "mcp": mcp,
         "research": {
