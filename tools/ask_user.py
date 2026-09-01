@@ -105,4 +105,4 @@ options if there are any; do not ask for information a tool can get you."""
 
 
 def register_ask_user_sections(prompt: Any) -> None:
-    prompt.section("plan", ASK_GUIDANCE)
+    prompt.section("plan", ASK_GUIDANCE, required=False)

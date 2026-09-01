@@ -80,6 +80,10 @@ class PromptSection:
     name: str
     order: int
     text: TextSource
+    # Whether this section may be dropped when the prompt does not fit.
+    # The NPU compiles a fixed prompt length in, so on a tight budget something
+    # has to go — and it must not be the part that says how to call a tool.
+    required: bool = True
 
 
 @dataclass(frozen=True)
@@ -126,10 +130,19 @@ class SystemPrompt:
         text: TextSource,
         *,
         order: int | str | None = None,
+        required: bool = True,
     ) -> Callable[[], None]:
-        """Register one static section. Re-registering a name replaces it."""
+        """Register one static section. Re-registering a name replaces it.
+
+        `required=False` marks a section the assembly may drop to fit a budget.
+        Capability guidance is optional in that sense: the tool descriptions
+        still reach the model through the tool list, so losing the paragraph
+        costs nuance. Losing the output contract costs correctness.
+        """
         with self._lock:
-            self._sections[name] = PromptSection(name, _order(SECTION_ORDER, name, order), text)
+            self._sections[name] = PromptSection(
+                name, _order(SECTION_ORDER, name, order), text, required
+            )
         return lambda: self._sections.pop(name, None)
 
     def context(
@@ -181,18 +194,31 @@ class SystemPrompt:
 
         return _VARIABLE.sub(_sub, text)
 
-    def assemble(self, extra_contexts: list[str] | None = None) -> Assembly:
+    def assemble(
+        self,
+        extra_contexts: list[str] | None = None,
+        *,
+        budget_chars: int = 0,
+    ) -> Assembly:
         """Assemble the turn's prompt.
 
         `extra_contexts` carries per-session facts — the current goal — that
         cannot be registered globally because the registry is process-wide and
         the fact belongs to one conversation.
+
+        `budget_chars` bounds the static prompt. Above zero, optional sections
+        are dropped until it fits, least foundational first.
         """
         with self._lock:
             sections = sorted(self._sections.values(), key=lambda s: (s.order, s.name))
             contexts = sorted(self._contexts.values(), key=lambda c: (c.order, c.name))
 
-        system_parts = [t for t in (_resolve(s.text).strip() for s in sections) if t]
+        resolved = [(s, _resolve(s.text).strip()) for s in sections]
+        resolved = [(s, text) for s, text in resolved if text]
+        if budget_chars:
+            resolved = _fit_sections(resolved, budget_chars)
+
+        system_parts = [text for _, text in resolved]
         context_parts = [t for t in (_resolve(c.text).strip() for c in contexts) if t]
         context_parts += [t.strip() for t in (extra_contexts or []) if t and t.strip()]
 
@@ -205,6 +231,55 @@ class SystemPrompt:
             system=system,
             context=f"{CONTEXT_OPEN}\n{body}\n{CONTEXT_CLOSE}",
         )
+
+
+def _fit_sections(
+    resolved: list[tuple[PromptSection, str]],
+    budget_chars: int,
+) -> list[tuple[PromptSection, str]]:
+    """Drop optional sections until the prompt fits, least foundational first.
+
+    Truncating the assembled string would cut from the end, which is where the
+    output contract and the tool-call format live — the model would be left
+    unable to call a tool at all. Dropping whole optional sections instead sheds
+    capability guidance, which the tool list still covers.
+    """
+    separator = 2  # the blank line between sections
+
+    def size(items: list[tuple[PromptSection, str]]) -> int:
+        return sum(len(text) + separator for _, text in items)
+
+    if size(resolved) <= budget_chars:
+        return resolved
+
+    # Highest order first: guidance registered late is the most specialised, so
+    # it is the least costly thing to lose.
+    droppable = sorted(
+        (section.name for section, _ in resolved if not section.required),
+        key=lambda name: next(s.order for s, _ in resolved if s.name == name),
+        reverse=True,
+    )
+
+    dropped: set[str] = set()
+    for name in droppable:
+        dropped.add(name)
+        kept = [pair for pair in resolved if pair[0].name not in dropped]
+        if size(kept) <= budget_chars:
+            logger.info(
+                "prompt over budget; dropped %d optional section(s): %s",
+                len(dropped),
+                ", ".join(sorted(dropped)),
+            )
+            return kept
+
+    kept = [pair for pair in resolved if pair[0].name not in dropped]
+    logger.warning(
+        "system prompt is %d chars with every optional section dropped, over a "
+        "budget of %d — the required sections alone do not fit",
+        size(kept),
+        budget_chars,
+    )
+    return kept
 
 
 def _order(table: dict[str, int], name: str, order: int | str | None) -> int:

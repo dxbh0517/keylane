@@ -158,3 +158,68 @@ def test_the_composed_system_prompt_is_stable_across_assemblies() -> None:
 
     ctx = build_context()
     assert ctx.prompt.assemble().system == ctx.prompt.assemble().system
+
+
+# ── fitting a budget ─────────────────────────────────────────────────────
+
+
+def test_a_prompt_within_budget_keeps_everything(prompt) -> None:
+    prompt.section("identity", "You are Keylane.")
+    prompt.section("web", "Search guidance.", required=False)
+    assert "Search guidance." in prompt.assemble(budget_chars=10_000).system
+
+
+def test_optional_guidance_is_dropped_before_the_output_contract(prompt) -> None:
+    """Truncating the string would cut exactly the parts that must survive."""
+    prompt.section("identity", "IDENTITY")
+    prompt.section("web", "W" * 400, required=False)
+    prompt.section("memory", "M" * 400, required=False)
+    prompt.section("output", "OUTPUT CONTRACT")
+    prompt.section("tool_format", "TOOL FORMAT")
+
+    system = prompt.assemble(budget_chars=120).system
+    assert "IDENTITY" in system
+    assert "OUTPUT CONTRACT" in system
+    assert "TOOL FORMAT" in system
+    assert "W" * 400 not in system
+    assert "M" * 400 not in system
+
+
+def test_the_most_specialised_guidance_goes_first(prompt) -> None:
+    prompt.section("identity", "IDENTITY")
+    prompt.section("memory", "M" * 200, required=False)
+    prompt.section("subagent", "S" * 200, required=False)
+
+    # Enough room for identity plus one guidance paragraph.
+    system = prompt.assemble(budget_chars=260).system
+    assert "M" * 200 in system
+    assert "S" * 200 not in system
+
+
+def test_required_sections_survive_even_when_they_do_not_fit(prompt) -> None:
+    """A prompt with no tool-call format is worse than one over budget."""
+    prompt.section("identity", "I" * 500)
+    prompt.section("tool_format", "T" * 500)
+    system = prompt.assemble(budget_chars=100).system
+    assert "I" * 500 in system
+    assert "T" * 500 in system
+
+
+def test_a_zero_budget_means_unbounded(prompt) -> None:
+    prompt.section("identity", "IDENTITY")
+    prompt.section("web", "W" * 5000, required=False)
+    assert "W" * 5000 in prompt.assemble(budget_chars=0).system
+
+
+def test_the_composed_prompt_fits_an_npu_budget() -> None:
+    """The real prompt against the real limit — this is what threw in production."""
+    from npu.limits import CHARS_PER_TOKEN, NPU_MAX_PROMPT_TOKENS, npu_prompt_budget_chars
+    from seams import build_context
+
+    budget = npu_prompt_budget_chars()
+    system = build_context().prompt.assemble(budget_chars=budget).system
+    assert len(system) <= budget
+    assert len(system) / CHARS_PER_TOKEN < NPU_MAX_PROMPT_TOKENS
+    # The non-negotiable parts are still there.
+    assert "<tool_call>" in system
+    assert "First line is the answer" in system

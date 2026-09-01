@@ -181,6 +181,19 @@ class LlmRuntime:
     ) -> str:
         return self.resolve(route).chat(messages, **kwargs)
 
+    def prompt_budget_chars(self, route: str = "interactive") -> int:
+        """How much static prompt the adapter serving `route` can take.
+
+        Zero means unbounded. An adapter that compiles a fixed prompt length in
+        — every NPU pipeline does — reports its real limit so assembly can drop
+        optional sections rather than overflow.
+        """
+        try:
+            adapter = self.resolve(route)
+        except LlmError:
+            return 0
+        return int(getattr(adapter, "prompt_budget_chars", 0) or 0)
+
     def status(self) -> dict[str, Any]:
         with self._lock:
             adapters = dict(self._adapters)

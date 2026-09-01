@@ -96,4 +96,4 @@ do not depend on it. Before you give a final answer, collect any still-relevant 
 
 
 def register_job_sections(prompt: Any) -> None:
-    prompt.section("jobs", JOBS_GUIDANCE)
+    prompt.section("jobs", JOBS_GUIDANCE, required=False)

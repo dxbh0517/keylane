@@ -142,7 +142,7 @@ when the same concrete condition has persisted across several rounds."""
 
 
 def register_goal_sections(prompt: Any) -> None:
-    prompt.section("goal", GOAL_GUIDANCE)
+    prompt.section("goal", GOAL_GUIDANCE, required=False)
 
 
 def render_goal(session_id: str) -> str:

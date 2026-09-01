@@ -193,7 +193,14 @@ class AIAgent:
         step of a turn — the clock inside the dynamic block would otherwise tick
         mid-turn and append a second copy for no reason.
         """
-        return assemble_for_turn(extra_contexts=[render_goal(self.session_id)])
+        # The active pipeline's real limit, so a prompt that cannot fit sheds
+        # optional guidance instead of being truncated mid-sentence — which on
+        # the NPU would cut the tool-call format off the end.
+        budget = get_context().llm.prompt_budget_chars(self.route)
+        return assemble_for_turn(
+            extra_contexts=[render_goal(self.session_id)],
+            budget_chars=budget,
+        )
 
     def _invoked_skills(self, user_message: str) -> list[str]:
         """Rendered bodies for every skill the user named with `/name`."""

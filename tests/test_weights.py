@@ -54,11 +54,30 @@ def test_pipeline_init_kwargs_vlm_uses_device_properties():
 
 
 def test_pipeline_init_kwargs_llm():
+    from npu.limits import NPU_MAX_PROMPT_TOKENS
     from npu.pipeline_config import pipeline_init_kwargs
 
     kwargs = pipeline_init_kwargs("NPU", Path("/tmp/cache"), "llm")
-    assert kwargs["MAX_PROMPT_LEN"] == 1024
+    assert kwargs["MAX_PROMPT_LEN"] == NPU_MAX_PROMPT_TOKENS
     assert kwargs["CACHE_DIR"] == "/tmp/cache"
+
+
+def test_the_vlm_gets_a_prompt_limit_too():
+    """Without one it compiles at 1024 tokens and throws on the system prompt."""
+    from npu.limits import NPU_MAX_PROMPT_TOKENS
+    from npu.pipeline_config import pipeline_init_kwargs
+
+    props = pipeline_init_kwargs("NPU", Path("/tmp/cache"), "vlm")["config"][
+        "DEVICE_PROPERTIES"
+    ]["NPU"]
+    assert props["MAX_PROMPT_LEN"] == NPU_MAX_PROMPT_TOKENS
+
+
+def test_the_budget_and_the_compiled_limit_agree():
+    """They drifted before: a 10000-char budget against a 1024-token pipeline."""
+    from npu.limits import CHARS_PER_TOKEN, NPU_MAX_PROMPT_TOKENS, npu_prompt_budget_chars
+
+    assert npu_prompt_budget_chars() / CHARS_PER_TOKEN < NPU_MAX_PROMPT_TOKENS
 
 
 def test_pipeline_init_kwargs_vlm_gpu_omits_npu_hints():
