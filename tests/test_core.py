@@ -33,6 +33,18 @@ def test_parse_tool_call():
     assert "tool_call" not in strip_tool_call(text)
 
 
+def test_parse_tool_call_nested_arguments():
+    text = (
+        "<tool_call>\n"
+        '{"name": "research_web", "arguments": {"question": "siege weapons civ6"}}\n'
+        "</tool_call>"
+    )
+    call = parse_tool_call(text)
+    assert call is not None
+    assert call["name"] == "research_web"
+    assert call["arguments"]["question"] == "siege weapons civ6"
+
+
 def test_parse_function_call_json():
     text = '{"name": "web_search", "arguments": {"query": "fedora 44"}}'
     call = parse_tool_call(text)
@@ -121,3 +133,84 @@ def test_mcp_server_add(isolated_settings, monkeypatch):
     assert any(s["id"] == "test" for s in servers)
     servers = remove_mcp_server("test")
     assert not any(s["id"] == "test" for s in servers)
+
+
+# ── one transcript, balanced windows ─────────────────────────────────────
+
+
+def test_a_leading_tool_result_is_dropped_from_a_window():
+    """Its assistant call fell off the front, so it answers nothing."""
+    from memory.store import balance_tool_pairs
+
+    window = [
+        {"role": "user", "content": '<tool_result name="recall">\n[]\n</tool_result>'},
+        {"role": "assistant", "content": "You have no meetings."},
+    ]
+    assert balance_tool_pairs(window) == window[1:]
+
+
+def test_a_trailing_tool_call_without_its_result_is_dropped():
+    from memory.store import balance_tool_pairs
+
+    window = [
+        {"role": "user", "content": "any meetings?"},
+        {"role": "assistant", "content": '{"tool_call": "recall", "arguments": {}}'},
+    ]
+    assert balance_tool_pairs(window) == window[:1]
+
+
+def test_a_balanced_window_is_untouched():
+    from memory.store import balance_tool_pairs
+
+    window = [
+        {"role": "user", "content": "any meetings?"},
+        {"role": "assistant", "content": '{"tool_call": "recall", "arguments": {}}'},
+        {"role": "user", "content": '<tool_result name="recall">\n[]\n</tool_result>'},
+        {"role": "assistant", "content": "None today."},
+    ]
+    assert balance_tool_pairs(window) == window
+
+
+def test_the_tool_result_block_is_the_only_rendering():
+    """The model and the session log must see the same string."""
+    from agent.loop import tool_result_block
+
+    block = tool_result_block("recall", "[]")
+    assert block == '<tool_result name="recall">\n[]\n</tool_result>'
+    assert "Done." in tool_result_block("remember", "ok", note="Done.")
+
+
+# ── retrieval scoring ────────────────────────────────────────────────────
+
+
+def test_bm25_ranks_across_the_candidate_set():
+    from research.provider import bm25_scores
+
+    docs = [
+        "OpenVINO Intel NPU performance benchmarks on Linux",
+        "recipe for chocolate cake baking tips",
+        "Intel NPU driver notes",
+    ]
+    scores = bm25_scores("intel npu openvino performance", docs)
+    assert scores[0] > scores[2] > scores[1] == 0.0
+
+
+def test_a_term_common_to_every_candidate_carries_less_weight():
+    """This is what an in-document frequency stand-in for idf cannot express."""
+    from research.provider import bm25_scores
+
+    common = ["intel npu notes", "intel npu guide", "intel npu faq"]
+    distinctive = ["intel npu notes", "intel npu guide", "intel npu openvino"]
+    assert bm25_scores("openvino", distinctive)[2] > 0
+    assert max(bm25_scores("intel", common)) < bm25_scores("openvino", distinctive)[2]
+
+
+def test_coverage_score_is_an_absolute_scale():
+    """The relevance gates compare against fixed thresholds, so they need one."""
+    from research.provider import coverage_score
+
+    # Two terms, three hits each: 3/(3+1.5) = 0.67 per term.
+    assert coverage_score("intel npu", "intel npu intel npu intel npu") == pytest.approx(0.667, abs=0.01)
+    assert coverage_score("intel npu", "intel npu") == pytest.approx(0.4, abs=0.01)
+    assert coverage_score("intel npu", "chocolate cake") == 0.0
+    assert 0.0 <= coverage_score("intel npu openvino", "intel notes") <= 1.0
