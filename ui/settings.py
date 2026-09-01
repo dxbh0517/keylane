@@ -52,7 +52,11 @@ class SettingsWindow(Gtk.Window):
         self._block_save = False
         self._poll_id: int | None = None
         self._textview_provider: Gtk.CssProvider | None = None
+        self._dropdown_menu_provider: Gtk.CssProvider | None = None
         self._activating_model_id: str | None = None
+        self._model_rows: dict[str, Gtk.ListBoxRow] = {}
+        self._model_load_progress: str = ""
+        self._default_model_ids: list[str] = []
 
         shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         shell.add_css_class("settings-shell")
@@ -167,8 +171,125 @@ class SettingsWindow(Gtk.Window):
             widget.remove_css_class("style-dark")
             widget.add_css_class("style-dark" if dark else "style-light")
         self._apply_textview_theme()
+        self._apply_default_model_menu_theme()
+        popover = getattr(self, "_default_model_popover", None)
+        if popover is not None:
+            popover.remove_css_class("style-light")
+            popover.remove_css_class("style-dark")
+            popover.add_css_class("style-dark" if dark else "style-light")
         if self._scheme_cb:
             self._scheme_cb()
+
+    def _attach_css_provider(self, provider: Gtk.CssProvider, widget: Gtk.Widget) -> None:
+        widget.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_USER)
+
+    def _apply_default_model_menu_theme(self) -> None:
+        if not hasattr(self, "_default_model_menu_box"):
+            return
+        dark = effective_prefers_dark()
+        if dark:
+            css = """
+popover.settings-dropdown-menu {
+  background-color: #2a2a2c;
+  color: #f4f4f5;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.settings-dropdown-menu-box,
+.settings-dropdown-scroll,
+.settings-dropdown-scroll viewport {
+  background-color: #2a2a2c;
+  color: #f4f4f5;
+}
+button.settings-dropdown-option {
+  background-color: #2a2a2c;
+  color: #f4f4f5;
+  border: none;
+  border-radius: 0;
+  min-height: 34px;
+  padding: 0 12px;
+  box-shadow: none;
+}
+button.settings-dropdown-option:hover {
+  background-color: rgba(255, 255, 255, 0.06);
+}
+button.settings-dropdown-option.selected-default {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+button.settings-dropdown-option label {
+  color: #f4f4f5;
+}
+button.settings-dropdown-trigger {
+  background-color: #2a2a2c;
+  color: #f4f4f5;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  box-shadow: none;
+}
+button.settings-dropdown-trigger:hover {
+  background-color: #323234;
+}
+button.settings-dropdown-trigger label {
+  color: #f4f4f5;
+}
+label.settings-dropdown-chevron {
+  color: #a1a1aa;
+}
+"""
+        else:
+            css = """
+popover.settings-dropdown-menu {
+  background-color: #ffffff;
+  color: #18181b;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+.settings-dropdown-menu-box,
+.settings-dropdown-scroll,
+.settings-dropdown-scroll viewport {
+  background-color: #ffffff;
+  color: #18181b;
+}
+button.settings-dropdown-option {
+  background-color: #ffffff;
+  color: #18181b;
+  border: none;
+  border-radius: 0;
+  min-height: 34px;
+  padding: 0 12px;
+  box-shadow: none;
+}
+button.settings-dropdown-option label {
+  color: #18181b;
+}
+button.settings-dropdown-trigger {
+  background-color: #ffffff;
+  color: #18181b;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  min-height: 36px;
+  padding: 0 12px;
+  box-shadow: none;
+}
+button.settings-dropdown-trigger label {
+  color: #18181b;
+}
+label.settings-dropdown-chevron {
+  color: #71717a;
+}
+"""
+        if self._dropdown_menu_provider is None:
+            self._dropdown_menu_provider = Gtk.CssProvider()
+            for widget in (
+                self._default_model_trigger,
+                self._default_model_popover,
+                self._default_model_menu_box,
+            ):
+                self._attach_css_provider(self._dropdown_menu_provider, widget)
+            scroll = self._default_model_popover.get_first_child()
+            if scroll is not None:
+                self._attach_css_provider(self._dropdown_menu_provider, scroll)
+        self._dropdown_menu_provider.load_from_string(css)
 
     def _apply_textview_theme(self) -> None:
         if not hasattr(self, "_allowlist"):
@@ -301,7 +422,7 @@ class SettingsWindow(Gtk.Window):
         section = self._section(
             page,
             "Assistant",
-            "Name and iteration limits for the agent loop.",
+            "How Keylane refers to itself and to you, and how hard it works per request.",
         )
 
         self._name_entry = Gtk.Entry()
@@ -311,7 +432,21 @@ class SettingsWindow(Gtk.Window):
             "changed",
             lambda *_: self._patch("assistant", {"name": self._name_entry.get_text()}),
         )
-        self._field(section, "Name", self._name_entry)
+        self._field(section, "Assistant name", self._name_entry)
+
+        self._user_name_entry = Gtk.Entry()
+        self._user_name_entry.set_placeholder_text("Your first name")
+        self._user_name_entry.add_css_class("settings-entry")
+        self._user_name_entry.connect(
+            "changed",
+            lambda *_: self._patch("assistant", {"user_name": self._user_name_entry.get_text()}),
+        )
+        self._field(
+            section,
+            "Your name",
+            self._user_name_entry,
+            "Given to the model so it can address you naturally. Leave blank to stay anonymous.",
+        )
 
         adj = Gtk.Adjustment(lower=1, upper=30, step_increment=1, page_increment=1, value=12)
         self._budget_spin = Gtk.SpinButton.new(adj, 1, 0)
@@ -356,8 +491,134 @@ class SettingsWindow(Gtk.Window):
                 self._patch("ui", {"theme": _THEME_VALUES[i]})
                 break
 
+    def _model_display_name(self, model_id: str) -> str:
+        for model in self._models:
+            if model.get("id") == model_id:
+                return str(model.get("name") or model_id)
+        return model_id
+
+    def _refresh_model_ui(self) -> None:
+        self._sync_model_list(self._models)
+
+    def _sync_default_model_menu(self, selected_id: str | None = None) -> None:
+        labels: list[str] = []
+        ids: list[str] = []
+        for model in self._models:
+            name = str(model.get("name") or model.get("id", "?"))
+            if not model.get("downloaded"):
+                name = f"{name} (not downloaded)"
+            labels.append(name)
+            ids.append(str(model["id"]))
+        self._default_model_ids = ids
+
+        child = self._default_model_menu_box.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self._default_model_menu_box.remove(child)
+            child = nxt
+
+        if not ids:
+            self._default_model_label.set_text("No models")
+            return
+
+        pick = selected_id if selected_id in ids else None
+        if pick is None and self._active_model_id in ids:
+            pick = self._active_model_id
+        if pick is None:
+            pick = ids[0]
+
+        for mid, label in zip(ids, labels):
+            btn = Gtk.Button()
+            btn.add_css_class("settings-dropdown-option")
+            btn.set_hexpand(True)
+            btn.set_halign(Gtk.Align.FILL)
+            btn.set_child(Gtk.Label(label=label, xalign=0, hexpand=True))
+            if mid == pick:
+                btn.add_css_class("selected-default")
+            btn.connect("clicked", self._on_default_model_option_clicked, mid)
+            self._default_model_menu_box.append(btn)
+
+        self._default_model_label.set_text(self._default_model_menu_label(pick))
+
+    def _default_model_menu_label(self, model_id: str) -> str:
+        display = self._model_display_name(model_id)
+        for model in self._models:
+            if model.get("id") == model_id and not model.get("downloaded"):
+                return f"{display} (not downloaded)"
+        return display
+
+    def _pick_default_model(self, model_id: str) -> None:
+        self._default_model_popover.popdown()
+        idx = 0
+        child = self._default_model_menu_box.get_first_child()
+        while child:
+            child.remove_css_class("selected-default")
+            if idx < len(self._default_model_ids) and self._default_model_ids[idx] == model_id:
+                child.add_css_class("selected-default")
+            idx += 1
+            child = child.get_next_sibling()
+        self._default_model_label.set_text(self._default_model_menu_label(model_id))
+        self._patch("models", {"default_model_id": model_id})
+        self._toast(f"Default model set to {self._model_display_name(model_id)}")
+
+    def _on_default_model_option_clicked(self, _btn: Gtk.Button, model_id: str) -> None:
+        if self._block_save:
+            return
+        self._pick_default_model(model_id)
+
+    def _set_activation_progress(self, message: str) -> None:
+        text = (message or "").strip()
+        if not text:
+            return
+        self._model_load_progress = text
+        self._footer.set_text(text[:72])
+        if self._activating_model_id:
+            self._refresh_model_ui()
+        return False
+
     def _build_model(self) -> None:
         page = self._page("model")
+        startup = self._section(
+            page,
+            "Startup",
+            "Which model the daemon loads automatically when it starts.",
+        )
+        self._default_model_trigger = Gtk.Button()
+        self._default_model_trigger.add_css_class("settings-dropdown-trigger")
+        self._default_model_trigger.add_css_class("settings-control")
+        self._default_model_trigger.set_halign(Gtk.Align.FILL)
+        self._default_model_trigger.set_hexpand(True)
+        trigger_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._default_model_label = Gtk.Label(label="—", xalign=0, hexpand=True)
+        chevron = Gtk.Label(label="▾", xalign=1)
+        chevron.add_css_class("settings-dropdown-chevron")
+        trigger_box.append(self._default_model_label)
+        trigger_box.append(chevron)
+        self._default_model_trigger.set_child(trigger_box)
+
+        self._default_model_popover = Gtk.Popover()
+        self._default_model_popover.add_css_class("settings-dropdown-menu")
+        self._default_model_popover.set_parent(self._default_model_trigger)
+        self._default_model_popover.connect("notify::visible", self._on_default_model_popover_visible)
+        self._default_model_trigger.connect("clicked", lambda *_: self._default_model_popover.popup())
+        menu_scroll = Gtk.ScrolledWindow()
+        menu_scroll.add_css_class("settings-dropdown-scroll")
+        menu_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        menu_scroll.set_max_content_height(280)
+        self._default_model_menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self._default_model_menu_box.add_css_class("settings-dropdown-menu-box")
+        menu_scroll.set_child(self._default_model_menu_box)
+        self._default_model_popover.set_child(menu_scroll)
+
+        self._field(
+            startup,
+            "Default model",
+            self._default_model_trigger,
+            "Takes effect on the next daemon restart. Undownloaded models are skipped at startup.",
+        )
+        self._dropdown_menu_provider = None
+        self._apply_default_model_menu_theme()
+
         section = self._section(
             page,
             "Models",
@@ -367,13 +628,19 @@ class SettingsWindow(Gtk.Window):
         self._model_list = Gtk.ListBox()
         self._model_list.add_css_class("settings-model-list")
         self._model_list.set_selection_mode(Gtk.SelectionMode.NONE)
+        self._model_list.set_can_focus(False)
         section.append(self._model_list)
 
-    def _build_model_row(self, model: dict[str, Any]) -> Gtk.ListBoxRow:
-        row = Gtk.ListBoxRow()
-        row.add_css_class("settings-model-row")
+    def _on_default_model_popover_visible(self, popover: Gtk.Popover, _pspec: object) -> None:
+        if popover.get_visible():
+            self._apply_default_model_menu_theme()
+
+    def _model_row_box(self, model: dict[str, Any]) -> Gtk.Box:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         box.add_css_class("settings-model-row-inner")
+
+        mid = model["id"]
+        activating = mid == getattr(self, "_activating_model_id", None)
 
         top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         name = Gtk.Label(label=model.get("name", model.get("id", "?")), xalign=0, hexpand=True)
@@ -382,6 +649,8 @@ class SettingsWindow(Gtk.Window):
 
         if model.get("active"):
             top.append(self._badge("Active", "active"))
+        elif activating:
+            top.append(self._badge("Activating", "busy"))
         elif model.get("downloaded"):
             top.append(self._badge("Downloaded", "ok"))
         elif model.get("downloading"):
@@ -402,10 +671,13 @@ class SettingsWindow(Gtk.Window):
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         actions.add_css_class("settings-model-actions")
 
-        mid = model["id"]
-        activating = mid == getattr(self, "_activating_model_id", None)
-
         if model.get("downloading"):
+            dl_file = model.get("download_file") or ""
+            if dl_file:
+                file_lbl = Gtk.Label(label=dl_file, xalign=0, ellipsize=3)
+                file_lbl.add_css_class("settings-download-file")
+                box.append(file_lbl)
+
             dl_btn = self._secondary_btn("Download")
             dl_btn.set_sensitive(False)
             actions.append(dl_btn)
@@ -424,7 +696,7 @@ class SettingsWindow(Gtk.Window):
             pct_text = f"{int(pct)}%" if isinstance(pct, (int, float)) and pct >= 0 else "…"
             pct_label = Gtk.Label(label=pct_text)
             pct_label.add_css_class("settings-pct")
-            pct_label.set_width_chars(4)
+            pct_label.set_width_chars(5)
             pct_label.set_xalign(1)
             actions.append(pct_label)
 
@@ -446,10 +718,13 @@ class SettingsWindow(Gtk.Window):
                 bar.pulse()
                 actions.append(bar)
 
-                pct_label = Gtk.Label(label="…")
+                progress = self._model_load_progress if activating else ""
+                pct_label = Gtk.Label(label=(progress or "Starting…")[:48])
                 pct_label.add_css_class("settings-pct")
-                pct_label.set_width_chars(4)
-                pct_label.set_xalign(1)
+                pct_label.set_xalign(0)
+                pct_label.set_hexpand(True)
+                pct_label.set_ellipsize(3)
+                pct_label.set_wrap(True)
                 actions.append(pct_label)
             else:
                 switch_btn = self._primary_btn("Activate")
@@ -459,8 +734,29 @@ class SettingsWindow(Gtk.Window):
         if actions.get_first_child():
             box.append(actions)
 
-        row.set_child(box)
+        return box
+
+    def _build_model_row(self, model: dict[str, Any]) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow()
+        row.add_css_class("settings-model-row")
+        row.set_child(self._model_row_box(model))
         return row
+
+    def _sync_model_list(self, models: list[dict[str, Any]]) -> None:
+        seen: set[str] = set()
+        for model in models:
+            mid = model["id"]
+            seen.add(mid)
+            if mid in self._model_rows:
+                self._model_rows[mid].set_child(self._model_row_box(model))
+            else:
+                row = self._build_model_row(model)
+                self._model_rows[mid] = row
+                self._model_list.append(row)
+        for mid in list(self._model_rows):
+            if mid not in seen:
+                self._model_list.remove(self._model_rows[mid])
+                del self._model_rows[mid]
 
     def _download_model(self, model_id: str) -> None:
         try:
@@ -473,14 +769,29 @@ class SettingsWindow(Gtk.Window):
 
     def _activate_model(self, model_id: str) -> None:
         if self._loading_model:
+            busy = self._model_display_name(self._activating_model_id or "")
+            self._toast(f"Already loading {busy}…")
             return
         self._loading_model = True
         self._activating_model_id = model_id
-        self._load_models(quiet=True)
+        self._model_load_progress = "Starting…"
+        name = self._model_display_name(model_id)
+        self._toast(f"Activating {name}…")
+        self._footer.set_text("Starting…")
+        self._refresh_model_ui()
+        self._ensure_poll()
 
         def _work() -> None:
+            started = time.time()
+            saw_loading = False
             try:
-                httpx.post(f"{DAEMON}/models/select", json={"model_id": model_id}, timeout=15).raise_for_status()
+                resp = httpx.post(
+                    f"{DAEMON}/models/select",
+                    json={"model_id": model_id},
+                    timeout=15,
+                ).raise_for_status().json()
+                progress = str(resp.get("progress") or "Load queued…")
+                GLib.idle_add(self._set_activation_progress, progress)
             except Exception as exc:  # noqa: BLE001
                 GLib.idle_add(self._finish_model_load, f"Error: {exc}")
                 return
@@ -494,15 +805,30 @@ class SettingsWindow(Gtk.Window):
                     return
                 npu = health.get("npu", {})
                 state = npu.get("state", "?")
+                progress = str(npu.get("progress") or "")
+                if progress:
+                    GLib.idle_add(self._set_activation_progress, progress)
+                if npu.get("loading"):
+                    saw_loading = True
                 if npu.get("ready") and npu.get("model_id") == model_id:
-                    GLib.idle_add(self._finish_model_load, f"Activated {model_id}")
+                    GLib.idle_add(self._finish_model_load, f"Activated {name}")
                     return
                 if state == "error":
                     GLib.idle_add(self._finish_model_load, npu.get("error") or "load failed")
                     return
-                if not npu.get("loading") and state in {"idle", "error"}:
+                if saw_loading and not npu.get("loading") and state in {"idle", "error"}:
                     GLib.idle_add(self._finish_model_load, npu.get("error") or "load stopped")
                     return
+                if not saw_loading and time.time() - started > 15:
+                    if npu.get("ready") and npu.get("model_id") == model_id:
+                        GLib.idle_add(self._finish_model_load, f"Activated {name}")
+                        return
+                    if not npu.get("loading"):
+                        GLib.idle_add(
+                            self._finish_model_load,
+                            "Load did not start — is another model still loading?",
+                        )
+                        return
                 time.sleep(1)
             GLib.idle_add(self._finish_model_load, "Timed out waiting for model")
 
@@ -526,6 +852,7 @@ class SettingsWindow(Gtk.Window):
     def _finish_model_load(self, message: str) -> None:
         self._loading_model = False
         self._activating_model_id = None
+        self._model_load_progress = ""
         self._toast(message[:60])
         self._load_models()
         return False
@@ -537,30 +864,34 @@ class SettingsWindow(Gtk.Window):
         except Exception as exc:  # noqa: BLE001
             if not quiet:
                 self._toast(str(exc))
+            elif self._activating_model_id:
+                self._footer.set_text(f"Cannot reach daemon: {exc}"[:72])
+            if self._activating_model_id or self._loading_model:
+                self._refresh_model_ui()
             return
 
         self._models = data.get("models", [])
         self._active_model_id = data.get("active")
-
-        child = self._model_list.get_first_child()
-        while child:
-            nxt = child.get_next_sibling()
-            self._model_list.remove(child)
-            child = nxt
-        for model in self._models:
-            self._model_list.append(self._build_model_row(model))
+        self._sync_model_list(self._models)
+        self._sync_default_model_menu(data.get("default"))
 
         npu = health.get("npu", {})
+        progress = str(npu.get("progress") or "")
+        if progress and (self._activating_model_id or npu.get("loading")):
+            self._model_load_progress = progress
+            self._footer.set_text(progress[:72])
         if npu.get("loading"):
             self._loading_model = True
             if not self._activating_model_id:
                 self._activating_model_id = npu.get("model_id")
-        elif not quiet:
+        elif not quiet and not self._activating_model_id:
             self._loading_model = False
-            self._activating_model_id = None
+            self._model_load_progress = ""
 
         if any(m.get("downloading") for m in self._models) or self._loading_model:
             self._ensure_poll()
+        elif self._activating_model_id:
+            self._refresh_model_ui()
 
     def _build_web(self) -> None:
         page = self._page("web")
@@ -985,6 +1316,7 @@ class SettingsWindow(Gtk.Window):
 
         assistant = data.get("assistant", {})
         self._name_entry.set_text(str(assistant.get("name", "Keylane")))
+        self._user_name_entry.set_text(str(assistant.get("user_name", "") or ""))
         self._budget_spin.set_value(int(assistant.get("iteration_budget", 12)))
 
         ui = data.get("ui", {})

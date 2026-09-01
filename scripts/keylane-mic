@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Toggle Keylane microphone (start/stop voice input).
+set -euo pipefail
+exec "$(dirname "$0")/keylane-ui" --mic

@@ -15,7 +15,7 @@ say "Installing system packages"
 if command -v dnf >/dev/null 2>&1; then
   sudo dnf install -y \
     python3-gobject gtk4 gtk4-layer-shell libnotify portaudio ffmpeg \
-    wl-clipboard podman podman-compose || true
+    wl-clipboard wmctrl podman podman-compose || true
 fi
 
 say "Syncing ${SRC} -> ${DEST}"
@@ -36,7 +36,7 @@ mkdir -p "${DEST}/data"
 cp -n config/*.toml "${DEST}/config/" 2>/dev/null || true
 
 say "Installing systemd user units (start on login)"
-chmod +x "${DEST}/scripts/keylane-daemon" "${DEST}/scripts/keylane-ui" "${DEST}/scripts/keylane-toggle" "${DEST}/scripts/keylane-settings" "${DEST}/scripts/setup-hotkey.sh"
+chmod +x "${DEST}/scripts/keylane-daemon" "${DEST}/scripts/keylane-ui" "${DEST}/scripts/keylane-toggle" "${DEST}/scripts/keylane-mic" "${DEST}/scripts/keylane-settings" "${DEST}/scripts/setup-hotkey.sh"
 KEYLANE_DEST="${DEST}" "${DEST}/scripts/enable-startup.sh"
 
 say "Super+Space hotkey"
@@ -44,6 +44,13 @@ KEYLANE_DEST="${DEST}" KEYLANE_HOTKEY="${HOTKEY}" "${DEST}/scripts/setup-hotkey.
 
 say "Optional: start SearXNG for web research"
 echo "  cd ${DEST}/deploy && podman compose up -d"
+if command -v podman >/dev/null 2>&1; then
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx keylane-searxng; then
+    podman cp "${DEST}/deploy/searxng/settings.yml" keylane-searxng:/etc/searxng/settings.yml
+    podman restart keylane-searxng >/dev/null 2>&1 || true
+    echo "  SearXNG settings refreshed in keylane-searxng container"
+  fi
+fi
 
 say "Done. Keylane starts automatically at login."
 echo "  Daemon: systemctl --user status keylane-daemon"

@@ -6,4 +6,6 @@ __pycache__/
 *.pyc
 .venv/
 models/
+!models/__init__.py
+!models/catalog.py
 !config/models.toml
