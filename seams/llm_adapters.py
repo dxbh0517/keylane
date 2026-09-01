@@ -70,6 +70,8 @@ class OpenAiCompatAdapter:
         api_key: str = "",
         enabled: bool = True,
         timeout: float = 180.0,
+        auto_unload: bool = False,
+        idle_seconds: int = 60,
     ) -> None:
         self.id = adapter_id
         self.base_url = base_url.rstrip("/")
@@ -77,6 +79,8 @@ class OpenAiCompatAdapter:
         self.api_key = api_key
         self.enabled = enabled
         self.timeout = timeout
+        self.auto_unload = auto_unload
+        self.idle_seconds = max(int(idle_seconds), 0)
 
     def available(self) -> bool:
         return bool(self.enabled and self.base_url and self.model)
@@ -88,7 +92,21 @@ class OpenAiCompatAdapter:
             "model": self.model,
             "base_url": self.base_url,
             "state": "configured" if self.available() else "disabled",
+            "auto_unload": self.auto_unload,
         }
+
+    def _idle_fields(self) -> dict[str, Any]:
+        """Ask the server to drop the model from VRAM once it goes idle.
+
+        There is no standard field for this, so both known spellings are sent:
+        Ollama reads `keep_alive` and LM Studio reads `ttl`, each in seconds,
+        and a server that knows neither ignores them. Without this the model
+        stays resident and holds the VRAM for the rest of the session, which is
+        the whole reason to run it on demand rather than always-on.
+        """
+        if not self.auto_unload:
+            return {}
+        return {"keep_alive": self.idle_seconds, "ttl": self.idle_seconds}
 
     def _headers(self) -> dict[str, str]:
         headers = {"content-type": "application/json"}
@@ -102,11 +120,12 @@ class OpenAiCompatAdapter:
                 "LLM_ADAPTER_UNAVAILABLE",
                 f"the {self.id} route is not configured (set a base_url and model)",
             )
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "max_tokens": max_new_tokens,
             "stream": False,
+            **self._idle_fields(),
         }
         try:
             with httpx.Client(timeout=self.timeout) as client:

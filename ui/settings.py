@@ -58,6 +58,9 @@ class SettingsWindow(Gtk.Window):
         self._model_load_progress: str = ""
         self._default_model_ids: list[str] = []
         self._adapters: list[dict[str, Any]] = []
+        self._themed_dropdown_widgets: list[Gtk.Widget] = []
+        self._gpu_models: list[str] = []
+        self._gpu_model_id: str = ""
         self._route_rows: dict[str, Gtk.Label] = {}
 
         shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -128,6 +131,27 @@ class SettingsWindow(Gtk.Window):
 
         self.connect("close-request", self._on_close)
 
+    def _center_on_screen(self) -> bool:
+        """Put the window in the middle of the screen.
+
+        The parent is a small panel near the top of the screen, so a transient
+        dialog inherits that position and opens high rather than centred.
+        """
+        from ui.placement import center_window
+
+        display = Gdk.Display.get_default()
+        if display is None:
+            return False
+        monitors = display.get_monitors()
+        monitor = monitors.get_item(0) if monitors.get_n_items() > 0 else None
+        if monitor is None:
+            return False
+        geom = monitor.get_geometry()
+        scale = max(int(monitor.get_scale_factor()), 1)
+        width, height = self.get_default_size()
+        center_window(self, width, height, (geom.width, geom.height), scale)
+        return False
+
     def present_centered(self) -> None:
         """Show settings; layer-shell parents need an independent toplevel."""
         self.present()
@@ -141,6 +165,8 @@ class SettingsWindow(Gtk.Window):
                     surface.set_input_region(None)
             except Exception:  # noqa: BLE001
                 pass
+            # After realize, so there is a surface for the window manager to move.
+            GLib.idle_add(self._center_on_screen)
 
         if self.get_realized():
             _raise(self)
@@ -264,33 +290,12 @@ button.settings-dropdown-option {
 button.settings-dropdown-option label {
   color: #18181b;
 }
-button.settings-dropdown-trigger {
-  background-color: #ffffff;
-  color: #18181b;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: 8px;
-  min-height: 36px;
-  padding: 0 12px;
-  box-shadow: none;
-}
-button.settings-dropdown-trigger label {
-  color: #18181b;
-}
-label.settings-dropdown-chevron {
-  color: #71717a;
-}
 """
         if self._dropdown_menu_provider is None:
             self._dropdown_menu_provider = Gtk.CssProvider()
-            for widget in (
-                self._default_model_trigger,
-                self._default_model_popover,
-                self._default_model_menu_box,
-            ):
-                self._attach_css_provider(self._dropdown_menu_provider, widget)
-            scroll = self._default_model_popover.get_first_child()
-            if scroll is not None:
-                self._attach_css_provider(self._dropdown_menu_provider, scroll)
+        for widget in self._themed_dropdown_widgets:
+            self._attach_css_provider(self._dropdown_menu_provider, widget)
+        self._themed_dropdown_widgets.clear()
         self._dropdown_menu_provider.load_from_string(css)
 
     def _apply_textview_theme(self) -> None:
@@ -405,6 +410,52 @@ label.settings-dropdown-chevron {
             row.append(hint_lbl)
 
         section.append(row)
+
+    def _make_dropdown(self, placeholder: str = "—") -> tuple[Gtk.Button, Gtk.Label, Gtk.Popover, Gtk.Box]:
+        """A trigger button plus its menu popover, themed with the others.
+
+        A popover is its own surface, so the window's style classes do not
+        reach it and it needs the runtime provider. Registering here means a
+        new dropdown is themed by construction rather than by remembering.
+        """
+        trigger = Gtk.Button()
+        trigger.add_css_class("settings-dropdown-trigger")
+        trigger.add_css_class("settings-control")
+        trigger.set_halign(Gtk.Align.FILL)
+        trigger.set_hexpand(True)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        label = Gtk.Label(label=placeholder, xalign=0, hexpand=True)
+        chevron = Gtk.Label(label="▾", xalign=1)
+        chevron.add_css_class("settings-dropdown-chevron")
+        box.append(label)
+        box.append(chevron)
+        trigger.set_child(box)
+
+        popover = Gtk.Popover()
+        popover.add_css_class("settings-dropdown-menu")
+        popover.set_parent(trigger)
+        trigger.connect("clicked", lambda *_: popover.popup())
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.add_css_class("settings-dropdown-scroll")
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_max_content_height(280)
+        menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        menu_box.add_css_class("settings-dropdown-menu-box")
+        scroll.set_child(menu_box)
+        popover.set_child(scroll)
+
+        self._themed_dropdown_widgets.extend([popover, menu_box, scroll])
+        return trigger, label, popover, menu_box
+
+    @staticmethod
+    def _clear_box(box: Gtk.Box) -> None:
+        child = box.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            box.remove(child)
+            child = nxt
 
     def _status_row(self, section: Gtk.Box, label: str, value: Gtk.Label, hint: str = "") -> None:
         """A read-only row: name on the left, current value on the right.
@@ -979,15 +1030,90 @@ label.settings-dropdown-chevron {
         self._gpu_url.connect("changed", lambda *_: self._save_gpu_adapter())
         self._field(gpu, "Server URL", self._gpu_url, "The API base, ending in /v1.")
 
-        self._gpu_model = Gtk.Entry()
-        self._gpu_model.set_placeholder_text("qwen2.5-14b-instruct")
-        self._gpu_model.add_css_class("settings-entry")
-        self._gpu_model.connect("changed", lambda *_: self._save_gpu_adapter())
-        self._field(gpu, "Model name", self._gpu_model, "Exactly as the server reports it.")
+        (
+            self._gpu_model_trigger,
+            self._gpu_model_label,
+            self._gpu_model_popover,
+            self._gpu_model_menu,
+        ) = self._make_dropdown("Connect to see models")
+        # Fill the list when the menu is opened, so a server started after
+        # Settings was opened still shows up without a reload.
+        self._gpu_model_popover.connect("notify::visible", self._on_gpu_menu_visible)
+        self._field(
+            gpu,
+            "Model",
+            self._gpu_model_trigger,
+            "Fetched from the server. Open the list to refresh it.",
+        )
+
+        self._gpu_unload = Gtk.CheckButton(label="Unload from VRAM when idle")
+        self._gpu_unload.add_css_class("settings-check")
+        self._gpu_unload.connect("toggled", lambda *_: self._save_gpu_adapter())
+        self._field(
+            gpu,
+            "Free the GPU when idle",
+            self._gpu_unload,
+            "Keeps the model out of VRAM between tasks, at the cost of a reload "
+            "on the next one. Needs a server that honours it — Ollama and "
+            "LM Studio do; llama.cpp's server does not.",
+        )
 
         test = self._secondary_btn("Test connection")
         test.connect("clicked", self._test_gpu_model)
         self._field(gpu, "", test)
+
+    def _on_gpu_menu_visible(self, popover: Gtk.Popover, _pspec: object) -> None:
+        if popover.get_visible():
+            self._apply_default_model_menu_theme()
+            self._load_gpu_models()
+
+    def _set_gpu_model(self, model_id: str) -> None:
+        self._gpu_model_id = model_id
+        self._gpu_model_label.set_text(model_id or "Connect to see models")
+        self._gpu_model_popover.popdown()
+        self._save_gpu_adapter()
+
+    def _sync_gpu_menu(self) -> None:
+        self._clear_box(self._gpu_model_menu)
+        if not self._gpu_models:
+            empty = Gtk.Label(label="No models found", xalign=0)
+            empty.add_css_class("settings-field-hint")
+            self._gpu_model_menu.append(empty)
+            return
+        for name in self._gpu_models:
+            btn = Gtk.Button(label=name)
+            btn.add_css_class("settings-dropdown-option")
+            if name == self._gpu_model_id:
+                btn.add_css_class("selected-default")
+            btn.connect("clicked", lambda _b, m=name: self._set_gpu_model(m))
+            self._gpu_model_menu.append(btn)
+
+    def _fetch_gpu_models(self) -> list[str] | str:
+        """Model ids the configured server reports, or an error string."""
+        base = self._gpu_url.get_text().strip().rstrip("/")
+        if not base:
+            return "Set a server URL first"
+        try:
+            resp = httpx.get(f"{base}/models", timeout=8)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            return f"Cannot reach {base}: {exc}"
+        rows = payload.get("data", payload if isinstance(payload, list) else [])
+        return sorted(str(m.get("id", "")) for m in rows if m.get("id"))
+
+    def _load_gpu_models(self) -> None:
+        found = self._fetch_gpu_models()
+        if isinstance(found, str):
+            self._gpu_models = []
+            self._sync_gpu_menu()
+            self._toast(found[:72])
+            return
+        self._gpu_models = found
+        # A model that vanished from the server should not stay selected.
+        if self._gpu_model_id and self._gpu_model_id not in found:
+            self._toast(f"{self._gpu_model_id!r} is no longer served here")
+        self._sync_gpu_menu()
 
     def _save_gpu_adapter(self) -> None:
         if self._block_save:
@@ -1000,30 +1126,25 @@ label.settings-dropdown-chevron {
                 "id": "gpu",
                 "kind": "openai",
                 "base_url": self._gpu_url.get_text().strip(),
-                "model": self._gpu_model.get_text().strip(),
+                "model": self._gpu_model_id,
                 "enabled": self._gpu_enabled.get_active(),
+                "auto_unload": self._gpu_unload.get_active(),
             }
         )
         self._adapters = adapters
         self._patch("models", {"adapters": adapters})
 
     def _test_gpu_model(self, *_args) -> None:
-        base = self._gpu_url.get_text().strip().rstrip("/")
-        if not base:
-            self._toast("Set a server URL first")
+        found = self._fetch_gpu_models()
+        if isinstance(found, str):
+            self._toast(found[:72])
             return
-        try:
-            resp = httpx.get(f"{base}/models", timeout=10)
-            resp.raise_for_status()
-            names = [m.get("id", "?") for m in resp.json().get("data", [])]
-        except Exception as exc:  # noqa: BLE001
-            self._toast(f"Cannot reach {base}: {exc}"[:72])
-            return
-        wanted = self._gpu_model.get_text().strip()
-        if wanted and wanted not in names:
-            self._toast(f"Reachable, but {wanted!r} is not served there")
+        self._gpu_models = found
+        self._sync_gpu_menu()
+        if self._gpu_model_id and self._gpu_model_id not in found:
+            self._toast(f"Reachable, but {self._gpu_model_id!r} is not served there")
         else:
-            self._toast(f"OK — {len(names)} model(s) available")
+            self._toast(f"OK — {len(found)} model(s) available")
 
     def _load_routes(self) -> None:
         try:
@@ -1555,7 +1676,9 @@ label.settings-dropdown-chevron {
         gpu = next((a for a in self._adapters if a.get("id") == "gpu"), {})
         self._gpu_enabled.set_active(bool(gpu.get("enabled", False)))
         self._gpu_url.set_text(str(gpu.get("base_url", "") or ""))
-        self._gpu_model.set_text(str(gpu.get("model", "") or ""))
+        self._gpu_unload.set_active(bool(gpu.get("auto_unload", False)))
+        self._gpu_model_id = str(gpu.get("model", "") or "")
+        self._gpu_model_label.set_text(self._gpu_model_id or "Connect to see models")
 
         perms = data.get("permissions", {})
         modes = ["auto", "ask", "deny"]

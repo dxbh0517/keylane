@@ -59,3 +59,7 @@ base_url = "http://127.0.0.1:1234/v1"
 model = ""
 enabled = false
 timeout_seconds = 180
+# Ask the server to drop the model from VRAM once it has been idle this long,
+# so it is resident only while there is work. Ollama and LM Studio honour it.
+auto_unload = false
+idle_seconds = 60

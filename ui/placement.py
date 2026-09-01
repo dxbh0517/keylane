@@ -84,6 +84,12 @@ def move_resize(window, x: int, y: int, width: int, height: int) -> bool:
     return _wmctrl(xid, "-e", f"0,{int(x)},{int(y)},{int(width)},{int(height)}")
 
 
+def centered_geometry(width: int, height: int, screen: tuple[int, int]) -> tuple[int, int]:
+    """Top-left corner that centres a window of this size on the screen."""
+    screen_w, screen_h = screen
+    return max((screen_w - width) // 2, 0), max((screen_h - height) // 2, 0)
+
+
 def floating_geometry(
     mode: str,
     width: int,
@@ -92,11 +98,21 @@ def floating_geometry(
     margin: int,
 ) -> tuple[int, int]:
     """Top-left corner for *mode*, in logical pixels, clamped to the screen."""
-    screen_w, screen_h = screen
     if mode == "spotlight":
-        # Slightly above centre reads better than dead centre for a launcher.
-        return max((screen_w - width) // 2, 0), max(int(screen_h * 0.22), 0)
+        return centered_geometry(width, height, screen)
+    screen_w, _ = screen
     return max(screen_w - width - margin, 0), margin
+
+
+def center_window(window, width: int, height: int, screen: tuple[int, int], scale: int = 1) -> bool:
+    """Move an already-realized window to the middle of the screen.
+
+    Wayland gives a client no say in its own position, which is why the
+    non-layer-shell path runs on XWayland; there, wmctrl can place it. Under
+    layer-shell the compositor owns placement and this is a no-op.
+    """
+    x, y = centered_geometry(width, height, screen)
+    return move_resize(window, x * scale, y * scale, width * scale, height * scale)
 
 
 def wmctrl_available() -> bool:
