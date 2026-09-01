@@ -243,3 +243,97 @@ def test_a_seam_error_keeps_its_code(root) -> None:
     outcome = asyncio.run(root.execute("boom", {}))
     assert outcome.code == "LLM_ROUTE_UNAVAILABLE"
     assert json.loads(outcome.content)["error"] == "no model is loaded"
+
+
+# ── the OpenAI-compatible adapter ────────────────────────────────────────
+
+
+def _adapter(**kwargs):
+    from seams.llm_adapters import OpenAiCompatAdapter
+
+    defaults = dict(
+        adapter_id="gpu",
+        base_url="http://127.0.0.1:1234/v1",
+        model="qwen2.5-14b",
+        enabled=True,
+    )
+    return OpenAiCompatAdapter(**{**defaults, **kwargs})
+
+
+def test_availability_is_a_local_check_not_a_request() -> None:
+    """Route resolution happens on every step; it cannot make a round trip."""
+    assert _adapter().available() is True
+    assert _adapter(enabled=False).available() is False
+    assert _adapter(model="").available() is False
+    assert _adapter(base_url="").available() is False
+
+
+def test_auto_unload_is_off_unless_asked_for() -> None:
+    assert _adapter()._idle_fields() == {}
+
+
+def test_auto_unload_sends_both_known_spellings() -> None:
+    """Ollama reads keep_alive, LM Studio reads ttl; neither is standard."""
+    fields = _adapter(auto_unload=True, idle_seconds=90)._idle_fields()
+    assert fields == {"keep_alive": 90, "ttl": 90}
+
+
+def test_a_negative_idle_is_clamped() -> None:
+    assert _adapter(auto_unload=True, idle_seconds=-5)._idle_fields()["ttl"] == 0
+
+
+def test_the_request_carries_the_idle_fields(monkeypatch) -> None:
+    import httpx
+
+    sent = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "hi"}}]}
+
+    class _Client:
+        def __init__(self, **_kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def post(self, url, json=None, headers=None):
+            sent.update(json or {})
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    assert _adapter(auto_unload=True, idle_seconds=30).generate("hello") == "hi"
+    assert sent["keep_alive"] == 30 and sent["ttl"] == 30
+
+    sent.clear()
+    _adapter().generate("hello")
+    assert "keep_alive" not in sent and "ttl" not in sent
+
+
+def test_an_unreachable_server_is_a_structured_error(monkeypatch) -> None:
+    import httpx
+
+    class _Client:
+        def __init__(self, **_kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def post(self, *_a, **_kw):
+            raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    with pytest.raises(LlmError) as exc:
+        _adapter().generate("hello")
+    assert exc.value.code == "LLM_TRANSPORT_ERROR"

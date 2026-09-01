@@ -71,6 +71,8 @@ def _build_llm(ctx: Context) -> None:
                 api_key=str(spec.get("api_key", "")),
                 enabled=bool(spec.get("enabled", False)),
                 timeout=float(spec.get("timeout_seconds", 180)),
+                auto_unload=bool(spec.get("auto_unload", False)),
+                idle_seconds=int(spec.get("idle_seconds", 60)),
             )
         )
 

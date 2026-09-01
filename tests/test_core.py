@@ -214,3 +214,23 @@ def test_coverage_score_is_an_absolute_scale():
     assert coverage_score("intel npu", "intel npu") == pytest.approx(0.4, abs=0.01)
     assert coverage_score("intel npu", "chocolate cake") == 0.0
     assert 0.0 <= coverage_score("intel npu openvino", "intel notes") <= 1.0
+
+
+def test_the_spotlight_is_centred_on_screen():
+    from ui.placement import floating_geometry
+
+    x, y = floating_geometry("spotlight", 600, 400, (1920, 1080), 24)
+    assert (x, y) == ((1920 - 600) // 2, (1080 - 400) // 2)
+
+
+def test_the_corner_panel_stays_in_the_corner():
+    from ui.placement import floating_geometry
+
+    x, y = floating_geometry("corner", 400, 300, (1920, 1080), 24)
+    assert (x, y) == (1920 - 400 - 24, 24)
+
+
+def test_centering_clamps_to_the_screen():
+    from ui.placement import centered_geometry
+
+    assert centered_geometry(3000, 2000, (1920, 1080)) == (0, 0)
