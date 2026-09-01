@@ -5,6 +5,7 @@ from __future__ import annotations
 import abc
 import logging
 import math
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -179,23 +180,81 @@ async def search_with_fallback(query: str, *, limit: int = 15) -> list[dict[str,
     return []
 
 
-def bm25_score(query: str, document: str, *, k1: float = 1.5, b: float = 0.75) -> float:
-    """Simple BM25 over tokenized query/document."""
-    q_tokens = [w.lower() for w in query.split() if len(w) > 2]
-    if not q_tokens:
-        return 0.0
-    doc_tokens = [w.lower() for w in document.split()]
-    if not doc_tokens:
-        return 0.0
-    doc_len = len(doc_tokens)
-    avgdl = max(doc_len, 120)
-    tf = Counter(doc_tokens)
-    score = 0.0
-    for term in set(q_tokens):
-        freq = tf.get(term, 0)
-        if freq == 0:
+def _tokens(text: str) -> list[str]:
+    return [w for w in re.findall(r"\w+", text.lower()) if len(w) > 2]
+
+
+def bm25_scores(
+    query: str,
+    documents: list[str],
+    *,
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[float]:
+    """Score every document against the query with BM25 over that set.
+
+    Inverse *document* frequency needs a corpus, so the ranked set is the
+    corpus: a term appearing in one of twenty candidates says far more about
+    that candidate than a term appearing in all twenty. Scoring documents one
+    at a time cannot express that, which is why the whole set is scored here.
+    """
+    q_terms = set(_tokens(query))
+    if not q_terms or not documents:
+        return [0.0] * len(documents)
+
+    tokenized = [_tokens(doc) for doc in documents]
+    lengths = [len(t) for t in tokenized]
+    non_empty = [n for n in lengths if n]
+    avgdl = (sum(non_empty) / len(non_empty)) if non_empty else 1.0
+    total_docs = len(documents)
+
+    doc_freq: dict[str, int] = {}
+    counters = [Counter(t) for t in tokenized]
+    for term in q_terms:
+        doc_freq[term] = sum(1 for c in counters if c.get(term))
+
+    scores: list[float] = []
+    for counter, length in zip(counters, lengths):
+        if not length:
+            scores.append(0.0)
             continue
-        idf = math.log(1 + 1.0 / (1 + freq))
-        denom = freq + k1 * (1 - b + b * doc_len / avgdl)
-        score += idf * (freq * (k1 + 1)) / denom
-    return score
+        score = 0.0
+        for term in q_terms:
+            freq = counter.get(term, 0)
+            if not freq:
+                continue
+            n_q = doc_freq[term]
+            # Robertson/Sparck-Jones idf, smoothed so it never goes negative.
+            idf = math.log(1 + (total_docs - n_q + 0.5) / (n_q + 0.5))
+            denom = freq + k1 * (1 - b + b * length / avgdl)
+            score += idf * (freq * (k1 + 1)) / denom
+        scores.append(score)
+    return scores
+
+
+def coverage_score(query: str, document: str) -> float:
+    """How much of the query this one document covers, in ``[0, 1]``.
+
+    BM25 is a *ranking* function: its magnitude depends on the corpus, so it
+    cannot be compared against a fixed threshold. The relevance gates in the
+    research pipeline need an absolute scale, so they use this instead — the
+    share of distinct query terms present, weighted by a saturating count so a
+    page that mentions a term once is not treated like one that is about it.
+    """
+    q_terms = set(_tokens(query))
+    if not q_terms:
+        return 0.0
+    counter = Counter(_tokens(document))
+    if not counter:
+        return 0.0
+    covered = 0.0
+    for term in q_terms:
+        freq = counter.get(term, 0)
+        if freq:
+            covered += freq / (freq + 1.5)  # 1 hit → 0.40, 3 → 0.67, 10 → 0.87
+    return covered / len(q_terms)
+
+
+def bm25_score(query: str, document: str) -> float:
+    """Single-document convenience wrapper. Prefer :func:`bm25_scores`."""
+    return bm25_scores(query, [document])[0]
