@@ -3,45 +3,126 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 from daemon.config import assistant_settings
-from daemon.paths import TODOS_PATH, ensure_data_dirs
 from memory.store import (
+    forget_memory,
     get_store,
-    list_skills,
-    load_skill,
+    list_inbox,
+    list_memories,
+    mark_inbox_read,
     read_memory_md,
     read_user_md,
+    save_memory,
     save_skill,
+    search_memories,
     write_memory_md,
     write_user_md,
 )
+from tools.policy import install_default_policy
 from tools.registry import Tool, get_registry
 
 
-def _load_todos() -> list[dict[str, Any]]:
-    ensure_data_dirs()
-    if not TODOS_PATH.exists():
-        return []
-    return json.loads(TODOS_PATH.read_text(encoding="utf-8"))
+def _skill_registry():
+    from seams import get_context
+
+    return get_context().skills
 
 
-def _save_todos(items: list[dict[str, Any]]) -> None:
-    ensure_data_dirs()
-    TODOS_PATH.write_text(json.dumps(items, indent=2), encoding="utf-8")
+def _skill_read(skill_id: str) -> str:
+    """Load one skill, refusing before the body is read if policy says no."""
+    from seams.skills import NAME_PATTERN, render_skill
+
+    name = str(skill_id).strip()
+    if not NAME_PATTERN.match(name):
+        return f'Error: invalid skill name "{name}"'
+    skill = _skill_registry().get(name)
+    if skill is None:
+        return f'Error: skill "{name}" is unknown or no longer available'
+    if not skill.invocation.model_invocable:
+        return f'Error: skill "{name}" is not available for you to load'
+    return render_skill(skill)
 
 
 def register_builtin_tools() -> None:
     reg = get_registry()
 
+    # Policy first: every tool registered below inherits it.
+    install_default_policy(reg)
+
+    reg.register(
+        Tool(
+            name="remember",
+            description=(
+                "Save one durable fact about the user so it is available in future "
+                "conversations. One fact per call, written as a standalone sentence."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The fact, e.g. 'Sister's birthday is 3 March'."},
+                    "kind": {
+                        "type": "string",
+                        "enum": ["user", "preference", "fact", "project", "contact"],
+                        "description": "user=identity, preference=how to work with them, contact=people.",
+                    },
+                },
+                "required": ["text"],
+            },
+            handler=lambda text, kind="fact", tags="": json.dumps(save_memory(text, kind=kind, tags=tags)),
+        )
+    )
+
+    reg.register(
+        Tool(
+            name="recall",
+            description="Search saved memories for facts about the user before answering personal questions.",
+            parameters={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+            handler=lambda query: json.dumps(search_memories(query)),
+        )
+    )
+
+    reg.register(
+        Tool(
+            name="forget",
+            description="Delete a saved memory by id when the user says it is wrong or no longer true.",
+            parameters={
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+            handler=lambda id: json.dumps({"forgotten": id} if forget_memory(id) else {"error": f"no memory {id}"}),
+        )
+    )
+
+    reg.register(
+        Tool(
+            name="memories_list",
+            description="List saved memories with their ids, newest first.",
+            parameters={
+                "type": "object",
+                "properties": {"kind": {"type": "string"}},
+            },
+            handler=lambda kind="": json.dumps(list_memories(kind or None)),
+        )
+    )
+
     reg.register(
         Tool(
             name="memory_read",
-            description="Read USER.md or MEMORY.md persistent memory files.",
+            description="Read the USER.md or MEMORY.md notes file verbatim.",
             parameters={
                 "type": "object",
                 "properties": {"file": {"type": "string", "enum": ["USER", "MEMORY"]}},
@@ -54,7 +135,10 @@ def register_builtin_tools() -> None:
     reg.register(
         Tool(
             name="memory_write",
-            description="Overwrite USER.md or MEMORY.md with new content.",
+            description=(
+                "Replace the whole USER.md or MEMORY.md file. Rarely correct — to add a "
+                "single fact use `remember` instead, which cannot lose the existing ones."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -68,6 +152,31 @@ def register_builtin_tools() -> None:
                 if file == "USER"
                 else write_memory_md(content) or "saved MEMORY.md"
             ),
+            dangerous=True,
+        )
+    )
+
+    reg.register(
+        Tool(
+            name="inbox_list",
+            description="List results from background tasks and reminders the user has not seen yet.",
+            parameters={
+                "type": "object",
+                "properties": {"unread_only": {"type": "boolean"}},
+            },
+            handler=lambda unread_only=True: json.dumps(list_inbox(bool(unread_only))),
+        )
+    )
+
+    reg.register(
+        Tool(
+            name="inbox_mark_read",
+            description="Mark one inbox item read, or all of them when no id is given.",
+            parameters={
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+            },
+            handler=lambda id="": json.dumps({"marked": mark_inbox_read(id or None)}),
         )
     )
 
@@ -87,22 +196,36 @@ def register_builtin_tools() -> None:
     reg.register(
         Tool(
             name="skill_list",
-            description="List available skills.",
+            description="List the skills you can load, with their descriptions.",
             parameters={"type": "object", "properties": {}},
-            handler=lambda: json.dumps(list_skills()),
+            handler=lambda: json.dumps(
+                [
+                    {"name": s.name, "description": s.description, "when_to_use": s.when_to_use}
+                    for s in _skill_registry().for_model()
+                ]
+            ),
         )
     )
 
     reg.register(
         Tool(
             name="skill_read",
-            description="Load a skill document by id.",
+            description=(
+                "Load the full instructions for an available skill. Call it with the "
+                "exact name from the available-skills list before acting on a task that "
+                "names or clearly matches that skill."
+            ),
             parameters={
                 "type": "object",
-                "properties": {"skill_id": {"type": "string"}},
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": "The exact skill name from the available skills list.",
+                    }
+                },
                 "required": ["skill_id"],
             },
-            handler=lambda skill_id: load_skill(skill_id),
+            handler=_skill_read,
         )
     )
 
@@ -119,44 +242,6 @@ def register_builtin_tools() -> None:
                 "required": ["skill_id", "content"],
             },
             handler=lambda skill_id, content: save_skill(skill_id, content) or f"saved skill {skill_id}",
-        )
-    )
-
-    reg.register(
-        Tool(
-            name="todos_list",
-            description="List the user's todo items.",
-            parameters={"type": "object", "properties": {}},
-            handler=lambda: json.dumps(_load_todos()),
-        )
-    )
-
-    reg.register(
-        Tool(
-            name="todos_add",
-            description="Add a todo item.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string"},
-                    "due_at": {"type": "string"},
-                },
-                "required": ["title"],
-            },
-            handler=lambda title, due_at="": _todos_add(title, due_at),
-        )
-    )
-
-    reg.register(
-        Tool(
-            name="todos_complete",
-            description="Mark a todo done by id.",
-            parameters={
-                "type": "object",
-                "properties": {"id": {"type": "string"}},
-                "required": ["id"],
-            },
-            handler=lambda id: _todos_complete(id),
         )
     )
 
@@ -208,35 +293,22 @@ def register_builtin_tools() -> None:
     )
 
     from research.tools import register_research_tools
-    from scheduler.tools import register_scheduler_tools
+    from tools.ask_user import register_ask_user_tool
+    from tools.jobs_tools import register_job_tools
+    from tools.subagent_tool import register_subagent_tool
+    from tools.todos import register_todo_tools
 
+    register_ask_user_tool(reg)
+    register_subagent_tool(reg)
+    register_job_tools(reg)
+    register_todo_tools(reg)
     register_research_tools(reg)
-    register_scheduler_tools(reg)
+    try:
+        from scheduler.tools import register_scheduler_tools
 
-
-def _todos_add(title: str, due_at: str = "") -> str:
-    items = _load_todos()
-    tid = f"todo-{len(items)+1}"
-    items.append(
-        {
-            "id": tid,
-            "title": title,
-            "done": False,
-            "due_at": due_at,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-    )
-    _save_todos(items)
-    return json.dumps({"id": tid, "title": title})
-
-
-def _todos_complete(todo_id: str) -> str:
-    items = _load_todos()
-    for item in items:
-        if item["id"] == todo_id:
-            item["done"] = True
-    _save_todos(items)
-    return json.dumps({"completed": todo_id})
+        register_scheduler_tools(reg)
+    except ImportError as exc:
+        logger.warning("scheduler tools unavailable: %s", exc)
 
 
 def _notify(title: str, body: str, speak: bool = False) -> str:
@@ -256,16 +328,82 @@ def _desktop_open(target: str) -> str:
 
 
 def _shell(command: str, args: list[str]) -> str:
-    allow = assistant_settings().get("security", {}).get("shell_allowlist", [])
-    if command not in allow:
-        return json.dumps({"error": f"command not allowlisted: {command}"})
+    from daemon.paths import ROOT
+    from daemon.shellpolicy import CommandNotAllowed, check_command, read_roots
+
+    security = assistant_settings().get("security", {})
+    allow = list(security.get("shell_allowlist", []))
+    roots = read_roots(security.get("shell_read_roots"))
+    try:
+        check_command(command, list(args), allowlist=allow, roots=roots)
+    except CommandNotAllowed as exc:
+        return json.dumps({"error": str(exc)})
+
     try:
         out = subprocess.run(
             [command, *args],
             capture_output=True,
             text=True,
             timeout=30,
+            # A bare `grep -r pattern` searches the working directory, so anchor
+            # it inside a permitted root rather than wherever the daemon started.
+            cwd=str(roots[0] if roots else ROOT),
         )
         return json.dumps({"stdout": out.stdout, "stderr": out.stderr, "code": out.returncode})
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": str(exc)})
+
+
+# ── prompt guidance ──────────────────────────────────────────────────────
+#
+# One imperative paragraph per capability, registered beside the tools it
+# describes. A capability that is not registered contributes no paragraph, so
+# the prompt cannot promise a tool the model does not have.
+
+MEMORY_GUIDANCE = """Use `recall` before answering anything about the user's own life — \
+"when is my…", "what did I say about…". Use `remember` the moment they tell you something \
+durable: their name, where they work, how they like answers, people they mention, \
+deadlines, project details. One fact per call, phrased so it still makes sense a month \
+from now. Do not save passwords, tokens, one-off chatter, or anything already in this \
+conversation. Use `forget` when they correct you or say something is no longer true."""
+
+SKILL_GUIDANCE = """Use `skill_read` to load the full instructions for an available skill. \
+Call it with the exact skill id from the available-skills list before acting on a task \
+that names or clearly matches that skill. Load every applicable skill, then follow their \
+instructions."""
+
+SHELL_GUIDANCE = """Use `shell` only for the allowlisted read-only commands. File \
+arguments must sit inside the permitted directories; a refusal names the reason, so read \
+it and pick a different path rather than retrying."""
+
+NOTIFY_GUIDANCE = """Use `notify_user` when something needs the user's attention while \
+they are not looking at the answer card. Use `desktop_open` to put a URL or file in front \
+of them. Neither replaces answering the question."""
+
+
+def register_builtin_sections(prompt: Any) -> None:
+    """Contribute the builtin capabilities' prompt guidance."""
+    prompt.section("memory", MEMORY_GUIDANCE)
+    prompt.section("skills", SKILL_GUIDANCE)
+    prompt.section("shell", SHELL_GUIDANCE)
+    prompt.section("mcp", NOTIFY_GUIDANCE)
+
+    from research.tools import register_research_sections
+    from tools.ask_user import register_ask_user_sections
+    from tools.jobs_tools import register_job_sections
+    from tools.goal_tools import register_goal_sections
+    from tools.subagent_tool import register_subagent_sections
+    from tools.todos import register_todo_sections
+
+    register_ask_user_sections(prompt)
+    register_goal_sections(prompt)
+    register_subagent_sections(prompt)
+    register_job_sections(prompt)
+    register_todo_sections(prompt)
+    register_research_sections(prompt)
+    try:
+        from scheduler.tools import register_scheduler_sections
+
+        register_scheduler_sections(prompt)
+    except ImportError as exc:
+        logger.warning("scheduler guidance unavailable: %s", exc)

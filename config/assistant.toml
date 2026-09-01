@@ -1,7 +1,12 @@
 [assistant]
 name = "Keylane"
+# Shown to the model so it can address you naturally. Blank = "the user".
+user_name = ""
 iteration_budget = 12
 max_context_chars = 24000
+# When on, Keylane may propose writing a reusable skill after a multi-step
+# task. It still asks before the file is written.
+auto_learn_skills = false
 
 [notify]
 tts_on_notify = false
@@ -11,4 +16,9 @@ read_aloud = false
 voice = "british-man"
 
 [security]
-shell_allowlist = ["ls", "pwd", "date", "whoami", "cat", "head", "tail", "grep"]
+shell_allowlist = ["ls", "pwd", "date", "whoami", "cat", "head", "tail", "grep", "wc"]
+# Every file argument a shell command is given must resolve inside one of these
+# directories. An allowlist of command names alone is an allowlist of the whole
+# filesystem, because `cat` and `grep` will read anything they are pointed at.
+# Empty means the Keylane checkout only. Paths may use ~.
+shell_read_roots = []
