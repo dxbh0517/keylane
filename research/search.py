@@ -88,3 +88,37 @@ def diversify_candidates(candidates: list[dict[str, str]], max_count: int) -> li
             if len(picked) >= max_count:
                 break
     return picked
+
+
+def merge_round_robin(
+    result_sets: list[list[dict[str, str]]],
+    *,
+    limit: int,
+) -> tuple[list[dict[str, str]], bool]:
+    """Interleave several queries' results, best-of-each first.
+
+    Concatenating result sets lets the first query fill the whole budget, so a
+    second query that found the actual answer never gets read. Taking one result
+    at each rank from every query before advancing gives each query a share.
+
+    Returns the merged list and whether anything was dropped to honour `limit`.
+    """
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    depth = max((len(rows) for rows in result_sets), default=0)
+
+    for rank in range(depth):
+        for rows in result_sets:
+            if rank >= len(rows):
+                continue
+            key = _canonical_url(rows[rank]["url"])
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(merged) < limit:
+                merged.append(rows[rank])
+
+    # Truncated means the limit dropped something, not that a URL was deduped:
+    # telling the model to "refine the query for more" when there is no more is
+    # advice that sends it in a circle.
+    return merged, len(seen) > len(merged)
