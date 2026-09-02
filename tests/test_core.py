@@ -9,7 +9,14 @@ from pathlib import Path
 import pytest
 
 from agent.tools_parse import parse_tool_call, strip_tool_call
-from daemon.config import add_mcp_server, all_settings, remove_mcp_server, reset_settings, save_settings
+from daemon.config import (
+    add_mcp_server,
+    all_settings,
+    list_mcp_servers,
+    remove_mcp_server,
+    reset_settings,
+    save_settings,
+)
 from research.search import diversify_candidates
 from research.provider import bm25_score
 from research.researcher import _chunk_text, _compress_evidence, Source
@@ -133,6 +140,47 @@ def test_mcp_server_add(isolated_settings, monkeypatch):
     assert any(s["id"] == "test" for s in servers)
     servers = remove_mcp_server("test")
     assert not any(s["id"] == "test" for s in servers)
+
+
+def test_a_stdio_server_keeps_its_arguments_and_environment(isolated_settings, monkeypatch):
+    monkeypatch.setattr("daemon.config._config_mcp_servers", lambda: [])
+    add_mcp_server(
+        {
+            "id": "fs",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/me"],
+            "env": {"TOKEN": "abc"},
+        }
+    )
+    saved = next(s for s in list_mcp_servers() if s["id"] == "fs")
+    assert saved["args"] == ["-y", "@modelcontextprotocol/server-filesystem", "/home/me"]
+    assert saved["env"] == {"TOKEN": "abc"}
+
+
+def test_an_http_server_keeps_its_url_and_token(isolated_settings, monkeypatch):
+    """The Mailspring shape: a URL and a token, no command anywhere."""
+    monkeypatch.setattr("daemon.config._config_mcp_servers", lambda: [])
+    add_mcp_server(
+        {
+            "id": "mailspring",
+            "transport": "http",
+            "url": "http://127.0.0.1:2587/mcp",
+            "auth_header": "abc-123",
+            "headers": {"X-Trace": "1"},
+        }
+    )
+    saved = next(s for s in list_mcp_servers() if s["id"] == "mailspring")
+    assert saved["url"] == "http://127.0.0.1:2587/mcp"
+    assert saved["auth_header"] == "abc-123"
+    assert saved["headers"] == {"X-Trace": "1"}
+    assert "command" not in saved
+
+
+def test_an_http_server_without_a_url_is_refused(isolated_settings, monkeypatch):
+    monkeypatch.setattr("daemon.config._config_mcp_servers", lambda: [])
+    with pytest.raises(ValueError):
+        add_mcp_server({"id": "broken", "transport": "http"})
 
 
 # ── one transcript, balanced windows ─────────────────────────────────────

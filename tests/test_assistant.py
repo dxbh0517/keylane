@@ -7,6 +7,13 @@ from datetime import datetime, timedelta
 import pytest
 
 from mcpbridge.client import normalize_auth_header, normalize_headers, server_transport
+from mcpbridge.forms import (
+    mask_token,
+    parse_args_field,
+    parse_env_lines,
+    parse_header_lines,
+    server_endpoint,
+)
 from scheduler.timeparse import describe, parse_when
 
 
@@ -199,6 +206,63 @@ def test_transport_is_inferred_from_the_fields_given() -> None:
     assert server_transport({"command": "npx"}) == "stdio"
     assert server_transport({"transport": "streamable-http", "url": "x"}) == "http"
     assert server_transport({"transport": "stdio", "command": "x"}) == "stdio"
+
+
+# ── the settings form ────────────────────────────────────────────────────
+
+
+def test_arguments_split_like_a_shell_line() -> None:
+    got = parse_args_field("-y @modelcontextprotocol/server-filesystem /home/user")
+    assert got == ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
+
+
+def test_a_quoted_argument_with_spaces_stays_one_argument() -> None:
+    assert parse_args_field('--root "/home/me/My Files"') == ["--root", "/home/me/My Files"]
+
+
+def test_commas_still_split_the_way_the_field_used_to() -> None:
+    assert parse_args_field("-y, @mcp/fs, /home/user") == ["-y", "@mcp/fs", "/home/user"]
+
+
+def test_an_unbalanced_quote_falls_back_to_plain_words() -> None:
+    assert parse_args_field('--root "/home/me') == ["--root", '"/home/me']
+
+
+def test_blank_arguments_are_no_arguments() -> None:
+    assert parse_args_field("   ") == []
+    assert parse_args_field(None) == []
+
+
+def test_env_lines_need_an_equals_sign() -> None:
+    assert parse_env_lines(["TOKEN=abc", "no-equals", "  PATH = /bin "]) == {
+        "TOKEN": "abc",
+        "PATH": "/bin",
+    }
+
+
+def test_headers_take_either_separator() -> None:
+    assert parse_header_lines(["X-Trace: 1", "Authorization=tok", "junk"]) == {
+        "X-Trace": "1",
+        "Authorization": "tok",
+    }
+
+
+def test_a_token_is_shown_masked_never_whole() -> None:
+    """The row proves which token is saved without putting it on screen."""
+    srv = {"transport": "http", "url": "http://127.0.0.1:2587/mcp", "auth_header": "abcdef-1234"}
+    line = server_endpoint(srv)
+    assert "abcdef-1234" not in line
+    assert line.startswith("http://127.0.0.1:2587/mcp")
+    assert line.endswith("1234")
+
+
+def test_a_short_token_leaks_no_tail() -> None:
+    assert mask_token("short") == "••••"
+
+
+def test_a_stdio_row_reads_as_the_command_it_runs() -> None:
+    srv = {"transport": "stdio", "command": "npx", "args": ["-y", "/home/a b"]}
+    assert server_endpoint(srv) == "npx -y '/home/a b'"
 
 
 # ── reminders survive a restart ──────────────────────────────────────────

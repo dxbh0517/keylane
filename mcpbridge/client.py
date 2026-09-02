@@ -12,6 +12,7 @@ from contextlib import AsyncExitStack
 from typing import Any
 
 from daemon.config import get_section, mcp_settings
+from mcpbridge.forms import server_transport
 from tools.registry import Tool, ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -52,16 +53,6 @@ def normalize_headers(headers: dict[str, str] | None) -> dict[str, str]:
         else:
             out[str(key)] = str(value)
     return out
-
-
-def server_transport(srv: dict[str, Any]) -> str:
-    """Normalize the transport name; a bare ``url`` implies HTTP."""
-    transport = str(srv.get("transport", "")).strip().lower()
-    if transport in {"http", "streamable-http", "streamable_http", "sse"}:
-        return "http"
-    if transport == "stdio":
-        return "stdio"
-    return "http" if srv.get("url") else "stdio"
 
 
 def _server_headers(srv: dict[str, Any]) -> dict[str, str]:

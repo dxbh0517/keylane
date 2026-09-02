@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from daemon.config import all_settings, reset_settings, save_settings  # noqa: E402
+from ui.themes import DEFAULT_THEME_ID, ThemeError, list_themes, load_theme  # noqa: E402
 
 
 def cmd_list(_args: argparse.Namespace) -> None:
@@ -62,6 +63,69 @@ def cmd_wizard_web(_args: argparse.Namespace) -> None:
     print("Web settings saved.")
 
 
+def cmd_theme_list(_args: argparse.Namespace) -> None:
+    active = str(all_settings().get("ui", {}).get("theme_id", DEFAULT_THEME_ID))
+    for theme in list_themes():
+        mark = "*" if theme.id == active else " "
+        print(f"{mark} {theme.id:18} {theme.source:9} {theme.description}")
+
+
+def cmd_theme_use(args: argparse.Namespace) -> None:
+    try:
+        theme = load_theme(args.theme_id)
+    except ThemeError as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(1)
+    save_settings("ui", {"theme_id": theme.id})
+    print(f"theme set to {theme.name}. Reopen Keylane, or pick it in Settings, to see it.")
+
+
+def cmd_theme_new(args: argparse.Namespace) -> None:
+    """Scaffold a theme in data/themes/ that starts from an existing one."""
+    from daemon.paths import THEMES_DIR
+
+    try:
+        base = load_theme(args.base)
+    except ThemeError as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(1)
+
+    theme_id = args.theme_id.strip().lower().replace(" ", "-")
+    path = THEMES_DIR / f"{theme_id}.toml"
+    if path.exists() and not args.force:
+        print(f"{path} already exists (pass --force to overwrite)", file=sys.stderr)
+        sys.exit(1)
+
+    lines = [
+        f"# {theme_id} — a theme of your own.",
+        "#",
+        f"# It starts from {base.id}: every token below is that theme's value, so you",
+        "# can delete any line you do not want to change. The token list is in",
+        "# README.md → Themes.",
+        "",
+        "[theme]",
+        f'id = "{theme_id}"',
+        f'name = "{theme_id.replace("-", " ").title()}"',
+        'description = ""',
+        f'extends = "{base.id}"',
+        "",
+        "[common]",
+    ]
+    lines += [f'{k} = {_toml_value(v)}' for k, v in sorted(base.common.items())]
+    for scheme, table in (("light", base.light), ("dark", base.dark)):
+        lines += ["", f"[{scheme}]"]
+        lines += [f'{k} = {_toml_value(v)}' for k, v in sorted(table.items())]
+
+    THEMES_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"wrote {path}")
+    print(f"edit it, then: keylane-settings theme use {theme_id}")
+
+
+def _toml_value(value: str) -> str:
+    return f"'{value}'" if '"' in value else f'"{value}"'
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="keylane-settings")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -81,6 +145,18 @@ def main() -> None:
     p_reset = sub.add_parser("reset")
     p_reset.add_argument("section", nargs="?")
     p_reset.set_defaults(func=cmd_reset)
+
+    theme = sub.add_parser("theme")
+    theme_sub = theme.add_subparsers(dest="theme_cmd", required=True)
+    theme_sub.add_parser("list").set_defaults(func=cmd_theme_list)
+    t_use = theme_sub.add_parser("use")
+    t_use.add_argument("theme_id")
+    t_use.set_defaults(func=cmd_theme_use)
+    t_new = theme_sub.add_parser("new")
+    t_new.add_argument("theme_id")
+    t_new.add_argument("--from", dest="base", default=DEFAULT_THEME_ID)
+    t_new.add_argument("--force", action="store_true")
+    t_new.set_defaults(func=cmd_theme_new)
 
     wiz = sub.add_parser("wizard")
     wiz_sub = wiz.add_subparsers(dest="wizard_cmd", required=True)
