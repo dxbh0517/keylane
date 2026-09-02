@@ -20,7 +20,9 @@ Keylane is a personal AI assistant that lives on your desktop:
 - Answers render as a **formatted canvas** — headline, sections, key/value rows, steps,
   and code blocks — not one wrapped paragraph
 - **Ask a follow-up** directly in the answer HUD without reopening the bar
-- A **curated ~7–9B OpenVINO model** runs **always-on** on your **Intel NPU**
+- A **curated 3–14B model** runs **always-on** on your **Intel NPU**, through either
+  **OpenVINO GenAI** or **ONNX Runtime GenAI** — pick the runtime in Settings
+- **Import any model from Hugging Face** that either runtime can load
 - **Persistent memory** — Keylane remembers facts about you across sessions and recalls
   them before answering anything personal
 - **Reminders and watchers** that survive restarts — "remind me to call Sam at 6",
@@ -64,7 +66,7 @@ Open **Settings** from the gear icon in the Spotlight footer, or press **`Ctrl+,
 | Tab | Options |
 | --- | --- |
 | General | Assistant name, your name, iteration budget |
-| Model | Active NPU model, switch / download |
+| Model | Inference runtime, device, active model, switch / download, Hugging Face import |
 | Web | Search backend (searxng / ddgs), SearXNG URL, Playwright, fallback |
 | Speech | TTS on notify, read aloud, test buttons |
 | Security | Shell allowlist, permitted read directories, permission modes per tool |
@@ -81,17 +83,77 @@ PYTHONPATH=. python scripts/keylane-settings wizard web
 
 Settings persist to `data/settings.json` (merged over `config/*.toml` defaults).
 
-## Model catalog
+## Runtimes and the model catalog
 
-Pick a model in **Settings → Model** or via API `POST /models/select`. Models auto-download from Hugging Face:
+Keylane can run a local model through two inference stacks. Pick one in
+**Settings → Model → Runtime**; the model list filters to what it can load.
 
-| ID | Model |
-| --- | --- |
-| `qwen2.5-7b-instruct` | Qwen 2.5 7B Instruct (default) |
-| `qwen2.5-7b-npu` | Qwen 2.5 7B NPU-tested |
-| `qwen2.5-coder-7b` | Qwen 2.5 Coder 7B |
-| `qwen3.5-9b` | Qwen 3.5 9B |
-| `gemma-2-9b-it` | Gemma 2 9B Instruct |
+| Runtime | Loads | Install |
+| --- | --- | --- |
+| **OpenVINO GenAI** (default) | OpenVINO IR exports — repos named `*-int4-ov` | in `requirements.txt` |
+| **ONNX Runtime GenAI** | ONNX exports with a `genai_config.json` | `pip install onnxruntime-genai onnxruntime-openvino` |
+
+The runtime is a property of the export, not a preference: an `*-int4-ov` repo
+holds OpenVINO IR and only OpenVINO GenAI can load it. ONNX Runtime reaches the
+same NPU through the **OpenVINO execution provider**, which is what the second
+package is for — without it, ONNX models run on CPU only.
+
+> Installing `onnxruntime-openvino` may pin a different OpenVINO version than
+> the one `openvino-genai` wants. If OpenVINO GenAI stops loading afterwards,
+> install the two runtimes in separate virtualenvs and keep the one you use.
+
+**Device** is chosen per runtime in the same panel (`NPU` / `GPU` / `CPU`, plus
+`AUTO` on ONNX Runtime, which keeps whatever provider the model shipped with).
+Changing it invalidates the compile cache, so the next load is slow either way.
+
+### Curated models
+
+Pick one in **Settings → Model** or via `POST /models/select`. They auto-download
+from Hugging Face on first activation.
+
+| ID | Model | Runtime |
+| --- | --- | --- |
+| `qwen2.5-7b-instruct` | Qwen 2.5 7B Instruct (default) | OpenVINO |
+| `qwen2.5-7b-npu` | Qwen 2.5 7B NPU-tested | OpenVINO |
+| `qwen2.5-coder-7b` | Qwen 2.5 Coder 7B | OpenVINO |
+| `qwen3-8b` | Qwen 3 8B | OpenVINO |
+| `qwen3.5-9b` | Qwen 3.5 9B (VLM) | OpenVINO |
+| `gemma-2-9b-it` | Gemma 2 9B Instruct | OpenVINO |
+| `mistral-7b-instruct-v03` | Mistral 7B Instruct v0.3 | OpenVINO |
+| `deepseek-r1-qwen-7b` | DeepSeek R1 Distill Qwen 7B | OpenVINO |
+| `phi-4-mini-instruct` | Phi 4 Mini Instruct | OpenVINO |
+| `phi-3.5-mini-instruct` | Phi 3.5 Mini Instruct | OpenVINO |
+| `phi-4-mini-onnx` | Phi 4 Mini Instruct | ONNX Runtime |
+| `phi-3.5-mini-onnx` | Phi 3.5 Mini Instruct (AWQ) | ONNX Runtime |
+| `phi-4-mini-reasoning-onnx` | Phi 4 Mini Reasoning | ONNX Runtime |
+| `llama-3.2-3b-onnx` | Llama 3.2 3B Instruct | ONNX Runtime |
+| `mistral-7b-onnx` | Mistral 7B Instruct v0.2 | ONNX Runtime |
+| `phi-4-onnx` | Phi 4 (14B) | ONNX Runtime |
+
+Vision models run on OpenVINO GenAI only.
+
+### Importing from Hugging Face
+
+Paste a repo id or URL into **Settings → Model → Import from Hugging Face**, or:
+
+```bash
+curl -X POST localhost:9100/models/import \
+  -H 'content-type: application/json' \
+  -d '{"repo": "OpenVINO/Qwen3-8B-int4-ov"}'
+```
+
+Keylane reads the repo's file listing first and refuses anything it could not
+load, so a 15 GB download never starts on a guess:
+
+- `openvino_model.xml` → OpenVINO GenAI
+- `genai_config.json` → ONNX Runtime GenAI
+- neither → rejected with the reason (a PyTorch or GGUF repo needs converting first)
+
+ONNX repos usually ship four or five builds of the same model — `cpu-int4`,
+`cuda-fp16`, `directml`, `qnn` — so the import ranks them and takes the one that
+runs on Intel hardware. Pass `"subfolder"` to override the choice. Imported
+models sit alongside the curated ones and can be removed with **Forget**
+(`DELETE /models/imported/{id}`), which keeps the downloaded files.
 
 ## Web search
 
@@ -299,6 +361,8 @@ Servers added in Settings are stored in `data/settings.json` and merged over the
 | `POST /chat/stream` | SSE agent run with status, tool, research, token, permission events |
 | `GET/PATCH /settings` | Read / write user settings |
 | `GET /settings/health` | NPU, SearXNG, MCP health |
+| `GET /models` · `GET /runtimes` | Catalog (filter with `?runtime=`) and installed runtimes |
+| `POST /models/import` · `DELETE /models/imported/{id}` | Add or forget a Hugging Face model |
 | `GET /sessions` | Session history for UI |
 | `GET /tasks` · `POST /tasks/reminder` · `DELETE /tasks/{id}` | Reminders, watchers, background jobs |
 | `GET/POST /memories` · `DELETE /memories/{id}` | The fact store |
@@ -317,7 +381,8 @@ Super+Space → GTK Spotlight → floating orb → answer HUD (click-through)
               capability seams (seams/)
       llm · web · skills · jobs · subagents · goals · spill
                     ↓
-   NPU (OpenVINO GenAI)  ·  optional GPU model over the OpenAI API
+   NPU via runtimes/  ·  optional GPU model over the OpenAI API
+   (OpenVINO GenAI · ONNX Runtime GenAI + OpenVINO EP)
 ```
 
 Every capability is reached through a registry in `seams/`, not by importing one
@@ -339,6 +404,15 @@ route to the adapters to try in order:
 The `gpu` adapter speaks the OpenAI chat-completions API, so LM Studio,
 llama.cpp's server, Ollama and vLLM all work. Set its `model`, flip `enabled`,
 and background work moves off the NPU without touching any call site.
+
+### Runtimes
+
+`runtimes/` is the same idea one level down: an interface (`RuntimeBackend`) for
+recognising an export on disk, validating its download, compiling it, budgeting
+a prompt and streaming tokens, with one module per stack behind it. A catalog
+entry names its runtime and everything else is asked of that runtime, so adding
+a third is a new module rather than a new branch in every function that touches
+a model.
 
 ### The system prompt
 

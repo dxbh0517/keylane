@@ -87,9 +87,15 @@ def _defaults() -> dict[str, Any]:
         "ui": {"theme": "system", "theme_id": "glass-console"},
         "models": {
             "default": models_raw.get("default", ""),
+            # Which inference stack Settings browses models for.
+            "runtime": models_raw.get("runtime", "openvino"),
             "device": models_raw.get("device", "NPU"),
+            # Per-runtime device choice; the runtimes do not offer the same ones.
+            "devices": models_raw.get("devices", {}),
             "routes": models_raw.get("routes", {}),
             "adapters": models_raw.get("adapters", []),
+            # Models the user added from Hugging Face, appended to the curated list.
+            "imported": models_raw.get("imported", []),
         },
     }
 

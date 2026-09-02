@@ -94,6 +94,14 @@ class SettingsWindow(Gtk.Window):
         self._gpu_models: list[str] = []
         self._gpu_model_id: str = ""
         self._route_rows: dict[str, Gtk.Label] = {}
+        # The runtime Settings is browsing. Models belong to one or the other,
+        # so this is what the list below is filtered by.
+        self._runtimes: list[dict[str, Any]] = []
+        self._runtime_id: str = "openvino"
+        self._runtime_buttons: dict[str, Gtk.ToggleButton] = {}
+        self._device_ids: list[str] = []
+        self._model_devices: dict[str, str] = {}
+        self._importing = False
 
         shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         shell.add_css_class("settings-shell")
@@ -678,6 +686,7 @@ class SettingsWindow(Gtk.Window):
         ids: list[str] = []
         for model in self._models:
             name = str(model.get("name") or model.get("id", "?"))
+            name = f"{name} · {self._runtime_tag(str(model.get('runtime', '')))}"
             if not model.get("downloaded"):
                 name = f"{name} (not downloaded)"
             labels.append(name)
@@ -716,7 +725,10 @@ class SettingsWindow(Gtk.Window):
     def _default_model_menu_label(self, model_id: str) -> str:
         display = self._model_display_name(model_id)
         for model in self._models:
-            if model.get("id") == model_id and not model.get("downloaded"):
+            if model.get("id") != model_id:
+                continue
+            display = f"{display} · {self._runtime_tag(str(model.get('runtime', '')))}"
+            if not model.get("downloaded"):
                 return f"{display} (not downloaded)"
         return display
 
@@ -751,6 +763,8 @@ class SettingsWindow(Gtk.Window):
 
     def _build_model(self) -> None:
         page = self._page("model")
+        self._build_runtime(page)
+
         startup = self._section(
             page,
             "Startup",
@@ -782,7 +796,227 @@ class SettingsWindow(Gtk.Window):
         self._model_list.set_can_focus(False)
         section.append(self._model_list)
 
+        self._model_empty = Gtk.Label(label="", xalign=0, wrap=True)
+        self._model_empty.add_css_class("settings-field-hint")
+        self._model_empty.set_visible(False)
+        section.append(self._model_empty)
+
+        self._build_import(page)
         self._build_routes(page)
+
+    # ── runtime ──────────────────────────────────────────────────────────
+
+    def _build_runtime(self, page: Gtk.Box) -> None:
+        """Which inference stack runs the local model, and on which device."""
+        section = self._section(
+            page,
+            "Runtime",
+            "A model is an export for one stack or the other, so this also "
+            "decides which models you can pick below.",
+        )
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        box.add_css_class("settings-segmented")
+        group: Gtk.ToggleButton | None = None
+        # Labelled before /runtimes answers, so the control is never empty; the
+        # names are corrected from the daemon on the first load.
+        for runtime_id, label in (
+            ("openvino", "OpenVINO GenAI"),
+            ("onnxruntime", "ONNX Runtime"),
+        ):
+            btn = Gtk.ToggleButton(label=label)
+            btn.add_css_class("settings-segment")
+            if group is None:
+                group = btn
+            else:
+                btn.set_group(group)
+            btn.connect("toggled", self._on_runtime_toggled, runtime_id)
+            self._runtime_buttons[runtime_id] = btn
+            box.append(btn)
+        self._field(section, "Inference runtime", box)
+
+        self._runtime_status = Gtk.Label(label="", xalign=0, wrap=True)
+        self._runtime_status.add_css_class("settings-field-hint")
+        section.append(self._runtime_status)
+
+        (
+            self._device_trigger,
+            self._device_label,
+            self._device_popover,
+            self._device_menu,
+        ) = self._make_dropdown("NPU")
+        self._field(
+            section,
+            "Device",
+            self._device_trigger,
+            "Applies to models on this runtime. Changing it invalidates the "
+            "compile cache, so the next load is slow either way.",
+        )
+
+    def _runtime_info(self, runtime_id: str) -> dict[str, Any]:
+        for info in self._runtimes:
+            if info.get("id") == runtime_id:
+                return info
+        return {}
+
+    def _on_runtime_toggled(self, button: Gtk.ToggleButton, runtime_id: str) -> None:
+        if self._block_save or not button.get_active():
+            return
+        self._runtime_id = runtime_id
+        self._patch("models", {"runtime": runtime_id})
+        self._sync_runtime_status()
+        self._sync_device_menu()
+        self._refresh_model_ui()
+        self._sync_default_model_menu()
+
+    def _sync_runtime_status(self) -> None:
+        info = self._runtime_info(self._runtime_id)
+        if not info:
+            self._runtime_status.set_text("")
+            return
+        summary = str(info.get("summary", ""))
+        if info.get("installed"):
+            self._runtime_status.set_text(f"{summary} Installed: {info.get('detail', '')}")
+        else:
+            self._runtime_status.set_text(
+                f"{summary} Not installed — {info.get('detail', '')}. "
+                f"Install it with: {info.get('install_hint', '')}"
+            )
+
+    def _sync_device_menu(self) -> None:
+        info = self._runtime_info(self._runtime_id)
+        devices = [str(d) for d in info.get("devices", [])] or ["NPU"]
+        self._device_ids = devices
+
+        current = str(self._model_devices.get(self._runtime_id, "") or "")
+        if current not in devices:
+            current = str(info.get("default_device") or devices[0])
+        self._device_label.set_text(current)
+
+        self._clear_box(self._device_menu)
+        for device in devices:
+            btn = Gtk.Button(label=device)
+            btn.add_css_class("settings-dropdown-option")
+            if device == current:
+                btn.add_css_class("selected-default")
+            btn.connect("clicked", lambda _b, d=device: self._set_device(d))
+            self._device_menu.append(btn)
+
+    def _set_device(self, device: str) -> None:
+        self._device_popover.popdown()
+        self._model_devices[self._runtime_id] = device
+        self._device_label.set_text(device)
+        self._patch("models", {"devices": dict(self._model_devices)})
+        self._toast(f"{self._runtime_label(self._runtime_id)} will use {device}")
+        self._sync_device_menu()
+        self._refresh_model_ui()
+
+    def _runtime_label(self, runtime_id: str) -> str:
+        info = self._runtime_info(runtime_id)
+        return str(info.get("name") or runtime_id)
+
+    def _runtime_tag(self, runtime_id: str) -> str:
+        """A short name for a row that has to say which stack it belongs to."""
+        return {"openvino": "OpenVINO", "onnxruntime": "ONNX"}.get(runtime_id, runtime_id)
+
+    # ── importing from Hugging Face ──────────────────────────────────────
+
+    def _build_import(self, page: Gtk.Box) -> None:
+        section = self._section(
+            page,
+            "Import from Hugging Face",
+            "Anything not on the curated list. Keylane reads the repo first and "
+            "refuses one it could not load, so nothing is downloaded on a guess.",
+        )
+
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self._import_entry = self._entry("OpenVINO/Qwen3-8B-int4-ov")
+        self._import_entry.set_hexpand(True)
+        self._import_entry.connect("activate", lambda *_: self._import_model())
+        row.append(self._import_entry)
+
+        self._import_btn = self._primary_btn("Import")
+        self._import_btn.connect("clicked", lambda *_: self._import_model())
+        row.append(self._import_btn)
+
+        self._field(
+            section,
+            "Repo id or URL",
+            row,
+            "Needs an OpenVINO IR export (openvino_model.xml — repos named "
+            "*-int4-ov) or an ONNX Runtime GenAI export (genai_config.json). "
+            "A repo with several builds is matched to this machine automatically.",
+        )
+
+    def _import_model(self) -> None:
+        repo = self._import_entry.get_text().strip()
+        if not repo:
+            self._toast("Paste a Hugging Face repo id first")
+            return
+        if self._importing:
+            return
+        self._importing = True
+        self._import_btn.set_sensitive(False)
+        self._toast(f"Reading {repo}…")
+
+        def _work() -> None:
+            try:
+                resp = httpx.post(
+                    f"{DAEMON}/models/import",
+                    json={"repo": repo},
+                    timeout=60,
+                )
+                if resp.status_code >= 400:
+                    detail = resp.json().get("detail", resp.text)
+                    GLib.idle_add(self._finish_import, "", str(detail))
+                    return
+                data = resp.json()
+            except Exception as exc:  # noqa: BLE001
+                GLib.idle_add(self._finish_import, "", str(exc))
+                return
+            model = data.get("model", {})
+            others = len([v for v in data.get("variants", []) if not v.get("chosen")])
+            note = f" ({others} other build(s) in that repo)" if others else ""
+            GLib.idle_add(
+                self._finish_import,
+                f"Imported {model.get('name', repo)} for "
+                f"{self._runtime_tag(str(model.get('runtime', '')))}{note}",
+                "",
+                str(model.get("runtime", "")),
+            )
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _finish_import(self, message: str, error: str, runtime_id: str = "") -> bool:
+        self._importing = False
+        self._import_btn.set_sensitive(True)
+        if error:
+            self._toast(error[:120])
+            self._footer.set_text(error[:110])
+            return False
+        self._import_entry.set_text("")
+        self._toast(message[:80])
+        # An import lands in its own runtime's list, which may not be the one
+        # on screen — switch to it rather than appearing to have done nothing.
+        if runtime_id and runtime_id != self._runtime_id:
+            self._select_runtime(runtime_id)
+        self._load_models()
+        return False
+
+    def _select_runtime(self, runtime_id: str) -> None:
+        button = self._runtime_buttons.get(runtime_id)
+        if button is None:
+            return
+        button.set_active(True)
+
+    def _forget_model(self, model_id: str) -> None:
+        try:
+            httpx.delete(f"{DAEMON}/models/imported/{model_id}", timeout=15).raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            self._toast(str(exc)[:80])
+            return
+        self._toast("Removed from the list — downloaded files were kept")
+        self._load_models()
 
     def _model_row_box(self, model: dict[str, Any]) -> Gtk.Box:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -807,15 +1041,26 @@ class SettingsWindow(Gtk.Window):
         else:
             top.append(self._badge("Not downloaded", "muted"))
 
+        if model.get("source") == "imported":
+            top.append(self._badge("Imported", "muted"))
+
         box.append(top)
 
-        meta = Gtk.Label(
-            label=f"{model.get('params_b', '?')}B · {model.get('hf_repo', '')}",
-            xalign=0,
-            wrap=True,
-        )
+        params = model.get("params_b") or 0
+        parts = [f"{params}B" if params else "size unknown", str(model.get("hf_repo", ""))]
+        if model.get("subfolder"):
+            parts.append(str(model["subfolder"]))
+        if model.get("device"):
+            parts.append(f"on {model['device']}")
+        meta = Gtk.Label(label=" · ".join(p for p in parts if p), xalign=0, wrap=True)
         meta.add_css_class("settings-field-hint")
         box.append(meta)
+
+        description = str(model.get("description", "") or "")
+        if description:
+            desc = Gtk.Label(label=description, xalign=0, wrap=True)
+            desc.add_css_class("settings-field-hint")
+            box.append(desc)
 
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         actions.add_css_class("settings-model-actions")
@@ -880,6 +1125,12 @@ class SettingsWindow(Gtk.Window):
                 switch_btn.connect("clicked", lambda *_b, m=mid: self._activate_model(m))
                 actions.append(switch_btn)
 
+        if model.get("source") == "imported" and not model.get("downloading"):
+            forget = self._secondary_btn("Forget")
+            forget.set_tooltip_text("Remove from the list. Downloaded files are kept.")
+            forget.connect("clicked", lambda *_b, m=mid: self._forget_model(m))
+            actions.append(forget)
+
         if actions.get_first_child():
             box.append(actions)
 
@@ -892,6 +1143,8 @@ class SettingsWindow(Gtk.Window):
         return row
 
     def _sync_model_list(self, models: list[dict[str, Any]]) -> None:
+        models = [m for m in models if m.get("runtime", "openvino") == self._runtime_id]
+        self._sync_model_empty(len(models))
         seen: set[str] = set()
         for model in models:
             mid = model["id"]
@@ -906,6 +1159,28 @@ class SettingsWindow(Gtk.Window):
             if mid not in seen:
                 self._model_list.remove(self._model_rows[mid])
                 del self._model_rows[mid]
+
+    def _sync_model_empty(self, shown: int) -> None:
+        """Say why the list is empty rather than showing a blank box."""
+        if shown:
+            self._model_empty.set_visible(False)
+            return
+        elsewhere = len(self._models) - shown
+        info = self._runtime_info(self._runtime_id)
+        if not info.get("installed", True):
+            text = (
+                f"{self._runtime_label(self._runtime_id)} is not installed, so none "
+                f"of its models can run yet. Install it with: {info.get('install_hint', '')}"
+            )
+        elif elsewhere:
+            text = (
+                f"No models for this runtime. {elsewhere} model(s) are on the other "
+                "runtime — switch above, or import one below."
+            )
+        else:
+            text = "No models yet. Import one from Hugging Face below."
+        self._model_empty.set_text(text)
+        self._model_empty.set_visible(True)
 
     def _download_model(self, model_id: str) -> None:
         try:
@@ -1021,6 +1296,13 @@ class SettingsWindow(Gtk.Window):
 
         self._models = data.get("models", [])
         self._active_model_id = data.get("active")
+        self._runtimes = list(data.get("runtimes", []) or [])
+        devices = data.get("devices", {})
+        if isinstance(devices, dict):
+            self._model_devices = {str(k): str(v) for k, v in devices.items()}
+        self._sync_runtime_buttons(str(data.get("runtime", "") or ""))
+        self._sync_runtime_status()
+        self._sync_device_menu()
         self._sync_model_list(self._models)
         self._sync_default_model_menu(data.get("default"))
 
@@ -1195,6 +1477,20 @@ class SettingsWindow(Gtk.Window):
             self._toast(f"Reachable, but {self._gpu_model_id!r} is not served there")
         else:
             self._toast(f"OK — {len(found)} model(s) available")
+
+    def _sync_runtime_buttons(self, runtime_id: str) -> None:
+        """Name the segments from the daemon and mark the stored choice."""
+        self._block_save = True
+        try:
+            for info in self._runtimes:
+                button = self._runtime_buttons.get(str(info.get("id")))
+                if button is not None:
+                    button.set_label(str(info.get("name") or info.get("id")))
+            if runtime_id in self._runtime_buttons:
+                self._runtime_id = runtime_id
+                self._runtime_buttons[runtime_id].set_active(True)
+        finally:
+            self._block_save = False
 
     def _load_routes(self) -> None:
         try:
@@ -1825,6 +2121,14 @@ class SettingsWindow(Gtk.Window):
         self._read_roots.get_buffer().set_text("\n".join(str(r) for r in roots))
 
         models_cfg = data.get("models", {})
+        devices = models_cfg.get("devices", {})
+        self._model_devices = {
+            str(k): str(v) for k, v in devices.items() if isinstance(devices, dict)
+        }
+        runtime_id = str(models_cfg.get("runtime", "openvino") or "openvino")
+        if runtime_id in self._runtime_buttons:
+            self._runtime_id = runtime_id
+            self._runtime_buttons[runtime_id].set_active(True)
         self._adapters = list(models_cfg.get("adapters", []) or [])
         gpu = next((a for a in self._adapters if a.get("id") == "gpu"), {})
         self._gpu_enabled.set_active(bool(gpu.get("enabled", False)))

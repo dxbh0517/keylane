@@ -4,9 +4,15 @@ python-multipart
 httpx
 pydantic
 pydantic-settings
+# OpenVINO GenAI — the default runtime.
 openvino
 openvino-genai
 openvino-tokenizers
+# ONNX Runtime GenAI — the second runtime, optional. The first package runs
+# ONNX models on CPU; the second adds the OpenVINO execution provider that
+# puts them on the NPU. It may pin a different OpenVINO version than
+# openvino-genai wants, so it is opt-in rather than installed by default.
+#   pip install onnxruntime-genai onnxruntime-openvino
 mcp
 tomli-w
 apscheduler
