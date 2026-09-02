@@ -5,13 +5,12 @@ from __future__ import annotations
 import logging
 import os
 import re
-import subprocess
 import sys
-import time
 from collections.abc import Callable
 from pathlib import Path
 
 from npu.kind import PipelineKind, model_kind
+from runtimes.probe_runner import OK_MARKER, last_line, run_probe
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +59,7 @@ import sys
 path, device, cache = sys.argv[1], sys.argv[2], sys.argv[3]
 import openvino_genai as ov_genai
 {body}
-print("KEYLANE_PROBE_OK")
+print("{OK_MARKER}")
 """
 
 
@@ -121,17 +120,6 @@ def _timeout_message(kind: PipelineKind, timeout: float) -> str:
     return f"timeout:compile did not finish within {mins:.0f} min"
 
 
-def _signal_failure(returncode: int, stderr: str, stdout: str) -> str:
-    sig = -returncode
-    names = {6: "SIGABRT", 11: "SIGSEGV", 15: "SIGTERM"}
-    signal_name = names.get(sig, str(sig))
-    detail = _last_line(stderr) or _last_line(stdout)
-    if sig == 15:
-        hint = "compile interrupted (daemon restart or timeout)"
-        return f"interrupted:{hint}. {detail}".strip()
-    return f"crash:loading killed process ({signal_name}). {detail}".strip()
-
-
 def probe(
     model_path: Path,
     device: str,
@@ -152,61 +140,12 @@ def probe(
         device,
         str(cache or ""),
     ]
-    try:
-        proc = subprocess.Popen(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            stdin=subprocess.DEVNULL,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return False, f"error:could not start probe: {exc}"
-
-    start = time.time()
-    last_tick = 0.0
-    stdout = ""
-    stderr = ""
-    while True:
-        elapsed = time.time() - start
-        if elapsed > timeout:
-            proc.terminate()
-            try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-            return False, _timeout_message(pipeline_kind, timeout)
-
-        if on_tick and elapsed - last_tick >= 5:
-            on_tick(elapsed)
-            last_tick = elapsed
-
-        try:
-            stdout, stderr = proc.communicate(timeout=1)
-            break
-        except subprocess.TimeoutExpired:
-            if proc.poll() is not None:
-                stdout, stderr = proc.communicate()
-                break
-            continue
-
-    if proc.returncode == 0 and "KEYLANE_PROBE_OK" in stdout:
-        return True, "ready"
-
-    if proc.returncode is not None and proc.returncode < 0:
-        return False, _signal_failure(proc.returncode, stderr, stdout)
-
-    detail = _last_line(stderr) or f"exit code {proc.returncode}"
-    return False, f"error:{detail}"
+    return run_probe(
+        argv,
+        timeout=timeout,
+        timeout_message=_timeout_message(pipeline_kind, timeout),
+        on_tick=on_tick,
+    )
 
 
-def _last_line(text: str) -> str:
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-    if not lines:
-        return ""
-    for line in reversed(lines):
-        if line.startswith(("File ", "Traceback", "  ")):
-            continue
-        return line[:300]
-    return lines[-1][:300]
+_last_line = last_line

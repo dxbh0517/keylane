@@ -1,11 +1,27 @@
-# Curated OpenVINO INT4 models for Intel NPU (~7–9B)
+# Curated models, grouped by the runtime that can load them.
+#
+# `runtime` is not a preference — it is what the export *is*. An `*-int4-ov`
+# repo holds OpenVINO IR and only OpenVINO GenAI can load it; a repo with a
+# genai_config.json holds an ONNX graph and only ONNX Runtime GenAI can. Pick
+# the runtime in Settings → Model and the list filters to what it can run.
 default = "qwen2.5-7b-instruct"
+runtime = "openvino"
 device = "NPU"
+
+# Device per runtime, since they do not offer the same ones. Blank falls back
+# to the runtime's own default.
+[devices]
+openvino = "NPU"
+onnxruntime = "NPU"
+
+# ── OpenVINO GenAI ───────────────────────────────────────────────────────
+# Intel's own stack: OpenVINO IR exports, compiled for the NPU.
 
 [[models]]
 id = "qwen2.5-7b-instruct"
 name = "Qwen 2.5 7B Instruct"
 hf_repo = "OpenVINO/Qwen2.5-7B-Instruct-int4-ov"
+runtime = "openvino"
 params_b = 7
 description = "General-purpose assistant; good default."
 
@@ -13,6 +29,7 @@ description = "General-purpose assistant; good default."
 id = "qwen2.5-7b-npu"
 name = "Qwen 2.5 7B (NPU-tested)"
 hf_repo = "FluidInference/qwen2.5-7b-int4-npu-ov"
+runtime = "openvino"
 params_b = 7
 description = "Same family, validated on Intel NPU."
 
@@ -20,13 +37,23 @@ description = "Same family, validated on Intel NPU."
 id = "qwen2.5-coder-7b"
 name = "Qwen 2.5 Coder 7B"
 hf_repo = "OpenVINO/Qwen2.5-Coder-7B-Instruct-int4-ov"
+runtime = "openvino"
 params_b = 7
 description = "Code and technical tasks."
+
+[[models]]
+id = "qwen3-8b"
+name = "Qwen 3 8B"
+hf_repo = "OpenVINO/Qwen3-8B-int4-ov"
+runtime = "openvino"
+params_b = 8
+description = "Newer Qwen generation; stronger reasoning than 2.5 at the same size."
 
 [[models]]
 id = "qwen3.5-9b"
 name = "Qwen 3.5 9B"
 hf_repo = "OpenVINO/Qwen3.5-9B-int4-ov"
+runtime = "openvino"
 params_b = 9
 description = "Multimodal VLM (text-only in Keylane). First NPU compile can take 60–90+ minutes."
 
@@ -34,8 +61,99 @@ description = "Multimodal VLM (text-only in Keylane). First NPU compile can take
 id = "gemma-2-9b-it"
 name = "Gemma 2 9B Instruct"
 hf_repo = "OpenVINO/gemma-2-9b-it-int4-ov"
+runtime = "openvino"
 params_b = 9
 description = "Google Gemma 2 instruction-tuned."
+
+[[models]]
+id = "mistral-7b-instruct-v03"
+name = "Mistral 7B Instruct v0.3"
+hf_repo = "OpenVINO/Mistral-7B-Instruct-v0.3-int4-ov"
+runtime = "openvino"
+params_b = 7
+description = "Terse and fast; a good fit for tool-calling turns."
+
+[[models]]
+id = "deepseek-r1-qwen-7b"
+name = "DeepSeek R1 Distill Qwen 7B"
+hf_repo = "OpenVINO/DeepSeek-R1-Distill-Qwen-7B-int4-ov"
+runtime = "openvino"
+params_b = 7
+description = "Reasoning-distilled. Thinks at length before answering."
+
+[[models]]
+id = "phi-4-mini-instruct"
+name = "Phi 4 Mini Instruct"
+hf_repo = "OpenVINO/Phi-4-mini-instruct-int4-ov"
+runtime = "openvino"
+params_b = 4
+description = "Small and quick to compile — the one to try first on a new machine."
+
+[[models]]
+id = "phi-3.5-mini-instruct"
+name = "Phi 3.5 Mini Instruct"
+hf_repo = "OpenVINO/Phi-3.5-mini-instruct-int4-ov"
+runtime = "openvino"
+params_b = 4
+description = "Well-tested small model with a long context."
+
+# ── ONNX Runtime GenAI ───────────────────────────────────────────────────
+# ONNX exports run through the OpenVINO execution provider. These repos ship
+# several builds of each model, so every entry names the one that runs here.
+
+[[models]]
+id = "phi-4-mini-onnx"
+name = "Phi 4 Mini Instruct (ONNX)"
+hf_repo = "microsoft/Phi-4-mini-instruct-onnx"
+subfolder = "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4"
+runtime = "onnxruntime"
+params_b = 4
+description = "Microsoft's own INT4 export; the default ONNX Runtime pick."
+
+[[models]]
+id = "phi-3.5-mini-onnx"
+name = "Phi 3.5 Mini Instruct (ONNX)"
+hf_repo = "microsoft/Phi-3.5-mini-instruct-onnx"
+subfolder = "cpu_and_mobile/cpu-int4-awq-block-128-acc-level-4"
+runtime = "onnxruntime"
+params_b = 4
+description = "AWQ-quantised, which holds up better than RTN at INT4."
+
+[[models]]
+id = "phi-4-mini-reasoning-onnx"
+name = "Phi 4 Mini Reasoning (ONNX)"
+hf_repo = "microsoft/Phi-4-mini-reasoning-onnx"
+subfolder = "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4"
+runtime = "onnxruntime"
+params_b = 4
+description = "Reasoning-tuned Phi. Slower to answer, better at multi-step work."
+
+[[models]]
+id = "llama-3.2-3b-onnx"
+name = "Llama 3.2 3B Instruct (ONNX)"
+hf_repo = "onnx-community/Llama-3.2-3B-Instruct-GENAI-ONNX"
+subfolder = "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4"
+runtime = "onnxruntime"
+params_b = 3
+description = "The smallest curated model — fastest first load of anything here."
+
+[[models]]
+id = "mistral-7b-onnx"
+name = "Mistral 7B Instruct v0.2 (ONNX)"
+hf_repo = "microsoft/mistral-7b-instruct-v0.2-ONNX"
+subfolder = "onnx/cpu_and_mobile/mistral-7b-instruct-v0.2-cpu-int4-rtn-block-32-acc-level-4"
+runtime = "onnxruntime"
+params_b = 7
+description = "7B-class ONNX build, comparable to the OpenVINO Mistral entry."
+
+[[models]]
+id = "phi-4-onnx"
+name = "Phi 4 (ONNX)"
+hf_repo = "microsoft/phi-4-onnx"
+subfolder = "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4"
+runtime = "onnxruntime"
+params_b = 14
+description = "The largest curated model. Expect a long first compile and heavy memory use."
 
 # ── Model routing ────────────────────────────────────────────────────────
 # Call sites ask for a purpose, not a model. Each route lists the adapters to

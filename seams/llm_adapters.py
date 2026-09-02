@@ -1,6 +1,8 @@
 """The shipped model adapters.
 
-``npu`` wraps the always-on OpenVINO pipeline Keylane already had. ``gpu``
+``npu`` wraps the always-on local pipeline — OpenVINO GenAI or ONNX Runtime
+GenAI, whichever the loaded model needs; the route table sees one adapter
+either way. ``gpu``
 speaks the OpenAI chat-completions wire format, which is what LM Studio,
 llama.cpp's server, Ollama and vLLM all expose — so "a larger model on the GPU"
 is a URL in settings rather than a second inference stack in this process.
@@ -19,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class NpuAdapter:
-    """The local OpenVINO GenAI pipeline."""
+    """The always-on local pipeline, whichever runtime compiled it."""
 
     id = "npu"
 
@@ -35,16 +37,19 @@ class NpuAdapter:
     def status(self) -> dict[str, Any]:
         state = self._runtime.status
         return {
-            "kind": "openvino",
+            # Which local stack is holding the model — OpenVINO GenAI or ONNX
+            # Runtime GenAI. The route table does not care, but Settings does.
+            "kind": state.get("runtime") or "openvino",
             "model": state.get("model_id"),
+            "device": state.get("device"),
             "state": state.get("state"),
             "progress": state.get("progress"),
         }
 
     @property
     def prompt_budget_chars(self) -> int:
-        """The prompt length compiled into the current pipeline."""
-        return self._runtime._prompt_budget_chars()  # noqa: SLF001
+        """The prompt length the loaded pipeline can actually take."""
+        return self._runtime.prompt_budget_chars()
 
     def generate(self, prompt: str, **kwargs: Any) -> str:
         return self._runtime.generate(prompt, **kwargs)

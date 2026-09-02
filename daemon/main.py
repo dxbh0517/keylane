@@ -20,8 +20,14 @@ from agent.loop import AIAgent
 from daemon.config import add_mcp_server, all_settings, list_mcp_servers, remove_mcp_server, reset_settings, save_settings
 from daemon.health import settings_health
 from daemon.paths import ensure_data_dirs
-from models.catalog import default_model_id, get_model, get_runtime, load_catalog
-from npu.kind import model_kind
+from models.catalog import (
+    active_runtime_id,
+    default_model_id,
+    get_model,
+    get_runtime,
+    load_catalog,
+)
+from runtimes import list_backends, status_payload
 from scheduler.jobs import get_scheduler, restore_scheduled_tasks
 
 logger = logging.getLogger(__name__)
@@ -43,6 +49,22 @@ class ChatResponse(BaseModel):
 
 class ModelSelectRequest(BaseModel):
     model_id: str
+
+
+class ModelImportRequest(BaseModel):
+    """Add a Hugging Face repo to the catalog.
+
+    Leave `runtime` and `subfolder` unset and Keylane reads the repo's file
+    listing and picks the build that suits this machine.
+    """
+
+    repo: str
+    runtime: str | None = None
+    subfolder: str | None = None
+    name: str = ""
+    device: str = ""
+    model_id: str = ""
+    download: bool = False
 
 
 class McpServerRequest(BaseModel):
@@ -99,6 +121,16 @@ async def lifespan(app: FastAPI):
             if entry is None:
                 logger.warning("Default model %s is unknown — skipping warm-up", default_id)
                 return
+            installed, detail = entry.backend.installed()
+            if not installed:
+                logger.warning(
+                    "Default model %s needs the %s runtime, which is not installed (%s)"
+                    " — skipping warm-up",
+                    default_id,
+                    entry.backend.info.name,
+                    detail,
+                )
+                return
             if not entry.is_downloaded():
                 logger.info("Default model %s not downloaded — skipping warm-up", default_id)
                 return
@@ -128,34 +160,66 @@ def health() -> dict[str, Any]:
 
 
 @app.get("/models")
-def list_models() -> dict[str, Any]:
+def list_models(runtime: str = "") -> dict[str, Any]:
+    """The catalog. Pass ?runtime= to see only what one runtime can load."""
     default, device, entries = load_catalog()
-    runtime = get_runtime()
-    downloads = runtime.download_status()
-    active = runtime.status.get("model_id")
+    runtime_filter = runtime.strip().lower()
+    rt = get_runtime()
+    downloads = rt.download_status()
+    active = rt.status.get("model_id")
     startup_default = default_model_id()
-    return {
-        "default": startup_default,
-        "catalog_default": default,
-        "device": device,
-        "active": active,
-        "models": [
+
+    rows = []
+    for e in entries:
+        if runtime_filter and e.runtime != runtime_filter:
+            continue
+        info = downloads.get(e.id, {})
+        rows.append(
             {
                 "id": e.id,
                 "name": e.name,
                 "description": e.description,
                 "params_b": e.params_b,
                 "hf_repo": e.hf_repo,
-                "pipeline": model_kind(e.local_path) if e.local_path.is_dir() else "llm",
+                "runtime": e.runtime,
+                "subfolder": e.subfolder,
+                "source": e.source,
+                "device": e.resolve_device(device),
+                "pipeline": e.backend.model_kind(e.model_dir) if e.model_dir.is_dir() else "llm",
                 "downloaded": e.is_downloaded(),
-                "downloading": downloads.get(e.id, {}).get("downloading", False),
-                "download_progress": downloads.get(e.id, {}).get("progress", ""),
-                "download_percent": downloads.get(e.id, {}).get("percent"),
-                "download_file": downloads.get(e.id, {}).get("file", ""),
-                "download_error": downloads.get(e.id, {}).get("error", ""),
+                "downloading": info.get("downloading", False),
+                "download_progress": info.get("progress", ""),
+                "download_percent": info.get("percent"),
+                "download_file": info.get("file", ""),
+                "download_error": info.get("error", ""),
                 "active": e.id == active,
             }
-            for e in entries
+        )
+
+    return {
+        "default": startup_default,
+        "catalog_default": default,
+        "device": device,
+        "active": active,
+        "runtime": active_runtime_id(),
+        # The device chosen per runtime, so Settings does not need a second call.
+        "devices": all_settings().get("models", {}).get("devices", {}),
+        "runtimes": [status_payload(b) for b in list_backends()],
+        "models": rows,
+    }
+
+
+@app.get("/runtimes")
+def list_runtimes() -> dict[str, Any]:
+    """Which inference stacks are installed, and what each can target."""
+    _, _, entries = load_catalog()
+    counts: dict[str, int] = {}
+    for entry in entries:
+        counts[entry.runtime] = counts.get(entry.runtime, 0) + 1
+    return {
+        "active": active_runtime_id(),
+        "runtimes": [
+            {**status_payload(b), "models": counts.get(b.info.id, 0)} for b in list_backends()
         ],
     }
 
@@ -277,6 +341,14 @@ def select_model(body: ModelSelectRequest) -> dict[str, Any]:
     entry = get_model(body.model_id)
     if not entry:
         raise HTTPException(404, "unknown model")
+    # Say this now rather than letting the load thread fail three steps later.
+    installed, detail = entry.backend.installed()
+    if not installed:
+        raise HTTPException(
+            400,
+            f"{entry.name} runs on {entry.backend.info.name}, which is not installed "
+            f"({detail}). Install it with: {entry.backend.info.install_hint}",
+        )
     runtime = get_runtime()
     try:
         return runtime.start_load(body.model_id)
@@ -284,6 +356,53 @@ def select_model(body: ModelSelectRequest) -> dict[str, Any]:
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, str(exc)) from exc
+
+
+@app.post("/models/import")
+def import_model_route(body: ModelImportRequest) -> dict[str, Any]:
+    from models.importer import ImportError_, import_model, inspect_repo
+
+    try:
+        inspection = inspect_repo(body.repo)
+        entry = import_model(
+            body.repo,
+            runtime=body.runtime,
+            subfolder=body.subfolder,
+            name=body.name,
+            device=body.device,
+            model_id=body.model_id,
+        )
+    except ImportError_ as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, str(exc)) from exc
+
+    if body.download:
+        get_runtime().start_download(entry["id"])
+
+    return {
+        "model": entry,
+        # Every build found in the repo, so the UI can say which one was taken
+        # and offer the others.
+        "variants": [
+            {
+                "runtime": v.runtime,
+                "subfolder": v.subfolder,
+                "label": v.label,
+                "chosen": v.runtime == entry["runtime"] and v.subfolder == entry["subfolder"],
+            }
+            for v in sorted(inspection.variants, key=lambda v: -v.score)
+        ],
+    }
+
+
+@app.delete("/models/imported/{model_id}")
+def forget_imported_model(model_id: str, delete_files: bool = False) -> dict[str, Any]:
+    from models.importer import remove_imported
+
+    if not remove_imported(model_id, delete_files=delete_files):
+        raise HTTPException(404, "not an imported model")
+    return {"forgotten": model_id, "files_deleted": delete_files}
 
 
 @app.post("/chat", response_model=ChatResponse)

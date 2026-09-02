@@ -5,7 +5,10 @@ outputs/
 __pycache__/
 *.pyc
 .venv/
-models/
-!models/__init__.py
-!models/catalog.py
+# Model weights land in data/models/. This entry is for the leftover
+# weight directories at models/chat, models/comfyui and models/router — not
+# for the models package, whose .py files belong in the repo. A negation
+# cannot rescue them from an ignored *directory*, which is why `models/`
+# silently kept models/catalog.py out of version control.
+models/*/
 !config/models.toml
