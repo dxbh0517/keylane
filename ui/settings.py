@@ -1479,7 +1479,13 @@ class SettingsWindow(Gtk.Window):
             self._toast(f"OK — {len(found)} model(s) available")
 
     def _sync_runtime_buttons(self, runtime_id: str) -> None:
-        """Name the segments from the daemon and mark the stored choice."""
+        """Name the segments from the daemon and mark the stored choice.
+
+        Restores the guard rather than clearing it: this reflects the daemon's
+        state into the widgets, so it must not decide on its caller's behalf
+        that writing settings back is safe again.
+        """
+        was_blocked = self._block_save
         self._block_save = True
         try:
             for info in self._runtimes:
@@ -1490,7 +1496,7 @@ class SettingsWindow(Gtk.Window):
                 self._runtime_id = runtime_id
                 self._runtime_buttons[runtime_id].set_active(True)
         finally:
-            self._block_save = False
+            self._block_save = was_blocked
 
     def _load_routes(self) -> None:
         try:
