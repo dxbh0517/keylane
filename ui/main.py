@@ -56,7 +56,7 @@ from ui.clipboard_image import read_image_bytes
 from ui.canvas import block_markup, headline_text, is_compact, parse_blocks, plain_text
 from ui.canvas import _inline as _inline_markup
 from ui.thinking_orb import ThinkingOrb
-from ui.settings import SettingsWindow
+from ui.settings import FOCUS_GRACE, FOCUS_SETTLE_MS, SettingsWindow
 from ui.screenshot import capture_fullscreen, capture_region
 from ui.placement import (
     floating_geometry,
@@ -66,7 +66,7 @@ from ui.placement import (
     wayland_session,
     wmctrl_available,
 )
-from ui.theme import apply_scheme_classes, apply_spotlight_theme, watch_color_scheme
+from ui.theme import apply_scheme_classes, apply_spotlight_theme, watch_color_scheme, watch_theme
 from ui.voice import mic_recording, start_mic, stop_mic
 
 DAEMON = "http://127.0.0.1:9100"
@@ -75,9 +75,6 @@ CORNER_WIDTH = 380
 CORNER_MARGIN = 20
 # Cap the answer card so a long reply scrolls instead of running off-screen.
 ANSWER_MAX_HEIGHT = 420
-# Focus around a newly mapped override window bounces; don't act on that.
-SPOTLIGHT_FOCUS_GRACE = 0.6      # seconds after showing
-SPOTLIGHT_FOCUS_SETTLE_MS = 220  # confirm focus is really gone
 THINKING_ORB_SIZE = ThinkingOrb.ORB_SIZE
 logger = logging.getLogger(__name__)
 
@@ -282,6 +279,9 @@ class SpotlightWindow(Gtk.ApplicationWindow):
 
         apply_scheme_classes(self)
         watch_color_scheme(lambda _dark: apply_scheme_classes(self))
+        # The orbs paint themselves from theme tokens, so a theme change has to
+        # reach them by hand — CSS cannot.
+        watch_theme(self._redraw_orbs)
 
         key = Gtk.EventControllerKey.new()
         key.connect("key-released", self._on_key)
@@ -562,7 +562,7 @@ class SpotlightWindow(Gtk.ApplicationWindow):
             return
         if not self._spotlight_had_focus:
             return
-        if time.monotonic() - self._shown_at < SPOTLIGHT_FOCUS_GRACE:
+        if time.monotonic() - self._shown_at < FOCUS_GRACE:
             return
 
         def _confirm() -> bool:
@@ -577,7 +577,7 @@ class SpotlightWindow(Gtk.ApplicationWindow):
                 self._hide_spotlight()
             return False
 
-        GLib.timeout_add(SPOTLIGHT_FOCUS_SETTLE_MS, _confirm)
+        GLib.timeout_add(FOCUS_SETTLE_MS, _confirm)
 
     def _on_scrim_click(self, _gesture, _n_press: int, _x: float, _y: float) -> None:
         if self._mode == "spotlight" and not self._busy:
@@ -618,6 +618,10 @@ class SpotlightWindow(Gtk.ApplicationWindow):
             return True
         return False
 
+    def _redraw_orbs(self) -> None:
+        for orb in (self._thinking_orb, self._corner_orb):
+            orb.queue_draw()
+
     def _show_toast(self, message: str) -> None:
         self.status.set_text(message[:40])
 
@@ -627,11 +631,21 @@ class SpotlightWindow(Gtk.ApplicationWindow):
                 self._settings_win = SettingsWindow(self, independent=self._layered)
                 self._settings_win.set_toast_callback(self._show_toast)
                 self._settings_win.set_scheme_callback(lambda: apply_scheme_classes(self))
+                self._settings_win.set_dismiss_callback(self._on_settings_dismissed)
             self._settings_win.load_settings()
             self._settings_win.present_centered()
         except Exception:  # noqa: BLE001
             logger.exception("failed to open settings")
             self._show_toast("Settings failed to open")
+
+    def _on_settings_dismissed(self) -> None:
+        """A click elsewhere closed settings — take the launcher with it.
+
+        Unless the click landed on the launcher itself, which is then the
+        window the user is working in.
+        """
+        if self._mode == "spotlight" and self.get_visible() and not self.get_property("is-active"):
+            self._hide_spotlight()
 
     def _set_mic_active(self, active: bool) -> None:
         self._mic_sync = True

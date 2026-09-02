@@ -12,10 +12,22 @@ import math
 
 from gi.repository import GLib, Gtk  # type: ignore[attr-defined]
 
-# Shared accent ramp — keep in step with --kl-accent* in spotlight.css.
+# Fallback ramp, used only if the theme is unreadable. The live values come
+# from the active theme's orb-accent / orb-accent-alt / orb-idle tokens: the
+# orb paints itself, so CSS cannot reach it.
 ACCENT = (0.36, 0.82, 1.00)      # cyan
 ACCENT_ALT = (0.66, 0.52, 1.00)  # violet
 IDLE = (0.55, 0.62, 0.75)
+
+
+def _ramp() -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    from ui.theme import token_rgb
+
+    return (
+        token_rgb("orb-accent", ACCENT),
+        token_rgb("orb-accent-alt", ACCENT_ALT),
+        token_rgb("orb-idle", IDLE),
+    )
 
 
 def _lerp(a: tuple[float, float, float], b: tuple[float, float, float], t: float):
@@ -91,8 +103,9 @@ class ThinkingOrb(Gtk.DrawingArea):
 
         scale = self._size / self.ORB_SIZE
         active = self._settle
-        accent = _lerp(IDLE, ACCENT, active)
-        alt = _lerp(IDLE, ACCENT_ALT, active)
+        base, base_alt, idle = _ramp()
+        accent = _lerp(idle, base, active)
+        alt = _lerp(idle, base_alt, active)
 
         cr.push_group()
 
@@ -123,27 +136,27 @@ class ThinkingOrb(Gtk.DrawingArea):
             span = math.pi * 1.3
             cr.arc(cx, cy, radius - 0.5 * scale, self._phase, self._phase + span)
             cr.set_line_width(2.3 * scale)
-            cr.set_source_rgba(*ACCENT, 0.95)
+            cr.set_source_rgba(*base, 0.95)
             cr.stroke()
 
             # Counter-rotating accent, slightly inside
             start = -self._phase * 1.55 + math.pi
             cr.arc(cx, cy, radius - 4.5 * scale, start, start + span * 0.5)
             cr.set_line_width(1.4 * scale)
-            cr.set_source_rgba(*ACCENT_ALT, 0.80)
+            cr.set_source_rgba(*base_alt, 0.80)
             cr.stroke()
 
         if not spinning:
             cr.arc(cx, cy, radius - 0.5 * scale, 0, 2 * math.pi)
             cr.set_line_width(1.8 * scale)
-            cr.set_source_rgba(*ACCENT, 0.55)
+            cr.set_source_rgba(*base, 0.55)
             cr.stroke()
 
         # Centre pulse — settles into a steady dot when done.
         wobble = 1.1 * math.sin(self._phase * 2.8) if spinning else 0.0
         pulse = (2.4 + wobble) * scale
         cr.arc(cx, cy, max(pulse, 2.0 * scale), 0, 2 * math.pi)
-        cr.set_source_rgba(*_lerp(alt, ACCENT, 0.5), 0.75 + 0.2 * active)
+        cr.set_source_rgba(*_lerp(alt, base, 0.5), 0.75 + 0.2 * active)
         cr.fill()
 
         cr.pop_group_to_source()

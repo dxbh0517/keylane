@@ -10,7 +10,21 @@ from typing import Any
 import httpx
 from gi.repository import Gdk, GLib, Gtk  # type: ignore[attr-defined]
 
-from ui.theme import apply_scheme_classes, effective_prefers_dark, watch_color_scheme
+from mcpbridge.forms import (
+    parse_args_field,
+    parse_env_lines,
+    parse_header_lines,
+    server_endpoint,
+    server_transport,
+)
+from ui.theme import (
+    apply_scheme_classes,
+    effective_prefers_dark,
+    reload_spotlight_theme,
+    theme_tokens,
+    watch_color_scheme,
+)
+from ui.themes import list_themes
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +40,21 @@ _NAV = (
     ("MCP", "mcp"),
 )
 
+# Focus around a freshly mapped override window bounces; don't act on that.
+FOCUS_GRACE = 0.6      # seconds after showing
+FOCUS_SETTLE_MS = 220  # confirm focus is really gone
+
+# The popover's own border, which sits outside the width it is asked for.
+_MENU_BORDER = 1
+
 _THEME_LABELS = ("System", "Light", "Dark")
 _THEME_VALUES = ("system", "light", "dark")
+
+# Label shown in the picker, value sent to the daemon.
+_MCP_TRANSPORTS = (
+    ("Command (stdio)", "stdio"),
+    ("URL (HTTP)", "http"),
+)
 
 
 class SettingsWindow(Gtk.Window):
@@ -46,12 +73,18 @@ class SettingsWindow(Gtk.Window):
 
         self._toast_cb: Any = None
         self._scheme_cb: Any = None
+        self._dismiss_cb: Any = None
+        self._shown_at = 0.0
+        self._had_focus = False
+        self._key_controller: Gtk.EventControllerKey | None = None
         self._models: list[dict[str, Any]] = []
         self._active_model_id: str | None = None
         self._loading_model = False
         self._block_save = False
         self._poll_id: int | None = None
-        self._textview_provider: Gtk.CssProvider | None = None
+        self._textview_provider = Gtk.CssProvider()
+        self._textviews: list[Gtk.TextView] = []
+        self._mcp_transport = "stdio"
         self._activating_model_id: str | None = None
         self._model_rows: dict[str, Gtk.ListBoxRow] = {}
         self._model_load_progress: str = ""
@@ -129,6 +162,7 @@ class SettingsWindow(Gtk.Window):
         self._apply_theme()
 
         self.connect("close-request", self._on_close)
+        self.connect("notify::is-active", self._on_active_changed)
 
     def _center_on_screen(self) -> bool:
         """Put the window in the middle of the screen.
@@ -153,6 +187,8 @@ class SettingsWindow(Gtk.Window):
 
     def present_centered(self) -> None:
         """Show settings; layer-shell parents need an independent toplevel."""
+        self._shown_at = time.monotonic()
+        self._had_focus = False
         self.present()
         self.set_visible(True)
 
@@ -172,9 +208,12 @@ class SettingsWindow(Gtk.Window):
         else:
             self.connect("realize", _raise, once=True)
 
-        key = Gtk.EventControllerKey.new()
-        key.connect("key-released", self._on_key)
-        self.add_controller(key)
+        if self._key_controller is None:
+            # present_centered runs on every open; a controller per open would
+            # stack another Escape handler each time.
+            self._key_controller = Gtk.EventControllerKey.new()
+            self._key_controller.connect("key-released", self._on_key)
+            self.add_controller(self._key_controller)
 
     def _on_key(self, _ctrl: Gtk.EventControllerKey, keyval: int, _keycode: int, _state) -> bool:
         if keyval == Gdk.KEY_Escape:
@@ -185,15 +224,43 @@ class SettingsWindow(Gtk.Window):
     def set_toast_callback(self, cb: Any) -> None:
         self._toast_cb = cb
 
+    def set_dismiss_callback(self, cb: Any) -> None:
+        """Called when a click elsewhere closed the window, not the user."""
+        self._dismiss_cb = cb
+
     def set_scheme_callback(self, cb: Any) -> None:
         self._scheme_cb = cb
+
+    def _on_active_changed(self, *_args: object) -> None:
+        """Close when focus goes elsewhere — the launcher's own rule.
+
+        Focus bounces while a freshly mapped window settles, so this waits for
+        focus to have really been held, then confirms it is really gone. An
+        open dropdown is still this window's business, not a click away.
+        """
+        if self.get_property("is-active"):
+            self._had_focus = True
+            return
+        if not self._had_focus or time.monotonic() - self._shown_at < FOCUS_GRACE:
+            return
+
+        def _confirm() -> bool:
+            if (
+                not self.get_property("is-active")
+                and self.get_visible()
+                and not any(p.get_visible() for p in self._dropdown_popovers)
+            ):
+                self.close()
+                if self._dismiss_cb:
+                    self._dismiss_cb()
+            return False
+
+        GLib.timeout_add(FOCUS_SETTLE_MS, _confirm)
 
     def _apply_theme(self) -> None:
         apply_scheme_classes(self)
         dark = effective_prefers_dark()
-        for widget in (getattr(self, "_allowlist", None), getattr(self, "_read_roots", None)):
-            if widget is None:
-                continue
+        for widget in self._textviews:
             widget.remove_css_class("style-light")
             widget.remove_css_class("style-dark")
             widget.add_css_class("style-dark" if dark else "style-light")
@@ -211,28 +278,15 @@ class SettingsWindow(Gtk.Window):
         widget.get_style_context().add_provider(provider, Gtk.STYLE_PROVIDER_PRIORITY_USER)
 
     def _apply_textview_theme(self) -> None:
-        if not hasattr(self, "_allowlist"):
-            return
-        if dark := effective_prefers_dark():
-            css = (
-                "textview.settings-textview, textview.settings-textview text {"
-                "background-color: #2a2a2c; color: #e4e4e7;"
-                "}"
-            )
-        else:
-            css = (
-                "textview.settings-textview, textview.settings-textview text {"
-                "background-color: #ffffff; color: #27272a;"
-                "}"
-            )
-        if self._textview_provider is None:
-            self._textview_provider = Gtk.CssProvider()
-            for view in (self._allowlist, getattr(self, "_read_roots", None)):
-                if view is not None:
-                    view.get_style_context().add_provider(
-                        self._textview_provider,
-                        Gtk.STYLE_PROVIDER_PRIORITY_USER,
-                    )
+        # GTK4 paints a text view from its own theme unless a provider says
+        # otherwise, so these two colours have to be handed over directly.
+        tokens = theme_tokens()
+        css = (
+            "textview.settings-textview, textview.settings-textview text {"
+            f"background-color: {tokens.get('textview-bg', '#ffffff')};"
+            f" color: {tokens.get('textview-text', '#27272a')};"
+            "}"
+        )
         self._textview_provider.load_from_string(css)
 
     def _toast(self, message: str) -> None:
@@ -251,6 +305,7 @@ class SettingsWindow(Gtk.Window):
             ).raise_for_status()
             self._toast("Saved")
             if section == "ui":
+                reload_spotlight_theme()
                 self._apply_theme()
         except Exception as exc:  # noqa: BLE001
             self._toast(f"Error: {exc}")
@@ -323,6 +378,46 @@ class SettingsWindow(Gtk.Window):
 
         section.append(row)
 
+    def _textview_field(
+        self,
+        section: Gtk.Box,
+        label: str,
+        hint: str = "",
+        height: int = 90,
+    ) -> Gtk.TextView:
+        """A multi-line field, registered so the theme reaches it.
+
+        GTK4 draws a text view with its own Adwaita colours, so each one needs
+        the runtime provider; building them here means a new field is themed
+        by construction rather than by remembering.
+        """
+        view = Gtk.TextView()
+        view.add_css_class("settings-textview")
+        view.set_size_request(-1, height)
+        view.set_left_margin(12)
+        view.set_right_margin(12)
+        view.set_top_margin(10)
+        view.set_bottom_margin(10)
+        view.get_style_context().add_provider(
+            self._textview_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_USER,
+        )
+        self._textviews.append(view)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.add_css_class("settings-text-scroll")
+        scroll.set_child(view)
+        self._field(section, label, scroll, hint)
+        self._apply_theme()  # stamp it before it is ever shown
+        return view
+
+    def _entry(self, placeholder: str = "") -> Gtk.Entry:
+        entry = Gtk.Entry()
+        entry.add_css_class("settings-entry")
+        if placeholder:
+            entry.set_placeholder_text(placeholder)
+        return entry
+
     def _make_dropdown(self, placeholder: str = "—") -> tuple[Gtk.Button, Gtk.Label, Gtk.Popover, Gtk.Box]:
         """A trigger button plus its menu popover, themed with the others.
 
@@ -348,6 +443,29 @@ class SettingsWindow(Gtk.Window):
         popover.add_css_class("settings-dropdown-menu")
         popover.set_parent(trigger)
         trigger.connect("clicked", lambda *_: popover.popup())
+
+        # How much wider than its request the popover renders — border, shadow
+        # and whatever else the theme adds. Guessed, then measured on first use.
+        chrome = [_MENU_BORDER * 2]
+
+        def _match_trigger_width(*_args: object) -> None:
+            """GTK sizes a popover to its contents, which leaves a menu
+            narrower than the control it hangs off; the edges should line up."""
+            width = trigger.get_width()
+            if not popover.get_visible() or width <= 0:
+                return
+            popover.set_size_request(width - chrome[0], -1)
+
+            def _correct() -> bool:
+                extra = popover.get_width() - width
+                if extra:
+                    chrome[0] += extra
+                    popover.set_size_request(width - chrome[0], -1)
+                return False
+
+            GLib.idle_add(_correct)
+
+        popover.connect("notify::visible", _match_trigger_width)
 
         scroll = Gtk.ScrolledWindow()
         scroll.add_css_class("settings-dropdown-scroll")
@@ -474,8 +592,35 @@ class SettingsWindow(Gtk.Window):
         appearance = self._section(
             page,
             "Appearance",
-            "Override the system light/dark preference for Keylane.",
+            "Which theme Keylane wears, and whether it follows your desktop's "
+            "light/dark preference.",
         )
+
+        (
+            theme_trigger,
+            self._theme_label,
+            self._theme_popover,
+            theme_menu,
+        ) = self._make_dropdown()
+        self._theme_options: dict[str, Gtk.Button] = {}
+        self._theme_ids: list[str] = []
+        for theme in list_themes():
+            option = Gtk.Button()
+            option.add_css_class("settings-dropdown-option")
+            option.set_hexpand(True)
+            option.set_halign(Gtk.Align.FILL)
+            option.set_child(Gtk.Label(label=theme.name, xalign=0, hexpand=True))
+            option.connect("clicked", lambda _b, t=theme.id: self._pick_theme(t))
+            theme_menu.append(option)
+            self._theme_options[theme.id] = option
+            self._theme_ids.append(theme.id)
+        self._field(
+            appearance,
+            "Theme",
+            theme_trigger,
+            "Your own themes go in data/themes/ — see README → Themes.",
+        )
+
         theme_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         theme_box.add_css_class("settings-segmented")
         self._theme_buttons: list[Gtk.ToggleButton] = []
@@ -490,7 +635,26 @@ class SettingsWindow(Gtk.Window):
             btn.connect("toggled", self._on_theme_toggled)
             self._theme_buttons.append(btn)
             theme_box.append(btn)
-        self._field(appearance, "Theme", theme_box, "System follows your desktop setting.")
+        self._field(appearance, "Light or dark", theme_box, "System follows your desktop setting.")
+
+    def _pick_theme(self, theme_id: str) -> None:
+        self._theme_popover.popdown()
+        self._show_theme(theme_id)
+        if self._block_save:
+            return
+        self._patch("ui", {"theme_id": theme_id})
+
+    def _show_theme(self, theme_id: str) -> None:
+        """Mark the picked theme in the menu and name it on the trigger."""
+        for theme in list_themes():
+            option = self._theme_options.get(theme.id)
+            if option is None:
+                continue
+            if theme.id == theme_id:
+                option.add_css_class("selected-default")
+                self._theme_label.set_text(theme.name)
+            else:
+                option.remove_css_class("selected-default")
 
     def _on_theme_toggled(self, button: Gtk.ToggleButton) -> None:
         if not button.get_active() or self._block_save:
@@ -1273,38 +1437,17 @@ class SettingsWindow(Gtk.Window):
             "Shell permissions and command allowlist.",
         )
 
-        self._allowlist = Gtk.TextView()
-        self._allowlist.add_css_class("settings-textview")
-        self._allowlist.set_size_request(-1, 120)
-        self._allowlist.set_left_margin(12)
-        self._allowlist.set_right_margin(12)
-        self._allowlist.set_top_margin(10)
-        self._allowlist.set_bottom_margin(10)
-        scroll = Gtk.ScrolledWindow()
-        scroll.add_css_class("settings-text-scroll")
-        scroll.set_child(self._allowlist)
-        self._field(
+        self._allowlist = self._textview_field(
             section,
             "Shell allowlist",
-            scroll,
             "One command per line. Only listed commands may run when shell is restricted.",
+            height=120,
         )
         self._allowlist.get_buffer().connect("changed", lambda *_: self._save_allowlist())
 
-        self._read_roots = Gtk.TextView()
-        self._read_roots.add_css_class("settings-textview")
-        self._read_roots.set_size_request(-1, 90)
-        self._read_roots.set_left_margin(12)
-        self._read_roots.set_right_margin(12)
-        self._read_roots.set_top_margin(10)
-        self._read_roots.set_bottom_margin(10)
-        roots_scroll = Gtk.ScrolledWindow()
-        roots_scroll.add_css_class("settings-text-scroll")
-        roots_scroll.set_child(self._read_roots)
-        self._field(
+        self._read_roots = self._textview_field(
             section,
             "Readable directories",
-            roots_scroll,
             "One path per line; ~ is expanded. Shell commands may only read files "
             "inside these. Empty means the Keylane install directory only.",
         )
@@ -1340,7 +1483,9 @@ class SettingsWindow(Gtk.Window):
         section = self._section(
             page,
             "MCP servers",
-            "Add stdio MCP servers. Tools appear as mcp.<id>.<tool_name>.",
+            "A local command over stdio, or an HTTP endpoint with a token — "
+            "Mailspring's built-in server is one of those. Tools appear as "
+            "mcp.<id>.<tool_name>.",
         )
 
         self._mcp_list = Gtk.ListBox()
@@ -1351,20 +1496,66 @@ class SettingsWindow(Gtk.Window):
         form = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         form.add_css_class("settings-mcp-form")
 
-        self._mcp_id = Gtk.Entry()
-        self._mcp_id.set_placeholder_text("server-id")
-        self._mcp_id.add_css_class("settings-entry")
+        self._mcp_id = self._entry("server-id")
         self._field(form, "Server ID", self._mcp_id)
 
-        self._mcp_cmd = Gtk.Entry()
-        self._mcp_cmd.set_placeholder_text("npx")
-        self._mcp_cmd.add_css_class("settings-entry")
-        self._field(form, "Command", self._mcp_cmd)
+        (
+            transport_trigger,
+            self._mcp_transport_label,
+            self._mcp_transport_popover,
+            transport_menu,
+        ) = self._make_dropdown()
+        self._mcp_transport_options: dict[str, Gtk.Button] = {}
+        for label, value in _MCP_TRANSPORTS:
+            option = Gtk.Button()
+            option.add_css_class("settings-dropdown-option")
+            option.set_hexpand(True)
+            option.set_halign(Gtk.Align.FILL)
+            option.set_child(Gtk.Label(label=label, xalign=0, hexpand=True))
+            option.connect("clicked", lambda _b, v=value: self._pick_mcp_transport(v))
+            transport_menu.append(option)
+            self._mcp_transport_options[value] = option
+        self._field(form, "Transport", transport_trigger)
 
-        self._mcp_args = Gtk.Entry()
-        self._mcp_args.set_placeholder_text("-y, @modelcontextprotocol/server-filesystem, /home/user")
-        self._mcp_args.add_css_class("settings-entry")
-        self._field(form, "Args (comma-separated)", self._mcp_args)
+        self._mcp_stdio_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._mcp_cmd = self._entry("npx")
+        self._field(self._mcp_stdio_box, "Command", self._mcp_cmd)
+        self._mcp_args = self._entry("-y @modelcontextprotocol/server-filesystem /home/user")
+        self._field(
+            self._mcp_stdio_box,
+            "Arguments",
+            self._mcp_args,
+            "Split like a shell line — quote anything with spaces in it. "
+            "A comma-separated list still works.",
+        )
+        self._mcp_env = self._textview_field(
+            self._mcp_stdio_box,
+            "Environment",
+            "Optional. One KEY=value per line, passed to the server process.",
+            height=80,
+        )
+        form.append(self._mcp_stdio_box)
+
+        self._mcp_http_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._mcp_url = self._entry("http://127.0.0.1:2587/mcp")
+        self._field(self._mcp_http_box, "Server URL", self._mcp_url)
+        self._mcp_token = Gtk.PasswordEntry(show_peek_icon=True)
+        self._mcp_token.add_css_class("settings-entry")
+        self._mcp_token.set_property("placeholder-text", "token")
+        self._field(
+            self._mcp_http_box,
+            "Bearer token",
+            self._mcp_token,
+            "Mailspring: Preferences → MCP Server. Paste the bare token — "
+            "Keylane adds the \u201cBearer\u201d scheme itself.",
+        )
+        self._mcp_headers = self._textview_field(
+            self._mcp_http_box,
+            "Extra headers",
+            "Optional. One Name: value per line, sent with every request.",
+            height=80,
+        )
+        form.append(self._mcp_http_box)
 
         add_btn = self._primary_btn("Add server")
         add_btn.connect("clicked", self._add_mcp_server)
@@ -1376,6 +1567,21 @@ class SettingsWindow(Gtk.Window):
         actions.append(reload_btn)
         form.append(actions)
         section.append(form)
+        self._pick_mcp_transport(self._mcp_transport)
+
+    def _pick_mcp_transport(self, value: str) -> None:
+        """Show only the fields that transport actually uses."""
+        self._mcp_transport = value
+        self._mcp_transport_popover.popdown()
+        for label, option_value in _MCP_TRANSPORTS:
+            option = self._mcp_transport_options[option_value]
+            if option_value == value:
+                option.add_css_class("selected-default")
+                self._mcp_transport_label.set_text(label)
+            else:
+                option.remove_css_class("selected-default")
+        self._mcp_stdio_box.set_visible(value != "http")
+        self._mcp_http_box.set_visible(value == "http")
 
     def _load_mcp_servers(self) -> None:
         try:
@@ -1416,6 +1622,7 @@ class SettingsWindow(Gtk.Window):
         else:
             top.append(self._badge("Offline", "warn"))
 
+        top.append(self._badge(server_transport(srv), "muted"))
         source = srv.get("source", "config")
         top.append(self._badge(source, "muted"))
 
@@ -1425,36 +1632,95 @@ class SettingsWindow(Gtk.Window):
             top.append(rm)
 
         box.append(top)
-        cmd_line = f"{srv.get('command', '')} {' '.join(srv.get('args', []))}".strip()
-        box.append(Gtk.Label(label=cmd_line, xalign=0, wrap=True, css_classes=["settings-field-hint"]))
+        endpoint = server_endpoint(srv)
+        if endpoint:
+            box.append(
+                Gtk.Label(label=endpoint, xalign=0, wrap=True, css_classes=["settings-field-hint"])
+            )
+        error = str(health.get("error", "")).strip()
+        if error and not health.get("ok"):
+            # A bad token reads as "offline" otherwise, with nothing to act on.
+            box.append(
+                Gtk.Label(
+                    label=error[:160],
+                    xalign=0,
+                    wrap=True,
+                    css_classes=["settings-field-hint"],
+                )
+            )
         row.set_child(box)
         return row
 
     def _add_mcp_server(self, *_args) -> None:
-        sid = self._mcp_id.get_text().strip()
-        cmd = self._mcp_cmd.get_text().strip()
-        args_raw = self._mcp_args.get_text().strip()
-        args = [a.strip() for a in args_raw.split(",") if a.strip()] if args_raw else []
-        if not sid or not cmd:
-            self._toast("ID and command required")
+        payload = self._mcp_payload()
+        if payload is None:
             return
 
         def _work() -> None:
             try:
-                httpx.post(
-                    f"{DAEMON}/mcp/servers",
-                    json={"id": sid, "command": cmd, "args": args, "transport": "stdio"},
-                    timeout=60,
-                ).raise_for_status()
+                httpx.post(f"{DAEMON}/mcp/servers", json=payload, timeout=60).raise_for_status()
                 GLib.idle_add(self._toast, "MCP server added")
                 GLib.idle_add(self._load_mcp_servers)
-                GLib.idle_add(self._mcp_id.set_text, "")
-                GLib.idle_add(self._mcp_cmd.set_text, "")
-                GLib.idle_add(self._mcp_args.set_text, "")
+                GLib.idle_add(self._clear_mcp_form)
             except Exception as exc:  # noqa: BLE001
-                GLib.idle_add(self._toast, str(exc))
+                GLib.idle_add(self._toast, self._request_error(exc))
 
         threading.Thread(target=_work, daemon=True).start()
+
+    def _mcp_payload(self) -> dict[str, Any] | None:
+        """The server as typed, or None with a toast saying what is missing."""
+        sid = self._mcp_id.get_text().strip()
+        if not sid:
+            self._toast("Server ID required")
+            return None
+
+        if self._mcp_transport == "http":
+            url = self._mcp_url.get_text().strip()
+            if not url:
+                self._toast("URL required")
+                return None
+            payload: dict[str, Any] = {"id": sid, "transport": "http", "url": url}
+            token = self._mcp_token.get_text().strip()
+            if token:
+                payload["auth_header"] = token
+            headers = parse_header_lines(self._lines(self._mcp_headers))
+            if headers:
+                payload["headers"] = headers
+            return payload
+
+        command = self._mcp_cmd.get_text().strip()
+        if not command:
+            self._toast("Command required")
+            return None
+        payload = {
+            "id": sid,
+            "transport": "stdio",
+            "command": command,
+            "args": parse_args_field(self._mcp_args.get_text()),
+        }
+        env = parse_env_lines(self._lines(self._mcp_env))
+        if env:
+            payload["env"] = env
+        return payload
+
+    def _clear_mcp_form(self) -> None:
+        for entry in (self._mcp_id, self._mcp_cmd, self._mcp_args, self._mcp_url, self._mcp_token):
+            entry.set_text("")
+        for view in (self._mcp_env, self._mcp_headers):
+            view.get_buffer().set_text("")
+
+    @staticmethod
+    def _request_error(exc: Exception) -> str:
+        """Prefer the daemon's own message; a raised status only says 400."""
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                detail = response.json().get("detail")
+            except Exception:  # noqa: BLE001
+                detail = None
+            if detail:
+                return str(detail)
+        return str(exc)
 
     def _remove_mcp_server(self, server_id: str) -> None:
         def _work() -> None:
@@ -1531,6 +1797,7 @@ class SettingsWindow(Gtk.Window):
         self._auto_learn.set_active(bool(assistant.get("auto_learn_skills", False)))
 
         ui = data.get("ui", {})
+        self._show_theme(str(ui.get("theme_id", "") or "glass-console"))
         theme = str(ui.get("theme", "system"))
         if theme in _THEME_VALUES:
             idx = _THEME_VALUES.index(theme)

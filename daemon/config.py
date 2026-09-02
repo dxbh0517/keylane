@@ -84,7 +84,7 @@ def _defaults() -> dict[str, Any]:
             "default": "auto",
         },
         "mcp": {"disabled_tools": [], "servers": []},
-        "ui": {"theme": "system"},
+        "ui": {"theme": "system", "theme_id": "glass-console"},
         "models": {
             "default": models_raw.get("default", ""),
             "device": models_raw.get("device", "NPU"),

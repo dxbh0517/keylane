@@ -68,7 +68,8 @@ Open **Settings** from the gear icon in the Spotlight footer, or press **`Ctrl+,
 | Web | Search backend (searxng / ddgs), SearXNG URL, Playwright, fallback |
 | Speech | TTS on notify, read aloud, test buttons |
 | Security | Shell allowlist, permitted read directories, permission modes per tool |
-| MCP | Configured servers (edit `config/mcp.toml`) |
+| MCP | Servers over stdio (command, arguments, environment) or HTTP (URL, bearer token) |
+| Appearance (in General) | Theme, and light / dark / system |
 
 CLI:
 
@@ -204,9 +205,69 @@ sudo dnf install wmctrl
 
 Override the choice with `KEYLANE_BACKEND=layer` or `KEYLANE_BACKEND=x11` if you need to.
 
+## Themes
+
+Keylane ships three themes, each with a light and a dark scheme:
+
+| Theme | Looks like |
+| --- | --- |
+| `glass-console` | Dark glass over the desktop, one cyan accent, hairline structure. The default. |
+| `paper-terminal` | Ink on warm paper: flat surfaces, hairline rules, serif answers, monospace labels. |
+| `aurora` | Translucent material, no borders, large radii, violet and cyan light. |
+
+Pick one in **Settings → General → Appearance**, or from the CLI:
+
+```bash
+keylane-settings theme list
+keylane-settings theme use paper-terminal
+```
+
+### Writing your own
+
+GTK CSS has no variables, so a theme is a table of tokens that fills
+`ui/spotlight.css.in` — the stylesheet template. Both schemes render into one
+sheet, so switching light/dark stays a class swap with no reload.
+
+```bash
+keylane-settings theme new midnight --from aurora
+```
+
+That writes `data/themes/midnight.toml` with every token spelled out at its
+inherited value. Delete the lines you do not want to change — `extends` fills
+in the rest — then `keylane-settings theme use midnight`. A file with no
+`extends` inherits `glass-console`, so the shortest useful theme is:
+
+```toml
+[theme]
+name = "Amber"
+
+[dark]
+pill-text = "#ffd479"
+pill-bg = "rgba(190, 140, 30, 0.26)"
+orb-accent = "#ffb648"
+```
+
+Tokens come in three tables:
+
+| Table | Holds | Examples |
+| --- | --- | --- |
+| `[common]` | Shape and type, shared by both schemes | `radius-panel`, `radius-control`, `font-ui`, `font-answer`, `font-label`, `font-mono` |
+| `[light]`, `[dark]` | Every colour, per scheme | `panel-bg`, `panel-shadow`, `hud-*` (the answer panel), `entry-*`, `badge-*`, `btn-*` |
+
+A few tokens hold a whole CSS value rather than a colour: `panel-shadow`,
+`hud-shadow`, `shell-shadow`, `entry-focus-ring`, `control-shadow`,
+`segment-checked-shadow` and `progress-fill`. The `orb-*` tokens must be plain
+hex — the working orb paints itself in Cairo, so it reads them directly rather
+than through CSS.
+
+`ui/themes/glass-console.toml` lists every token with a comment per group; it
+is the file to read when you want to know what something controls. A theme that
+is missing a token, or names a base that does not exist, is skipped with a
+warning rather than leaving the window unstyled.
+
 ## MCP servers
 
-Edit `config/mcp.toml`. Both transports are supported:
+Add them in **Settings → MCP** — pick the transport, then a command with its arguments, or a URL with its token — or edit `config/mcp.toml` directly. Both transports are supported:
 
 ```toml
 # stdio
@@ -226,7 +287,7 @@ url = "http://127.0.0.1:2587/mcp"
 auth_header = ""
 ```
 
-MCP tools appear as `mcp.<id>.<tool_name>`. Disable individual tools via Settings (stored in `data/settings.json` under `mcp.disabled_tools`).
+Servers added in Settings are stored in `data/settings.json` and merged over the TOML by id. MCP tools appear as `mcp.<id>.<tool_name>`. Disable individual tools via Settings (stored in `data/settings.json` under `mcp.disabled_tools`).
 
 > The client lives in `mcpbridge/`, **not** `mcp/` — a local package called `mcp` shadows the
 > official SDK on `sys.path` and silently breaks every MCP server.
