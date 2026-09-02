@@ -16,7 +16,7 @@ from npu import probe as ov_probe
 from npu.images import bytes_to_ov_tensors
 from npu.kind import PipelineKind, model_kind
 from npu.limits import prompt_budget_chars
-from npu.pipeline_config import pipeline_init_kwargs
+from npu.pipeline_config import create_pipeline
 from npu.thinking import OutputStreamFilter
 from npu.weights import missing_weights, purge_incomplete
 from runtimes.base import RepoVariant, RuntimeInfo
@@ -161,15 +161,9 @@ class OpenVinoBackend:
         cache: Path | None,
         kind: PipelineKind,
     ) -> OpenVinoPipeline:
-        import openvino_genai as ov_genai  # noqa: PLC0415
-
-        kwargs = pipeline_init_kwargs(device, cache, kind)
-        pipeline_cls = ov_genai.VLMPipeline if kind == "vlm" else ov_genai.LLMPipeline
-        try:
-            pipe = pipeline_cls(str(model_dir), device, **kwargs)
-        except TypeError:
-            pipe = pipeline_cls(str(model_dir), device)
-        return OpenVinoPipeline(pipe, kind)
+        # Same constructor the probe just ran, so this finds the probe's blob
+        # in the cache instead of compiling a second one.
+        return OpenVinoPipeline(create_pipeline(model_dir, device, cache, kind), kind)
 
     def prompt_budget_chars(self, device: str, kind: PipelineKind, model_dir: Path) -> int:
         return prompt_budget_chars(device, kind)
