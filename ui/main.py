@@ -632,8 +632,10 @@ class SpotlightWindow(Gtk.ApplicationWindow):
                 self._settings_win.set_toast_callback(self._show_toast)
                 self._settings_win.set_scheme_callback(lambda: apply_scheme_classes(self))
                 self._settings_win.set_dismiss_callback(self._on_settings_dismissed)
-            self._settings_win.load_settings()
+            # Show the window first, then fill it. Loading first meant the
+            # click on the gear did nothing visible until the daemon answered.
             self._settings_win.present_centered()
+            self._settings_win.load_settings()
         except Exception:  # noqa: BLE001
             logger.exception("failed to open settings")
             self._show_toast("Settings failed to open")
