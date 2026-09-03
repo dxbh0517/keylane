@@ -90,6 +90,27 @@ def centered_geometry(width: int, height: int, screen: tuple[int, int]) -> tuple
     return max((screen_w - width) // 2, 0), max((screen_h - height) // 2, 0)
 
 
+def scaled_geometry(
+    x: int, y: int, width: int, height: int, scale: int
+) -> tuple[int, int, int, int]:
+    """Turn a logical rectangle into the one ``wmctrl -e`` wants.
+
+    The scale factor applies to the size and *not* to the position, which is
+    not a guess — it is what the window manager does. Measured on mutter with
+    XWayland at scale 2, asking for one rectangle and reading back another:
+
+        asked (1200, 620, 1440, 1160)  ->  landed (2400, 1240, 1440, 1160)
+        asked ( 600, 310, 1440, 1160)  ->  landed (1200,  620, 1440, 1160)
+
+    The size comes back exactly as asked; the position comes back doubled. So
+    the window manager scales the position itself and takes the size literally,
+    and a caller that scales both puts every window at twice the offset it
+    wanted. That is what pinned the launcher and Settings into the bottom-right
+    corner of a HiDPI screen, each one flush against two edges.
+    """
+    return x, y, width * scale, height * scale
+
+
 def floating_geometry(
     mode: str,
     width: int,
@@ -112,7 +133,7 @@ def center_window(window, width: int, height: int, screen: tuple[int, int], scal
     layer-shell the compositor owns placement and this is a no-op.
     """
     x, y = centered_geometry(width, height, screen)
-    return move_resize(window, x * scale, y * scale, width * scale, height * scale)
+    return move_resize(window, *scaled_geometry(x, y, width, height, scale))
 
 
 def wmctrl_available() -> bool:
