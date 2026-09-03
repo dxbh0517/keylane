@@ -45,7 +45,12 @@ KEYLANE_DEST="${DEST}" KEYLANE_HOTKEY="${HOTKEY}" "${DEST}/scripts/setup-hotkey.
 say "Optional: start SearXNG for web research"
 echo "  cd ${DEST}/deploy && podman compose up -d"
 if command -v podman >/dev/null 2>&1; then
-  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx keylane-searxng; then
+  # Only if we actually ship a settings file. This used to copy a path that
+  # does not exist in the tree, and under `set -e` that aborted the install at
+  # its very last step — but only for someone re-installing with SearXNG up,
+  # which is why it survived so long.
+  if podman ps --format '{{.Names}}' 2>/dev/null | grep -qx keylane-searxng \
+     && [[ -f "${DEST}/deploy/searxng/settings.yml" ]]; then
     podman cp "${DEST}/deploy/searxng/settings.yml" keylane-searxng:/etc/searxng/settings.yml
     podman restart keylane-searxng >/dev/null 2>&1 || true
     echo "  SearXNG settings refreshed in keylane-searxng container"

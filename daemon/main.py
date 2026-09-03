@@ -12,11 +12,11 @@ import base64
 import json
 
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent.loop import AIAgent
+from daemon.auth import auth_middleware
 from daemon.config import add_mcp_server, all_settings, list_mcp_servers, remove_mcp_server, reset_settings, save_settings
 from daemon.health import settings_health
 from daemon.paths import ensure_data_dirs
@@ -146,12 +146,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Keylane", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORS. Nothing that talks to this daemon is a browser, and the header that
+# used to be here told every website it could read /memories. See daemon/auth.py.
+app.middleware("http")(auth_middleware)
 
 
 @app.get("/health")

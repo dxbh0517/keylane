@@ -52,6 +52,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from npu.thinking import extract_user_answer, sanitize_response
+from ui import api
 from ui.clipboard_image import read_image_bytes
 from ui.canvas import block_markup, headline_text, is_compact, parse_blocks, plain_text
 from ui.canvas import _inline as _inline_markup
@@ -69,7 +70,6 @@ from ui.placement import (
 from ui.theme import apply_scheme_classes, apply_spotlight_theme, watch_color_scheme, watch_theme
 from ui.voice import mic_recording, start_mic, stop_mic
 
-DAEMON = "http://127.0.0.1:9100"
 PANEL_WIDTH = 680
 CORNER_WIDTH = 380
 CORNER_MARGIN = 20
@@ -821,8 +821,8 @@ class SpotlightWindow(Gtk.ApplicationWindow):
         def _respond(_dlg, response: Gtk.ResponseType) -> None:
             approved = response == Gtk.ResponseType.ACCEPT
             try:
-                httpx.post(
-                    f"{DAEMON}/permissions/respond",
+                api.post(
+                    "/permissions/respond",
                     json={"id": perm.get("id"), "approved": approved},
                     timeout=5,
                 )
@@ -1141,7 +1141,7 @@ class SpotlightWindow(Gtk.ApplicationWindow):
 
     def _refresh_status(self) -> None:
         try:
-            r = httpx.get(f"{DAEMON}/health", timeout=2)
+            r = api.get("/health", timeout=2)
             npu = r.json().get("npu", {})
             state = npu.get("state", "?")
             model = npu.get("model_id") or "no model"
@@ -1357,9 +1357,9 @@ class SpotlightWindow(Gtk.ApplicationWindow):
             sources: list = []
             session_id: str | None = self.session_id
             try:
-                with httpx.stream(
+                with api.stream(
                     "POST",
-                    f"{DAEMON}/chat/stream",
+                    "/chat/stream",
                     json={
                         "message": text or "Describe this image.",
                         "session_id": self.session_id,

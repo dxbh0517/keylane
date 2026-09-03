@@ -17,6 +17,7 @@ from mcpbridge.forms import (
     server_endpoint,
     server_transport,
 )
+from ui import api
 from ui.theme import (
     apply_scheme_classes,
     effective_prefers_dark,
@@ -28,7 +29,6 @@ from ui.themes import list_themes
 
 logger = logging.getLogger(__name__)
 
-DAEMON = "http://127.0.0.1:9100"
 
 _NAV = (
     ("General", "general"),
@@ -359,8 +359,8 @@ class SettingsWindow(Gtk.Window):
         if self._block_save:
             return
         try:
-            httpx.patch(
-                f"{DAEMON}/settings",
+            api.patch(
+                "/settings",
                 json={"section": section, "values": values},
                 timeout=10,
             ).raise_for_status()
@@ -946,10 +946,25 @@ class SettingsWindow(Gtk.Window):
             current = str(info.get("default_device") or devices[0])
         self._device_label.set_text(current)
 
+        # Every device the runtime knows about, usable or not. A device that is
+        # present but cannot be compiled for — an NVIDIA card OpenVINO happens
+        # to enumerate — is shown with its reason rather than hidden, because
+        # the user can see the hardware and would otherwise wonder.
+        rows = info.get("all_devices") or [
+            {"id": d, "label": d, "usable": True, "reason": ""} for d in devices
+        ]
+
         self._clear_box(self._device_menu)
-        for device in devices:
-            btn = Gtk.Button(label=device)
+        for row in rows:
+            device = str(row.get("id", ""))
+            usable = bool(row.get("usable", True))
+            btn = Gtk.Button(label=str(row.get("label") or device))
             btn.add_css_class("settings-dropdown-option")
+            if not usable:
+                btn.set_sensitive(False)
+                btn.set_tooltip_text(str(row.get("reason") or "unavailable"))
+                self._device_menu.append(btn)
+                continue
             if device == current:
                 btn.add_css_class("selected-default")
             btn.connect("clicked", lambda _b, d=device: self._set_device(d))
@@ -1014,8 +1029,8 @@ class SettingsWindow(Gtk.Window):
 
         def _work() -> None:
             try:
-                resp = httpx.post(
-                    f"{DAEMON}/models/import",
+                resp = api.post(
+                    "/models/import",
                     json={"repo": repo},
                     timeout=60,
                 )
@@ -1064,7 +1079,7 @@ class SettingsWindow(Gtk.Window):
 
     def _forget_model(self, model_id: str) -> None:
         try:
-            httpx.delete(f"{DAEMON}/models/imported/{model_id}", timeout=15).raise_for_status()
+            api.delete(f"/models/imported/{model_id}", timeout=15).raise_for_status()
         except Exception as exc:  # noqa: BLE001
             self._toast(str(exc)[:80])
             return
@@ -1237,7 +1252,7 @@ class SettingsWindow(Gtk.Window):
 
     def _download_model(self, model_id: str) -> None:
         try:
-            httpx.post(f"{DAEMON}/models/download", json={"model_id": model_id}, timeout=15).raise_for_status()
+            api.post("/models/download", json={"model_id": model_id}, timeout=15).raise_for_status()
             self._toast("Download started")
             self._load_models()
             self._ensure_poll()
@@ -1262,8 +1277,8 @@ class SettingsWindow(Gtk.Window):
             started = time.time()
             saw_loading = False
             try:
-                resp = httpx.post(
-                    f"{DAEMON}/models/select",
+                resp = api.post(
+                    "/models/select",
                     json={"model_id": model_id},
                     timeout=15,
                 ).raise_for_status().json()
@@ -1276,7 +1291,7 @@ class SettingsWindow(Gtk.Window):
             deadline = time.time() + 900
             while time.time() < deadline:
                 try:
-                    health = httpx.get(f"{DAEMON}/health", timeout=10).json()
+                    health = api.get("/health", timeout=10).json()
                 except Exception as exc:  # noqa: BLE001
                     GLib.idle_add(self._finish_model_load, f"Error: {exc}")
                     return
@@ -1336,8 +1351,8 @@ class SettingsWindow(Gtk.Window):
 
     def _load_models(self, quiet: bool = False) -> None:
         try:
-            data = httpx.get(f"{DAEMON}/models", timeout=5).json()
-            health = httpx.get(f"{DAEMON}/health", timeout=5).json()
+            data = api.get("/models", timeout=5).json()
+            health = api.get("/health", timeout=5).json()
         except Exception as exc:  # noqa: BLE001
             if not quiet:
                 self._toast(str(exc))
@@ -1553,7 +1568,7 @@ class SettingsWindow(Gtk.Window):
 
     def _load_routes(self) -> None:
         def _work() -> dict[str, Any]:
-            return httpx.get(f"{DAEMON}/settings/health", timeout=8).json()
+            return api.get("/settings/health", timeout=8).json()
 
         def _apply(health: dict[str, Any] | None, error: Exception | None) -> None:
             if error is not None or health is None:
@@ -1700,8 +1715,8 @@ class SettingsWindow(Gtk.Window):
 
     def _load_skills_tools(self) -> None:
         try:
-            skills = httpx.get(f"{DAEMON}/skills", timeout=5).json().get("skills", [])
-            tools = httpx.get(f"{DAEMON}/tools", timeout=5).json().get("tools", [])
+            skills = api.get("/skills", timeout=5).json().get("skills", [])
+            tools = api.get("/tools", timeout=5).json().get("tools", [])
         except Exception as exc:  # noqa: BLE001
             self._toast(str(exc))
             return
@@ -1946,7 +1961,7 @@ class SettingsWindow(Gtk.Window):
 
     def _load_mcp_servers(self) -> None:
         def _work() -> list[dict[str, Any]]:
-            return httpx.get(f"{DAEMON}/mcp/servers", timeout=15).json().get("servers", [])
+            return api.get("/mcp/servers", timeout=15).json().get("servers", [])
 
         self._fetch_async("mcp", _work, self._apply_mcp_servers)
 
@@ -2027,7 +2042,7 @@ class SettingsWindow(Gtk.Window):
 
         def _work() -> None:
             try:
-                httpx.post(f"{DAEMON}/mcp/servers", json=payload, timeout=60).raise_for_status()
+                api.post("/mcp/servers", json=payload, timeout=60).raise_for_status()
                 GLib.idle_add(self._toast, "MCP server added")
                 GLib.idle_add(self._load_mcp_servers)
                 GLib.idle_add(self._clear_mcp_form)
@@ -2094,7 +2109,7 @@ class SettingsWindow(Gtk.Window):
     def _remove_mcp_server(self, server_id: str) -> None:
         def _work() -> None:
             try:
-                httpx.delete(f"{DAEMON}/mcp/servers/{server_id}", timeout=30).raise_for_status()
+                api.delete(f"/mcp/servers/{server_id}", timeout=30).raise_for_status()
                 GLib.idle_add(self._toast, "Removed")
                 GLib.idle_add(self._load_mcp_servers)
             except Exception as exc:  # noqa: BLE001
@@ -2105,7 +2120,7 @@ class SettingsWindow(Gtk.Window):
     def _reload_mcp(self, *_args) -> None:
         def _work() -> None:
             try:
-                r = httpx.post(f"{DAEMON}/mcp/reload", timeout=60).json()
+                r = api.post("/mcp/reload", timeout=60).json()
                 GLib.idle_add(self._toast, f"Loaded {r.get('tools_loaded', 0)} MCP tools")
                 GLib.idle_add(self._load_mcp_servers)
             except Exception as exc:  # noqa: BLE001
@@ -2131,7 +2146,7 @@ class SettingsWindow(Gtk.Window):
 
     def _test_searx(self, *_args) -> None:
         try:
-            r = httpx.get(f"{DAEMON}/research/health", timeout=15).json()
+            r = api.get("/research/health", timeout=15).json()
             ok = r.get("searxng", {}).get("ok", False)
             self._toast("SearXNG OK" if ok else "SearXNG failed")
         except Exception as exc:  # noqa: BLE001
@@ -2139,14 +2154,14 @@ class SettingsWindow(Gtk.Window):
 
     def _test_tts(self, *_args) -> None:
         try:
-            httpx.post(f"{DAEMON}/settings/test/tts", timeout=30)
+            api.post("/settings/test/tts", timeout=30)
             self._toast("TTS test sent")
         except Exception as exc:  # noqa: BLE001
             self._toast(str(exc))
 
     def _test_notify(self, *_args) -> None:
         try:
-            httpx.post(f"{DAEMON}/settings/test/notification", timeout=10)
+            api.post("/settings/test/notification", timeout=10)
             self._toast("Notification sent")
         except Exception as exc:  # noqa: BLE001
             self._toast(str(exc))
@@ -2162,7 +2177,7 @@ class SettingsWindow(Gtk.Window):
         self._block_save = True
 
         def _work() -> dict[str, Any]:
-            return httpx.get(f"{DAEMON}/settings", timeout=5).json()
+            return api.get("/settings", timeout=5).json()
 
         def _apply(data: dict[str, Any] | None, error: Exception | None) -> None:
             if error is not None or data is None:
