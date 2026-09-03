@@ -14,14 +14,25 @@ import os
 from npu.kind import PipelineKind
 
 # Tokens compiled into an NPU pipeline. This is not a soft limit: it is built
-# into the compiled model, so raising it costs compile time and memory, and on
-# the VLM path the cost is steep — 1024 to 4096 took one VLM load from about
-# thirteen seconds to roughly half an hour of CPU work on a warm cache.
+# into the compiled model, so exceeding it throws rather than truncates.
+#
+# It used to be believed that raising this was expensive — that 1024 to 4096
+# took a load from thirteen seconds to half an hour. That was true against an
+# older OpenVINO. Measured on 2026-09-03 against 2026.3 on an NPU 3720, a cold
+# 7B compile is 64 s at 1024 and 60 s at 4096: indistinguishable. Since 2025.3
+# the pipeline defaults to PREFILL_HINT: DYNAMIC and chunks the prefill
+# (NPUW_LLM_PREFILL_CHUNK_SIZE, default 1024) rather than compiling a static
+# graph the full width.
+#
+# What it does still cost is time to first token, and that cost is flat: the
+# same measurement put TTFT at ~15 s for a 38-token prompt whatever the reply
+# length, with decode at ~0.25 s/token afterwards. Prefill runs a whole chunk
+# even for a short prompt, so a smaller MAX_PROMPT_LEN is worth trying if your
+# turns are short.
 #
 # The prompt's required sections need about 1700 tokens, so anything below
-# ~2048 cannot serve a turn at all. Override with KEYLANE_NPU_MAX_PROMPT_TOKENS
-# if the trade lands differently on your machine; changing it invalidates the
-# compile cache, so the next load is slow whichever way you move it.
+# ~2048 cannot serve a turn at all. Override with KEYLANE_NPU_MAX_PROMPT_TOKENS;
+# changing it invalidates the compile cache, so the next load is slow either way.
 NPU_MAX_PROMPT_TOKENS = int(os.environ.get("KEYLANE_NPU_MAX_PROMPT_TOKENS", "4096"))
 
 # Characters per token, deliberately pessimistic. Prose runs nearer 4, but a

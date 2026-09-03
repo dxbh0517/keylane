@@ -13,9 +13,11 @@
 # Usage:  scripts/npu-driver-fix.sh [--dry-run]
 set -euo pipefail
 
-DRIVER_TAG="v1.35.0"          # pairs with OpenVINO 2026.2
-OPENVINO="2026.2.1"
-GENAI="2026.2.1.0"
+# The driver release to install, and the OpenVINO it was built against. Keep
+# these three in step: the point of the script is that they currently are not.
+DRIVER_TAG="${KEYLANE_NPU_DRIVER_TAG:-v1.35.0}"
+OPENVINO="${KEYLANE_OPENVINO:-2026.2.1}"
+GENAI="${KEYLANE_OPENVINO_GENAI:-2026.2.1.0}"
 PREFIX="/usr/local/lib64"      # see the ld.so.conf.d drop-in below
 LDCONF="/etc/ld.so.conf.d/00-keylane-npu.conf"
 DRY=0
@@ -97,26 +99,56 @@ chmod 755 "$installer"
 echo "--- will run as root ---"; sed 's/^/    /' "$installer"
 run_root "$installer"
 
-echo "==> Pinning the gateway's OpenVINO to $OPENVINO"
-GW="${KEYLANE_HOME:-$HOME/.local/share/ai-gateway}"
-if [ -x "$GW/.venv/bin/pip" ]; then
+# Which Keylane to pin. This used to be hardcoded to the pre-rename install
+# path, so running the script from a checkout fixed the system libraries and
+# left the venv that actually runs on an OpenVINO the new driver does not
+# match — which is the exact failure the script exists to prevent.
+#   1. KEYLANE_ROOT, if the caller set it.
+#   2. The checkout this script is in, if it has a venv.
+#   3. The installed copy.
+pick_root_dir() {
+  if [ -n "${KEYLANE_ROOT:-}" ] && [ -x "${KEYLANE_ROOT}/.venv/bin/pip" ]; then
+    echo "${KEYLANE_ROOT}"; return
+  fi
+  here="$(cd "$(dirname "$0")/.." && pwd)"
+  if [ -x "${here}/.venv/bin/pip" ]; then echo "${here}"; return; fi
+  for candidate in "$HOME/.local/share/keylane/current" \
+                   "$HOME/.local/share/keylane" \
+                   "$HOME/.local/share/ai-gateway"; do
+    [ -x "${candidate}/.venv/bin/pip" ] && { echo "${candidate}"; return; }
+  done
+  echo ""
+}
+
+GW="$(pick_root_dir)"
+echo "==> Pinning OpenVINO to $OPENVINO in ${GW:-<no venv found>}"
+if [ -n "$GW" ]; then
   run "$GW/.venv/bin/pip" install --quiet \
       "openvino==$OPENVINO" "openvino-genai==$GENAI"
 else
-  echo "!! No venv at $GW/.venv — pin OpenVINO to $OPENVINO yourself." >&2
+  echo "!! Found no Keylane venv. Pin it yourself:" >&2
+  echo "     pip install openvino==$OPENVINO openvino-genai==$GENAI" >&2
 fi
 
-echo "==> Restarting the gateway"
-run systemctl --user restart ai-gateway.service
+echo "==> Restarting Keylane"
+# The units were renamed; the old name was still here and silently did nothing.
+for unit in keylane-daemon.service keylane-ui.service; do
+  if systemctl --user list-unit-files "$unit" >/dev/null 2>&1; then
+    run systemctl --user try-restart "$unit"
+  fi
+done
 
 cat <<'EOF'
 
 Done. Check the Models page, or:
-  curl -s http://127.0.0.1:9100/api/status | python3 -m json.tool | grep assistant
+  curl -s http://127.0.0.1:9100/health | python3 -m json.tool
 
-The first NPU load compiles the model and can take several minutes; it is
-cached afterwards. To undo, remove the libraries from /usr/local/lib, run
-ldconfig, and reinstall the OpenVINO version you had:
+Then measure it, rather than guessing whether it helped:
+  PYTHONPATH=. python scripts/npu-bench.py
+
+A cold 7B compile should come out around a minute. If it is far more than
+that, the driver and the compiler are still out of step. To undo, remove the
+libraries, run ldconfig, and reinstall the OpenVINO version you had:
 
   sudo rm -f /usr/local/lib64/lib*npu*.so* /etc/ld.so.conf.d/00-keylane-npu.conf
   sudo ldconfig

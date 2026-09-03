@@ -43,6 +43,13 @@ class ModelEntry:
     # "curated" comes from config/models.toml; "imported" the user added.
     source: str = "curated"
     size_bytes: int = 0
+    # Whether this export is one the NPU can actually run well. Intel's NPU
+    # guide requires symmetric INT4 or NF4 at group size -1 or 128; an
+    # asymmetric export loads and then runs far below the hardware. Recorded
+    # per entry rather than derived, because the answer comes from the model
+    # card and checking it is a network call.
+    npu_ready: bool = False
+    quantization: str = ""
 
     @property
     def backend(self) -> RuntimeBackend:
@@ -103,6 +110,8 @@ def _entry_from_dict(raw: dict[str, Any], *, source: str) -> ModelEntry | None:
         subfolder=str(raw.get("subfolder", "") or "").strip("/"),
         source=source,
         size_bytes=int(raw.get("size_bytes") or 0),
+        npu_ready=bool(raw.get("npu_ready", False)),
+        quantization=str(raw.get("quantization", "")),
     )
 
 

@@ -522,3 +522,42 @@ def test_the_token_budget_is_counted_not_guessed(isolated_config):
     chars = prompt_budget_chars("NPU", "llm")
     assert chars == int(tokens * CHARS_PER_TOKEN)
     assert tokens > 1000
+
+
+# ── the curated catalog ──────────────────────────────────────────────────
+
+
+def test_the_default_model_is_one_the_npu_can_run(isolated_config):
+    """The default lands on the NPU, so it has to be a symmetric export.
+
+    Intel's NPU guide requires symmetric INT4 or NF4 at group size -1 or 128.
+    Every OpenVINO entry in this catalog was asymmetric once, the default
+    included — they load and then run far below the hardware.
+    """
+    from models.catalog import catalog_default_model_id, get_model
+
+    entry = get_model(catalog_default_model_id())
+    assert entry is not None
+    assert entry.npu_ready, f"{entry.id} is the default but is not an NPU export"
+
+
+def test_every_entry_declares_how_it_was_quantized(isolated_config):
+    """A claim that can't be checked is worse than no claim."""
+    from models.catalog import load_catalog
+
+    _, _, entries = load_catalog()
+    for entry in (e for e in entries if e.source == "curated"):
+        assert entry.quantization, f"{entry.id} does not say how it was quantized"
+
+
+def test_npu_ready_entries_are_symmetric_or_purpose_built(isolated_config):
+    from models.catalog import load_catalog
+
+    _, _, entries = load_catalog()
+    for entry in (e for e in entries if e.npu_ready):
+        quant = entry.quantization.upper()
+        assert "SYM" in quant or "NF4" in quant or "FOR NPU" in quant, (
+            f"{entry.id} claims npu_ready with quantization {entry.quantization!r}"
+        )
+    for entry in (e for e in entries if not e.npu_ready):
+        assert "ASYM" in entry.quantization.upper() or not entry.npu_ready

@@ -16,12 +16,27 @@ logger = logging.getLogger(__name__)
 
 _CACHE_OVERRIDE = os.environ.get("KEYLANE_NPU_CACHE_DIR") or ""
 PROBE_TIMEOUT = float(os.environ.get("KEYLANE_NPU_PROBE_TIMEOUT", "90"))
-# The probe now compiles at the prompt length the load wants, so the long
-# first compile happens here rather than in the untimed load that followed it.
-# An LLM at MAX_PROMPT_LEN 4096 is minutes, not the seconds a 1024 probe took,
-# so the deadline has to cover the real work or it fails what used to pass.
-WARM_TIMEOUT = float(os.environ.get("KEYLANE_NPU_WARM_TIMEOUT", "3600"))
-VLM_WARM_TIMEOUT = float(os.environ.get("KEYLANE_NPU_VLM_WARM_TIMEOUT", "10800"))
+
+# The probe compiles at the prompt length the load wants, so the first compile
+# happens here rather than in the untimed load that followed it, and this
+# deadline has to cover it.
+#
+# These used to be one hour and three hours, set when a 4096-token compile
+# really did take half an hour. Measured on 2026-09-03 with OpenVINO 2026.3 on
+# an NPU 3720, a cold 7B compile is 60 seconds and MAX_PROMPT_LEN barely moves
+# it — since 2025.3 the pipeline chunks the prefill instead of compiling a
+# static graph that wide. An hour of headroom over a minute of work is not
+# caution, it is an hour of a wedged compile looking like a slow one.
+#
+# Ten minutes is roughly ten times the measured cost, which leaves room for a
+# 14B on a slower NPU and still fails visibly. Re-measure with
+# `scripts/npu-bench.py` rather than adjusting these by feel; it writes what it
+# found to data/bench.json so the next person has a number instead of a guess.
+WARM_TIMEOUT = float(os.environ.get("KEYLANE_NPU_WARM_TIMEOUT", "600"))
+# A VLM compiles a vision tower as well, and that part is genuinely slower.
+# Unmeasured here — the one VLM in the catalog was asymmetric and got replaced —
+# so this keeps generous headroom rather than pretending to a number.
+VLM_WARM_TIMEOUT = float(os.environ.get("KEYLANE_NPU_VLM_WARM_TIMEOUT", "3600"))
 
 _VERSION_RE = re.compile(r'<openvino_version value="(\d+)\.(\d+)')
 
@@ -112,9 +127,14 @@ def _timeout_message(kind: PipelineKind, timeout: float) -> str:
     if kind == "vlm":
         return (
             f"timeout:NPU compile did not finish within {mins:.0f} min "
-            f"(VLM first compile can take 60–90+ min; set KEYLANE_NPU_VLM_WARM_TIMEOUT)"
+            f"(a vision model compiles its vision tower too; raise "
+            f"KEYLANE_NPU_VLM_WARM_TIMEOUT if this model is simply large)"
         )
-    return f"timeout:compile did not finish within {mins:.0f} min"
+    return (
+        f"timeout:compile did not finish within {mins:.0f} min. A 7B compile "
+        f"measures around a minute on a working stack, so this usually means a "
+        f"driver and compiler that do not match — run scripts/npu-driver-fix.sh"
+    )
 
 
 def probe(

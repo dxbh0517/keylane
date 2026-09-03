@@ -181,6 +181,8 @@ def list_models(runtime: str = "") -> dict[str, Any]:
                 "runtime": e.runtime,
                 "subfolder": e.subfolder,
                 "source": e.source,
+                "npu_ready": e.npu_ready,
+                "quantization": e.quantization,
                 "device": e.resolve_device(device),
                 "pipeline": e.backend.model_kind(e.model_dir) if e.model_dir.is_dir() else "llm",
                 "downloaded": e.is_downloaded(),

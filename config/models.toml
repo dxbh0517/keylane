@@ -4,7 +4,18 @@
 # repo holds OpenVINO IR and only OpenVINO GenAI can load it; a repo with a
 # genai_config.json holds an ONNX graph and only ONNX Runtime GenAI can. Pick
 # the runtime in Settings → Model and the list filters to what it can run.
-default = "qwen2.5-7b-instruct"
+#
+# `npu_ready` is the other half of the answer, and it is not cosmetic. Intel's
+# NPU guide requires a *symmetric* INT4 or NF4 export with group size -1 or
+# 128. Most of the `OpenVINO/*-int4-ov` repos are INT4_ASYM, which the NPU does
+# not support — so they load, and then run far below what the hardware can do.
+# The entries marked `npu_ready = true` are symmetric channel-wise (`-cw-`),
+# symmetric group-quantized (`-gq-`), or come from a publisher who exported
+# specifically for the NPU. `quantization` records what the model card declares,
+# so the claim can be checked rather than trusted.
+#
+# https://docs.openvino.ai/2026/openvino-workflow-generative/inference-with-genai/inference-with-genai-on-npu.html
+default = "qwen3-8b-cw"
 runtime = "openvino"
 device = "NPU"
 
@@ -12,10 +23,102 @@ device = "NPU"
 # to the runtime's own default.
 [devices]
 openvino = "NPU"
-onnxruntime = "NPU"
+# The curated ONNX entries are all `cpu_and_mobile` builds — CPU-targeted
+# graphs with int8 accumulation. Pushing one at the NPU through the OpenVINO
+# execution provider is not what they were exported for, so the honest default
+# for this runtime is the device the builds actually target.
+onnxruntime = "CPU"
 
-# ── OpenVINO GenAI ───────────────────────────────────────────────────────
-# Intel's own stack: OpenVINO IR exports, compiled for the NPU.
+# ── OpenVINO GenAI · exported for the NPU ────────────────────────────────
+# Symmetric INT4. These are the ones to use on an NPU; the rest of the
+# OpenVINO section below is kept for CPU and GPU work and for anyone whose
+# model is already on disk.
+
+[[models]]
+id = "qwen3-8b-cw"
+name = "Qwen 3 8B (NPU)"
+hf_repo = "OpenVINO/Qwen3-8B-int4-cw-ov"
+runtime = "openvino"
+params_b = 8
+npu_ready = true
+quantization = "INT4_SYM channel-wise"
+description = "The default. Strongest of the NPU-validated exports."
+
+[[models]]
+id = "phi-3.5-mini-cw"
+name = "Phi 3.5 Mini (NPU)"
+hf_repo = "OpenVINO/Phi-3.5-mini-instruct-int4-cw-ov"
+runtime = "openvino"
+params_b = 4
+npu_ready = true
+quantization = "INT4_SYM channel-wise"
+description = "Half the size of the default, so about twice the speed. Try this first on a new machine."
+
+[[models]]
+id = "phi-3.5-mini-gq"
+name = "Phi 3.5 Mini (NPU, group-quantized)"
+hf_repo = "OpenVINO/Phi-3.5-mini-instruct-int4-gq-ov"
+runtime = "openvino"
+params_b = 4
+npu_ready = true
+quantization = "INT4_SYM group size 128"
+description = "Group quantization holds accuracy better than channel-wise at this size."
+
+[[models]]
+id = "mistral-7b-cw"
+name = "Mistral 7B Instruct v0.3 (NPU)"
+hf_repo = "OpenVINO/Mistral-7B-Instruct-v0.3-int4-cw-ov"
+runtime = "openvino"
+params_b = 7
+npu_ready = true
+quantization = "INT4_SYM_CW"
+description = "Terse and fast; a good fit for tool-calling turns."
+
+[[models]]
+id = "deepseek-r1-qwen-1.5b"
+name = "DeepSeek R1 Distill Qwen 1.5B (NPU)"
+hf_repo = "OpenVINO/DeepSeek-R1-Distill-Qwen-1.5B-int4-gq-ov"
+runtime = "openvino"
+params_b = 2
+npu_ready = true
+quantization = "INT4_SYM group size 128"
+description = "Reasoning-distilled and small enough to think at length without the wait."
+
+[[models]]
+id = "qwen3-4b-npu"
+name = "Qwen 3 4B (NPU)"
+hf_repo = "FluidInference/qwen3-4b-int4-ov-npu"
+runtime = "openvino"
+params_b = 4
+npu_ready = true
+quantization = "exported for NPU"
+description = "Newer generation at a size the NPU can keep up with."
+
+[[models]]
+id = "qwen2.5-coder-7b-npu"
+name = "Qwen 2.5 Coder 7B (NPU)"
+hf_repo = "llmware/qwen-2.5-coder-instruct-npu-ov"
+runtime = "openvino"
+params_b = 7
+npu_ready = true
+quantization = "exported for NPU"
+description = "Code and technical tasks, exported for the NPU rather than adapted to it."
+
+[[models]]
+id = "gemma-3-4b-vlm"
+name = "Gemma 3 4B (NPU, vision)"
+hf_repo = "OpenVINO/gemma-3-4b-it-int4-cw-ov"
+runtime = "openvino"
+params_b = 4
+npu_ready = true
+quantization = "INT4_SYM channel-wise"
+description = "Reads screenshots. The only vision model here Intel has validated on the NPU."
+
+# ── OpenVINO GenAI · asymmetric exports ──────────────────────────────────
+# INT4_ASYM. The NPU does not support asymmetric quantization, so on that
+# device these are slow rather than broken. They are fine on CPU and GPU, and
+# they stay listed because they were the catalog for a long time and someone's
+# weights are already on disk.
 
 [[models]]
 id = "qwen2.5-7b-instruct"
@@ -23,39 +126,29 @@ name = "Qwen 2.5 7B Instruct"
 hf_repo = "OpenVINO/Qwen2.5-7B-Instruct-int4-ov"
 runtime = "openvino"
 params_b = 7
-description = "General-purpose assistant; good default."
-
-[[models]]
-id = "qwen2.5-7b-npu"
-name = "Qwen 2.5 7B (NPU-tested)"
-hf_repo = "FluidInference/qwen2.5-7b-int4-npu-ov"
-runtime = "openvino"
-params_b = 7
-description = "Same family, validated on Intel NPU."
-
-[[models]]
-id = "qwen2.5-coder-7b"
-name = "Qwen 2.5 Coder 7B"
-hf_repo = "OpenVINO/Qwen2.5-Coder-7B-Instruct-int4-ov"
-runtime = "openvino"
-params_b = 7
-description = "Code and technical tasks."
+npu_ready = false
+quantization = "INT4_ASYM group size 128"
+description = "The previous default. Asymmetric, so prefer qwen3-8b-cw on an NPU."
 
 [[models]]
 id = "qwen3-8b"
-name = "Qwen 3 8B"
+name = "Qwen 3 8B (asymmetric)"
 hf_repo = "OpenVINO/Qwen3-8B-int4-ov"
 runtime = "openvino"
 params_b = 8
-description = "Newer Qwen generation; stronger reasoning than 2.5 at the same size."
+npu_ready = false
+quantization = "INT4_ASYM group size 128"
+description = "Same model as the default, exported asymmetrically. For CPU or GPU."
 
 [[models]]
-id = "qwen3.5-9b"
-name = "Qwen 3.5 9B"
-hf_repo = "OpenVINO/Qwen3.5-9B-int4-ov"
+id = "qwen2.5-coder-7b"
+name = "Qwen 2.5 Coder 7B (asymmetric)"
+hf_repo = "OpenVINO/Qwen2.5-Coder-7B-Instruct-int4-ov"
 runtime = "openvino"
-params_b = 9
-description = "Multimodal VLM (text-only in Keylane). First NPU compile can take 60–90+ minutes."
+params_b = 7
+npu_ready = false
+quantization = "INT4_ASYM"
+description = "Code and technical tasks. For CPU or GPU."
 
 [[models]]
 id = "gemma-2-9b-it"
@@ -63,96 +156,123 @@ name = "Gemma 2 9B Instruct"
 hf_repo = "OpenVINO/gemma-2-9b-it-int4-ov"
 runtime = "openvino"
 params_b = 9
-description = "Google Gemma 2 instruction-tuned."
+npu_ready = false
+quantization = "undeclared"
+description = "The model card does not say how it was quantized. For CPU or GPU."
 
 [[models]]
 id = "mistral-7b-instruct-v03"
-name = "Mistral 7B Instruct v0.3"
+name = "Mistral 7B Instruct v0.3 (asymmetric)"
 hf_repo = "OpenVINO/Mistral-7B-Instruct-v0.3-int4-ov"
 runtime = "openvino"
 params_b = 7
-description = "Terse and fast; a good fit for tool-calling turns."
+npu_ready = false
+quantization = "INT4_ASYM group size 128"
+description = "For CPU or GPU. On an NPU use mistral-7b-cw instead."
 
 [[models]]
 id = "deepseek-r1-qwen-7b"
-name = "DeepSeek R1 Distill Qwen 7B"
+name = "DeepSeek R1 Distill Qwen 7B (asymmetric)"
 hf_repo = "OpenVINO/DeepSeek-R1-Distill-Qwen-7B-int4-ov"
 runtime = "openvino"
 params_b = 7
-description = "Reasoning-distilled. Thinks at length before answering."
+npu_ready = false
+quantization = "INT4_ASYM group size 128"
+description = "Thinks at length before answering. For CPU or GPU."
 
 [[models]]
 id = "phi-4-mini-instruct"
-name = "Phi 4 Mini Instruct"
+name = "Phi 4 Mini Instruct (asymmetric)"
 hf_repo = "OpenVINO/Phi-4-mini-instruct-int4-ov"
 runtime = "openvino"
 params_b = 4
-description = "Small and quick to compile — the one to try first on a new machine."
+npu_ready = false
+quantization = "INT4_ASYM group size 64"
+description = "Group size 64 is neither -1 nor 128, so the NPU cannot take it either. For CPU or GPU."
 
 [[models]]
-id = "phi-3.5-mini-instruct"
-name = "Phi 3.5 Mini Instruct"
-hf_repo = "OpenVINO/Phi-3.5-mini-instruct-int4-ov"
+id = "qwen3.5-9b"
+name = "Qwen 3.5 9B (vision, asymmetric)"
+hf_repo = "OpenVINO/Qwen3.5-9B-int4-ov"
 runtime = "openvino"
-params_b = 4
-description = "Well-tested small model with a long context."
+params_b = 9
+npu_ready = false
+quantization = "INT4_ASYM group size 128"
+description = "A VLM, not a text model — the vision tower is why its first NPU compile runs long. Use gemma-3-4b-vlm instead."
 
 # ── ONNX Runtime GenAI ───────────────────────────────────────────────────
-# ONNX exports run through the OpenVINO execution provider. These repos ship
-# several builds of each model, so every entry names the one that runs here.
+# Every one of these subfolders is a `cpu_and_mobile` build: a CPU-targeted
+# graph using int8 accumulation (`acc-level-4`). They run well on CPU through
+# the OpenVINO execution provider. None of these repos ships an OpenVINO NPU
+# build — the only NPU folder anywhere in them is Qualcomm QNN, which is not
+# this hardware — so the device default for this runtime is CPU.
 
 [[models]]
 id = "phi-4-mini-onnx"
-name = "Phi 4 Mini Instruct (ONNX)"
+name = "Phi 4 Mini Instruct (ONNX, CPU)"
 hf_repo = "microsoft/Phi-4-mini-instruct-onnx"
 subfolder = "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4"
 runtime = "onnxruntime"
 params_b = 4
+npu_ready = false
+quantization = "INT4 RTN block 32, int8 accumulation"
 description = "Microsoft's own INT4 export; the default ONNX Runtime pick."
 
 [[models]]
 id = "phi-3.5-mini-onnx"
-name = "Phi 3.5 Mini Instruct (ONNX)"
+name = "Phi 3.5 Mini Instruct (ONNX, CPU)"
 hf_repo = "microsoft/Phi-3.5-mini-instruct-onnx"
 subfolder = "cpu_and_mobile/cpu-int4-awq-block-128-acc-level-4"
 runtime = "onnxruntime"
 params_b = 4
+npu_ready = false
+quantization = "INT4 AWQ block 128, int8 accumulation"
 description = "AWQ-quantised, which holds up better than RTN at INT4."
 
 [[models]]
 id = "phi-4-mini-reasoning-onnx"
-name = "Phi 4 Mini Reasoning (ONNX)"
+name = "Phi 4 Mini Reasoning (ONNX, CPU)"
 hf_repo = "microsoft/Phi-4-mini-reasoning-onnx"
 subfolder = "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4"
 runtime = "onnxruntime"
 params_b = 4
+npu_ready = false
+quantization = "INT4 RTN block 32, int8 accumulation"
 description = "Reasoning-tuned Phi. Slower to answer, better at multi-step work."
 
 [[models]]
 id = "llama-3.2-3b-onnx"
-name = "Llama 3.2 3B Instruct (ONNX)"
+name = "Llama 3.2 3B Instruct (ONNX, CPU)"
 hf_repo = "onnx-community/Llama-3.2-3B-Instruct-GENAI-ONNX"
 subfolder = "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4"
 runtime = "onnxruntime"
 params_b = 3
+npu_ready = false
+quantization = "INT4 RTN block 32, int8 accumulation"
 description = "The smallest curated model — fastest first load of anything here."
 
 [[models]]
 id = "mistral-7b-onnx"
-name = "Mistral 7B Instruct v0.2 (ONNX)"
+name = "Mistral 7B Instruct v0.2 (ONNX, CPU)"
 hf_repo = "microsoft/mistral-7b-instruct-v0.2-ONNX"
-subfolder = "onnx/cpu_and_mobile/mistral-7b-instruct-v0.2-cpu-int4-rtn-block-32-acc-level-4"
+# The plain block-32 build, not the acc-level-4 one. Int8 accumulation is a
+# CPU optimisation, and this repo is the one that offers the choice.
+subfolder = "onnx/cpu_and_mobile/mistral-7b-instruct-v0.2-cpu-int4-rtn-block-32"
 runtime = "onnxruntime"
 params_b = 7
+npu_ready = false
+quantization = "INT4 RTN block 32"
 description = "7B-class ONNX build, comparable to the OpenVINO Mistral entry."
 
 [[models]]
 id = "phi-4-onnx"
-name = "Phi 4 (ONNX)"
+name = "Phi 4 (ONNX, CPU)"
 hf_repo = "microsoft/phi-4-onnx"
 subfolder = "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4"
 runtime = "onnxruntime"
 params_b = 14
+npu_ready = false
+quantization = "INT4 RTN block 32, int8 accumulation"
 description = "The largest curated model. Expect a long first compile and heavy memory use."
 
 # ── Model routing ────────────────────────────────────────────────────────
@@ -160,7 +280,9 @@ description = "The largest curated model. Expect a long first compile and heavy 
 # try in order; the first available one serves the request. The order is
 # declared here so resolution never depends on which adapter registered first.
 [routes]
-# The HUD is waiting on this one — keep it on the NPU.
+# The HUD is waiting on this one. The NPU is always resident and costs no VRAM,
+# so it is the default — but if you have a larger model on a GPU, putting `gpu`
+# first here is the single biggest latency change available.
 interactive = ["npu"]
 # Subagents, compaction, scheduled work: quality matters more than latency.
 background = ["gpu", "npu"]
@@ -168,8 +290,8 @@ background = ["gpu", "npu"]
 utility = ["npu", "gpu"]
 
 # A larger model served over the OpenAI chat-completions API — LM Studio,
-# llama.cpp's server, Ollama and vLLM all speak it. Set `model`, flip
-# `enabled`, and the background route starts using it.
+# llama.cpp's server, Ollama and vLLM all speak it. Settings → Model routing →
+# "Detect running server" fills this in from whatever is already listening.
 [[adapters]]
 id = "gpu"
 kind = "openai"

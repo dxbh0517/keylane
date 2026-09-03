@@ -1112,6 +1112,15 @@ class SettingsWindow(Gtk.Window):
         if model.get("source") == "imported":
             top.append(self._badge("Imported", "muted"))
 
+        # Whether the export is one the NPU can actually run well. Only worth
+        # saying when the NPU is the device this model would land on — the same
+        # asymmetric export is perfectly fine on CPU or GPU.
+        if str(model.get("device", "")).upper() == "NPU":
+            if model.get("npu_ready"):
+                top.append(self._badge("NPU ready", "ok"))
+            else:
+                top.append(self._badge("Not for NPU", "warn"))
+
         box.append(top)
 
         params = model.get("params_b") or 0
@@ -1120,6 +1129,8 @@ class SettingsWindow(Gtk.Window):
             parts.append(str(model["subfolder"]))
         if model.get("device"):
             parts.append(f"on {model['device']}")
+        if model.get("quantization"):
+            parts.append(str(model["quantization"]))
         meta = Gtk.Label(label=" · ".join(p for p in parts if p), xalign=0, wrap=True)
         meta.add_css_class("settings-field-hint")
         box.append(meta)
