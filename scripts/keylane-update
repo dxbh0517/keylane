@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Check for and install a newer Keylane.
+
+    keylane-update                 # is there one?
+    keylane-update --install       # get it
+    keylane-update --channel main  # follow the branch instead of releases
+    keylane-update --rollback      # go back to the previous release
+
+It talks to the code directly rather than to the daemon, so it works when the
+daemon will not start — which is exactly when you most want to move off a bad
+release.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from updater.apply import UpdateError, apply_update, rollback  # noqa: E402
+from updater.github import CHANNELS, check_for_update  # noqa: E402
+from updater.version import version_info  # noqa: E402
+
+
+def _say(message: str) -> None:
+    print(f"  {message}", flush=True)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--channel", default="", choices=("", *CHANNELS))
+    parser.add_argument("--install", action="store_true", help="apply the update")
+    parser.add_argument("--rollback", action="store_true", help="return to the previous release")
+    args = parser.parse_args()
+
+    info = version_info()
+    print(f"Keylane {info['display']}  ({info['install']} install)")
+
+    if args.rollback:
+        try:
+            result = rollback(progress=_say)
+        except UpdateError as exc:
+            print(f"\n{exc}", file=sys.stderr)
+            return 1
+        print(f"\n{result['detail']}")
+        return 0
+
+    channel = args.channel or ""
+    if not channel:
+        from daemon.config import get_section
+
+        channel = str(get_section("updates").get("channel", "stable"))
+
+    status = check_for_update(channel, force=True)
+    if not status.available:
+        detail = f" — {status.detail}" if status.detail else ""
+        print(f"Up to date on the {channel} channel{detail}.")
+        return 0
+
+    print(f"\n{status.latest_version} is available on {channel}.")
+    if status.notes:
+        print()
+        for line in status.notes.splitlines()[:12]:
+            print(f"  {line}")
+    if not status.extra.get("verified_download", False):
+        print(
+            "\nNote: this release publishes no sha256, so the download can only "
+            "be trusted as far as HTTPS to github.com."
+        )
+
+    if not args.install:
+        print("\nRun with --install to apply it.")
+        return 0
+
+    print(f"\nInstalling {status.tag}…")
+    started = time.time()
+    try:
+        result = apply_update(channel, progress=_say)
+    except UpdateError as exc:
+        print(f"\n{exc}", file=sys.stderr)
+        return 1
+    print(f"\n{result['detail']} in {time.time() - started:.0f}s")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

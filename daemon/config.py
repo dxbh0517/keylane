@@ -19,7 +19,10 @@ _lock = threading.RLock()
 
 # Sections users may override via PATCH /settings
 ALLOWED_SECTIONS = frozenset(
-    {"assistant", "notify", "speech", "security", "research", "permissions", "mcp", "ui", "models"}
+    {
+        "assistant", "notify", "speech", "security", "research",
+        "permissions", "mcp", "ui", "models", "updates",
+    }
 )
 
 
@@ -126,6 +129,9 @@ def _defaults() -> dict[str, Any]:
             "shell": "ask",
             "memory_write": "ask",
             "schedule_task": "ask",
+        # Not a tool — no model can reach it. Set to "deny" to turn off
+        # in-app updating entirely.
+        "update_apply": "ask",
             "watch_create": "ask",
             "remember": "auto",
             "remind_me": "auto",
@@ -134,6 +140,13 @@ def _defaults() -> dict[str, Any]:
         },
         "mcp": {"disabled_tools": [], "servers": []},
         "ui": {"theme": "system", "theme_id": "glass-console"},
+        "updates": {
+            # "stable" follows published releases; "main" follows the branch.
+            "channel": "stable",
+            # Look once a day and put a note in the inbox. Never install on
+            # its own — replacing the running code is the user's decision.
+            "check_daily": True,
+        },
         "models": {
             "default": models_raw.get("default", ""),
             # Which inference stack Settings browses models for.

@@ -38,6 +38,7 @@ _NAV = (
     ("Skills & Tools", "skills_tools"),
     ("Security", "security"),
     ("MCP", "mcp"),
+    ("About", "about"),
 )
 
 # Focus around a freshly mapped override window bounces; don't act on that.
@@ -165,6 +166,7 @@ class SettingsWindow(Gtk.Window):
         self._build_skills_tools()
         self._build_security()
         self._build_mcp()
+        self._build_about()
 
         first = self._nav.get_row_at_index(0)
         if first:
@@ -390,6 +392,7 @@ class SettingsWindow(Gtk.Window):
                 self._load_skills_tools()
             elif page_id == "mcp":
                 self._load_mcp_servers()
+        self._load_about()
 
     def _page(self, page_id: str) -> Gtk.Box:
         scroll = Gtk.ScrolledWindow()
@@ -2017,6 +2020,225 @@ class SettingsWindow(Gtk.Window):
                 option.remove_css_class("selected-default")
         self._mcp_stdio_box.set_visible(value != "http")
         self._mcp_http_box.set_visible(value == "http")
+
+    # ── About and updates ────────────────────────────────────────────────
+
+    def _build_about(self) -> None:
+        page = self._page("about")
+
+        section = self._section(
+            page,
+            "Version",
+            "Which build of Keylane is running, and how it was installed.",
+        )
+        self._version_label = Gtk.Label(label="—", xalign=1)
+        self._version_label.add_css_class("settings-item-title")
+        self._status_row(section, "Keylane", self._version_label)
+
+        self._install_label = Gtk.Label(label="—", xalign=1)
+        self._install_label.add_css_class("settings-item-title")
+        self._status_row(
+            section,
+            "Install",
+            self._install_label,
+            "A git checkout updates with a fast-forward; a release install "
+            "downloads and swaps a symlink.",
+        )
+
+        updates = self._section(
+            page,
+            "Updates",
+            "Keylane looks once a day and tells you. It never installs "
+            "anything on its own.",
+        )
+
+        channel_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        channel_box.add_css_class("settings-segmented")
+        self._channel_buttons: dict[str, Gtk.ToggleButton] = {}
+        group: Gtk.ToggleButton | None = None
+        for label, value in (("Stable", "stable"), ("Main branch", "main")):
+            btn = Gtk.ToggleButton(label=label)
+            btn.add_css_class("settings-segment")
+            if group is None:
+                group = btn
+            else:
+                btn.set_group(group)
+            btn.connect("toggled", self._on_channel_toggled, value)
+            self._channel_buttons[value] = btn
+            channel_box.append(btn)
+        self._field(
+            updates,
+            "Channel",
+            channel_box,
+            "Stable follows published releases. Main follows the branch, which "
+            "is newer and less tested.",
+        )
+
+        self._check_daily = Gtk.CheckButton(label="Look once a day and note it in the inbox")
+        self._check_daily.add_css_class("settings-check")
+        self._check_daily.connect(
+            "toggled",
+            lambda b: self._patch("updates", {"check_daily": b.get_active()}),
+        )
+        self._field(updates, "Daily check", self._check_daily)
+
+        self._update_status = Gtk.Label(label="Not checked yet", xalign=0, wrap=True)
+        self._update_status.add_css_class("settings-status-line")
+        self._field(updates, "Status", self._update_status)
+
+        self._update_notes = Gtk.Label(label="", xalign=0, wrap=True)
+        self._update_notes.add_css_class("settings-field-hint")
+        self._update_notes.set_visible(False)
+        self._field(updates, "", self._update_notes)
+
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        check = self._secondary_btn("Check now")
+        check.connect("clicked", lambda _b: self._check_for_update(force=True))
+        buttons.append(check)
+        self._install_btn = self._primary_btn("Install and restart")
+        self._install_btn.connect("clicked", self._confirm_install_update)
+        self._install_btn.set_sensitive(False)
+        buttons.append(self._install_btn)
+        self._field(updates, "", buttons)
+
+    def _on_channel_toggled(self, button: Gtk.ToggleButton, channel: str) -> None:
+        if not button.get_active() or self._block_save:
+            return
+        self._patch("updates", {"channel": channel})
+        self._check_for_update(force=True)
+
+    def _load_about(self) -> None:
+        def _work() -> dict[str, Any]:
+            try:
+                return {
+                    "health": api.get("/health", timeout=8).json(),
+                    "update": api.get("/update/status", timeout=20).json(),
+                }
+            except Exception as exc:  # noqa: BLE001
+                return {"error": str(exc)}
+
+        self._fetch_async("about", _work, self._apply_about)
+
+    def _apply_about(self, payload: dict[str, Any]) -> None:
+        if payload.get("error"):
+            self._update_status.set_text(f"Could not reach the daemon: {payload['error']}")
+            return
+        version = (payload.get("health") or {}).get("version") or {}
+        self._version_label.set_text(str(version.get("display", "unknown")))
+        self._install_label.set_text(str(version.get("install", "unknown")).lower())
+        self._apply_update_status(payload.get("update") or {})
+
+    def _apply_update_status(self, status: dict[str, Any]) -> None:
+        self._block_save = True
+        channel = str(status.get("channel", "stable"))
+        button = self._channel_buttons.get(channel)
+        if button is not None:
+            button.set_active(True)
+        self._block_save = False
+
+        if status.get("available"):
+            self._update_status.set_text(
+                f"{status.get('latest_version')} is available "
+                f"(you have {status.get('current')})."
+            )
+            self._install_btn.set_sensitive(True)
+        else:
+            detail = str(status.get("detail") or "")
+            current = status.get("current", "?")
+            self._update_status.set_text(
+                f"{current} is the latest{f' — {detail}' if detail else '.'}"
+            )
+            self._install_btn.set_sensitive(False)
+
+        notes = str(status.get("notes") or "").strip()
+        if notes and status.get("available"):
+            self._update_notes.set_text("\n".join(notes.splitlines()[:8]))
+            self._update_notes.set_visible(True)
+        else:
+            self._update_notes.set_visible(False)
+
+    def _check_for_update(self, force: bool = False) -> None:
+        self._update_status.set_text("Asking GitHub…")
+
+        def _work() -> dict[str, Any]:
+            try:
+                channel = next(
+                    (c for c, b in self._channel_buttons.items() if b.get_active()), "stable"
+                )
+                return api.post(
+                    "/update/check", json={"channel": channel}, timeout=30
+                ).json()
+            except Exception as exc:  # noqa: BLE001
+                return {"error": str(exc)}
+
+        def _apply(payload: dict[str, Any]) -> None:
+            if payload.get("error"):
+                self._update_status.set_text(f"Check failed: {payload['error']}")
+                return
+            self._apply_update_status(payload)
+
+        self._fetch_async("update-check", _work, _apply)
+
+    def _confirm_install_update(self, _btn: Gtk.Button) -> None:
+        """Ask before replacing the code that is running.
+
+        The daemon refuses an apply without an explicit confirm for exactly
+        this reason, so the dialog is the confirmation rather than a courtesy.
+        """
+        version = self._update_status.get_text()
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text="Install this update?",
+            secondary_text=(
+                f"{version}\n\nKeylane will download it, install its dependencies "
+                "and restart. Your settings, memories and downloaded models are "
+                "kept — they live outside the part being replaced."
+            ),
+        )
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        install = dialog.add_button("Install and restart", Gtk.ResponseType.ACCEPT)
+        install.add_css_class("suggested-action")
+
+        def _respond(_dlg: Gtk.MessageDialog, response: int) -> None:
+            dialog.destroy()
+            if response == Gtk.ResponseType.ACCEPT:
+                self._install_update()
+
+        dialog.connect("response", _respond)
+        dialog.present()
+
+    def _install_update(self) -> None:
+        self._install_btn.set_sensitive(False)
+        self._update_status.set_text("Installing…")
+
+        def _work() -> dict[str, Any]:
+            try:
+                channel = next(
+                    (c for c, b in self._channel_buttons.items() if b.get_active()), "stable"
+                )
+                resp = api.post(
+                    "/update/apply",
+                    json={"channel": channel, "confirm": True},
+                    timeout=1200,
+                )
+                if resp.status_code >= 400:
+                    return {"error": str(resp.json().get("detail", resp.text))}
+                return resp.json()
+            except Exception as exc:  # noqa: BLE001
+                return {"error": str(exc)}
+
+        def _apply(payload: dict[str, Any]) -> None:
+            if payload.get("error"):
+                self._update_status.set_text(f"Update failed: {payload['error']}")
+                self._install_btn.set_sensitive(True)
+                return
+            self._update_status.set_text(str(payload.get("detail", "Updated.")))
+            self._toast("Updated — Keylane is restarting")
+
+        self._fetch_async("update-apply", _work, _apply)
 
     def _load_mcp_servers(self) -> None:
         def _work() -> list[dict[str, Any]]:

@@ -3,8 +3,13 @@
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="${KEYLANE_DEST:-${HOME}/.local/share/ai-gateway}"
+DEST="${KEYLANE_DEST:-${HOME}/.local/share/keylane/current}"
 USER_UNIT_DIR="${HOME}/.config/systemd/user"
+# data/ and the venv live beside the releases, not inside one, so an update
+# that replaces DEST leaves both alone. In a dev tree they are where they
+# always were.
+KEYLANE_DATA="${KEYLANE_DATA:-${DEST}/data}"
+KEYLANE_VENV="${KEYLANE_VENV:-${DEST}/.venv}"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
@@ -19,7 +24,10 @@ chmod +x "${DEST}/scripts/keylane-daemon" "${DEST}/scripts/keylane-ui" "${DEST}/
 
 mkdir -p "${USER_UNIT_DIR}"
 for unit in keylane-daemon.service keylane-ui.service; do
-  sed "s|%KEYLANE_ROOT%|${DEST}|g" "${SRC}/systemd/${unit}" > "${USER_UNIT_DIR}/${unit}"
+  sed -e "s|%KEYLANE_ROOT%|${DEST}|g" \
+      -e "s|%KEYLANE_DATA%|${KEYLANE_DATA}|g" \
+      -e "s|%KEYLANE_VENV%|${KEYLANE_VENV}|g" \
+      "${SRC}/systemd/${unit}" > "${USER_UNIT_DIR}/${unit}"
 done
 
 systemctl --user daemon-reload

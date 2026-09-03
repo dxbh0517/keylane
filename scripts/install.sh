@@ -1,10 +1,30 @@
 #!/usr/bin/env bash
-# Install Keylane into ~/.local/share/ai-gateway
+# Install Keylane into ~/.local/share/keylane, in a layout it can update.
+#
+# The old install rsynced the tree into ~/.local/share/ai-gateway and excluded
+# .git, which meant the installed copy was neither a checkout (so it could not
+# pull) nor anything an updater could recognise. It is a release layout now:
+#
+#   ~/.local/share/keylane/
+#     releases/<tag>/        one unpacked version, never modified in place
+#     current -> releases/…  what the systemd units point at
+#     data/                  memories, models, settings — outside the releases
+#     .venv/                 outside too, so a rollback keeps its dependencies
+#
+# Updating is then a new directory beside the old one and a symlink move, and
+# rolling back is the same move in reverse. `data/` is never inside the thing
+# being replaced, which is the property that makes any of it safe.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="${HOME}/.local/share/ai-gateway"
+BASE="${KEYLANE_HOME:-${HOME}/.local/share/keylane}"
+LEGACY="${HOME}/.local/share/ai-gateway"
 HOTKEY="${KEYLANE_HOTKEY:-<Super>space}"
+
+# A local install is its own "release". A real update replaces this with the
+# tag it downloaded.
+RELEASE_TAG="${KEYLANE_RELEASE_TAG:-local}"
+RELEASE="${BASE}/releases/${RELEASE_TAG}"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
@@ -18,26 +38,47 @@ if command -v dnf >/dev/null 2>&1; then
     wl-clipboard wmctrl podman podman-compose || true
 fi
 
-say "Syncing ${SRC} -> ${DEST}"
-mkdir -p "${DEST}"
-rsync -a --delete \
+# ── migrate an old install ───────────────────────────────────────────────
+# Everything irreplaceable lives in data/. Move that across and leave the old
+# tree alone rather than deleting someone's install out from under them.
+if [[ -d "${LEGACY}/data" && ! -d "${BASE}/data" ]]; then
+  say "Moving your data from ${LEGACY}"
+  mkdir -p "${BASE}"
+  cp -a "${LEGACY}/data" "${BASE}/data"
+  echo "  copied ${LEGACY}/data -> ${BASE}/data"
+  echo "  the old tree is left at ${LEGACY}; remove it once you are happy"
+fi
+
+say "Installing ${SRC} -> ${RELEASE}"
+mkdir -p "${BASE}/releases" "${BASE}/data"
+rm -rf "${RELEASE}"
+mkdir -p "${RELEASE}"
+rsync -a \
   --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' \
   --exclude '.git' --exclude 'data' --exclude 'outputs' \
-  "${SRC}/" "${DEST}/"
+  "${SRC}/" "${RELEASE}/"
 
-cd "${DEST}"
-if [[ ! -d .venv ]]; then
-  python3 -m venv --system-site-packages .venv
+# The symlink is what the units follow, so it moves atomically.
+ln -sfn "${RELEASE}" "${BASE}/.current.new"
+mv -Tf "${BASE}/.current.new" "${BASE}/current"
+
+# The venv sits beside the releases, not inside one: a rollback should not
+# have to reinstall its dependencies.
+if [[ ! -d "${BASE}/.venv" ]]; then
+  python3 -m venv --system-site-packages "${BASE}/.venv"
 fi
-.venv/bin/pip install -U pip
-.venv/bin/pip install -r requirements.txt
+"${BASE}/.venv/bin/pip" install -U pip
+"${BASE}/.venv/bin/pip" install -r "${BASE}/current/requirements.txt"
 
-mkdir -p "${DEST}/data"
-cp -n config/*.toml "${DEST}/config/" 2>/dev/null || true
+DEST="${BASE}/current"
 
 say "Installing systemd user units (start on login)"
-chmod +x "${DEST}/scripts/keylane-daemon" "${DEST}/scripts/keylane-ui" "${DEST}/scripts/keylane-toggle" "${DEST}/scripts/keylane-mic" "${DEST}/scripts/keylane-settings" "${DEST}/scripts/setup-hotkey.sh"
-KEYLANE_DEST="${DEST}" "${DEST}/scripts/enable-startup.sh"
+chmod +x "${DEST}/scripts/keylane-daemon" "${DEST}/scripts/keylane-ui" \
+         "${DEST}/scripts/keylane-toggle" "${DEST}/scripts/keylane-mic" \
+         "${DEST}/scripts/keylane-settings" "${DEST}/scripts/keylane-update" \
+         "${DEST}/scripts/setup-hotkey.sh"
+KEYLANE_DEST="${DEST}" KEYLANE_DATA="${BASE}/data" KEYLANE_VENV="${BASE}/.venv" \
+  "${DEST}/scripts/enable-startup.sh"
 
 say "Super+Space hotkey"
 KEYLANE_DEST="${DEST}" KEYLANE_HOTKEY="${HOTKEY}" "${DEST}/scripts/setup-hotkey.sh"
@@ -58,5 +99,6 @@ if command -v podman >/dev/null 2>&1; then
 fi
 
 say "Done. Keylane starts automatically at login."
-echo "  Daemon: systemctl --user status keylane-daemon"
-echo "  UI:     systemctl --user status keylane-ui"
+echo "  Daemon:  systemctl --user status keylane-daemon"
+echo "  UI:      systemctl --user status keylane-ui"
+echo "  Updates: ${DEST}/scripts/keylane-update"
