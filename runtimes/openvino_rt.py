@@ -43,6 +43,39 @@ class OpenVinoPipeline:
     def __init__(self, pipe: Any, kind: PipelineKind) -> None:
         self._pipe = pipe
         self.kind: PipelineKind = kind
+        # A VLM pipeline accumulates conversation state across generate()
+        # calls, and a call that throws leaves that state behind — see
+        # _clear_carried_state.
+        self._poisoned = False
+
+    # ── recovering from a failed generate ────────────────────────────────
+
+    def _clear_carried_state(self) -> None:
+        """Forget any conversation the pipeline thinks it is in the middle of.
+
+        ``VLMPipeline`` keeps a tokenized history and a KV cache between
+        ``generate()`` calls, and asserts that each new prompt is at least as
+        long as the history it already holds. It clears that itself at the end
+        of a successful call — but a call that *throws* never gets there, so
+        the history stays and every later turn dies on
+
+            Prompt ids size is less than tokenized history size
+
+        which is the previous prompt's tokens still sitting in the pipeline.
+        One failed generate therefore broke every turn after it until the
+        daemon was restarted. ``finish_chat()`` is what drops that state.
+
+        Keylane owns the transcript and sends it whole on every turn, so there
+        is never anything here worth keeping.
+        """
+        pipe = self._pipe
+        if pipe is None:
+            return
+        try:
+            pipe.finish_chat()
+        except Exception:  # noqa: BLE001
+            # An older GenAI, or a pipeline with no chat state to clear.
+            logger.debug("could not clear carried pipeline state", exc_info=True)
 
     # ── the model's own idea of a conversation ───────────────────────────
 
@@ -113,17 +146,32 @@ class OpenVinoPipeline:
         if streamer is not None:
             kwargs["streamer"] = streamer
 
-        if self.kind == "vlm" and images:
-            tensors = bytes_to_ov_tensors(images)
-            if len(tensors) == 1:
-                result = self._pipe.generate(prompt, image=tensors[0], **kwargs)
+        # A turn after a failed one starts from a pipeline still holding the
+        # failed turn's history. Clear it before asking for anything, rather
+        # than letting this turn die of the last one's leftovers.
+        if self._poisoned:
+            logger.info("clearing pipeline state left by a failed generate")
+            self._clear_carried_state()
+            self._poisoned = False
+
+        try:
+            if self.kind == "vlm" and images:
+                tensors = bytes_to_ov_tensors(images)
+                if len(tensors) == 1:
+                    result = self._pipe.generate(prompt, image=tensors[0], **kwargs)
+                else:
+                    result = self._pipe.generate(prompt, images=tensors, **kwargs)
             else:
-                result = self._pipe.generate(prompt, images=tensors, **kwargs)
-        else:
-            try:
-                result = self._pipe.generate(prompt, **kwargs)
-            except TypeError:
-                result = self._pipe.generate(prompt, max_new_tokens=max_new_tokens)
+                try:
+                    result = self._pipe.generate(prompt, **kwargs)
+                except TypeError:
+                    result = self._pipe.generate(prompt, max_new_tokens=max_new_tokens)
+        except Exception:
+            # Only VLM pipelines carry state across calls, so only they can be
+            # left in this condition — but the flag is cheap and a runtime that
+            # starts doing the same thing should not need a second fix.
+            self._poisoned = True
+            raise
 
         if output_filter is not None and on_token is not None:
             remainder = output_filter.flush()
