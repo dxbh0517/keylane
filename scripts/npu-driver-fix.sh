@@ -123,7 +123,11 @@ pick_root_dir() {
 GW="$(pick_root_dir)"
 echo "==> Pinning OpenVINO to $OPENVINO in ${GW:-<no venv found>}"
 if [ -n "$GW" ]; then
-  run "$GW/.venv/bin/pip" install --quiet \
+  # `python -m pip`, not the pip script. A venv that was moved into place —
+  # which is exactly what install.sh does when it migrates an old install —
+  # keeps the old path in its console-script shebangs, so calling bin/pip
+  # directly dies with "bad interpreter" on a machine that is otherwise fine.
+  run "$GW/.venv/bin/python" -m pip install --quiet \
       "openvino==$OPENVINO" "openvino-genai==$GENAI"
 else
   echo "!! Found no Keylane venv. Pin it yourself:" >&2

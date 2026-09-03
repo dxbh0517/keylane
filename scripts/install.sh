@@ -28,6 +28,27 @@ RELEASE="${BASE}/releases/${RELEASE_TAG}"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
+# A venv records where it lives in three places: pyvenv.cfg, the activate
+# scripts, and a shebang at the top of every console script pip ever installed.
+# `python -m venv --upgrade` rewrites the first but not the others, so a moved
+# venv keeps working through `bin/python` and dies the moment anything calls
+# `bin/pip` — "bad interpreter: .../old/path/bin/python3". Rewrite them all.
+repair_venv_paths() {
+  local venv="$1" old="$2"
+  python3 -m venv --system-site-packages --upgrade "${venv}" >/dev/null 2>&1 || true
+  # Scripts: only the shebang line, and only when it names the old venv.
+  grep -rlZ -- "${old}" "${venv}/bin" 2>/dev/null | while IFS= read -r -d '' f; do
+    [[ -f "${f}" ]] || continue
+    # Text files only; bin/ also holds the python binary itself.
+    if [[ "$(head -c 2 "${f}")" == '#!' ]]; then
+      sed -i "1s|^#\!.*|#\!${venv}/bin/python|" "${f}"
+    else
+      # The activate scripts set VIRTUAL_ENV rather than carrying a shebang.
+      sed -i "s|${old}|${venv}|g" "${f}"
+    fi
+  done
+}
+
 systemctl --user stop keylane-daemon.service keylane-ui.service 2>/dev/null || true
 systemctl --user stop ai-gateway.service ai-launcher.service 2>/dev/null || true
 
@@ -72,14 +93,12 @@ fi
 # The venv comes across too. It is disposable in principle and expensive in
 # practice — torch and whisper alone are several gigabytes — so re-creating it
 # would mean re-downloading all of that on a machine that may not have room.
-# A moved venv has stale absolute paths in its scripts and pyvenv.cfg, which
-# `venv --upgrade` rewrites without touching site-packages.
 if [[ -d "${LEGACY}/.venv" && ! -d "${BASE}/.venv" ]]; then
   if [[ "$(stat -c '%d' "${LEGACY}")" == "$(stat -c '%d' "$(dirname "${BASE}")")" ]]; then
     say "Reusing the existing virtualenv"
     mkdir -p "${BASE}"
     mv "${LEGACY}/.venv" "${BASE}/.venv"
-    python3 -m venv --system-site-packages --upgrade "${BASE}/.venv"
+    repair_venv_paths "${BASE}/.venv" "${LEGACY}/.venv"
     echo "  moved ${LEGACY}/.venv -> ${BASE}/.venv and repaired its paths"
   fi
 fi
