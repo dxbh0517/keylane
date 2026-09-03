@@ -27,6 +27,11 @@ from runtimes import DEFAULT_RUNTIME, RuntimeBackend, backend_for, normalise_run
 
 logger = logging.getLogger(__name__)
 
+# How long a turn waits for the one in front of it. Time to first token alone
+# runs to ~15s on an NPU, and a ReAct turn is several calls, so this has to
+# cover a whole slow turn plus the one queued behind it.
+INFER_QUEUE_TIMEOUT = 600.0
+
 
 @dataclass
 class ModelEntry:
@@ -376,6 +381,10 @@ class LocalModelRuntime:
         self._downloads: dict[str, dict[str, Any]] = {}
         self._download_lock = threading.RLock()
         self._warned_no_template = False
+        # Serialises generation; see generate(). Not self._lock, which guards
+        # the loaded-model state and is taken by the loader — holding that for
+        # the length of an answer would make a model switch wait on a turn.
+        self._infer_lock = threading.Lock()
 
     def _download_info(self, model_id: str) -> dict[str, Any]:
         with self._download_lock:
@@ -842,12 +851,32 @@ class LocalModelRuntime:
             kind = self._pipeline_kind
 
         full = f"{system}\n\n{prompt}" if system else prompt
-        raw = pipe.generate(
-            full,
-            max_new_tokens=max_new_tokens,
-            images=images if kind == "vlm" else None,
-            on_token=on_token,
-        )
+
+        # One generation at a time. There is one pipeline and one NPU behind
+        # it, and asking it for a second answer while the first is running
+        # fails outright with "Infer Request is busy" — taking both turns down,
+        # not just the second. Concurrency is easy to reach: a scheduled job
+        # firing mid-question, a follow-up sent before the last one landed, or
+        # anything at all using /v1/chat/completions while the HUD is open.
+        #
+        # Waiting is the right answer rather than failing fast: the second
+        # caller wants an answer, and a queued one beats an error. The deadline
+        # only exists so a wedged generation cannot strand every later turn
+        # forever.
+        if not self._infer_lock.acquire(timeout=INFER_QUEUE_TIMEOUT):
+            raise RuntimeError(
+                "the model is still working on another request and did not free up "
+                f"within {INFER_QUEUE_TIMEOUT:.0f}s"
+            )
+        try:
+            raw = pipe.generate(
+                full,
+                max_new_tokens=max_new_tokens,
+                images=images if kind == "vlm" else None,
+                on_token=on_token,
+            )
+        finally:
+            self._infer_lock.release()
         return sanitize_response(raw)
 
     def chat(

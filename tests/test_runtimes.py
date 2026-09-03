@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import time
+
 import pytest
 
 from runtimes import backend_for, detect_runtime, normalise_runtime_id, runtime_ids
@@ -658,3 +660,83 @@ def test_a_pipeline_that_cannot_clear_still_reports_the_failure():
     # rather than something swallowed here.
     with pytest.raises(RuntimeError, match="Prompt ids size"):
         pipeline.generate("Hi.")
+
+
+# ── one generation at a time ─────────────────────────────────────────────
+#
+# There is one pipeline and one NPU behind it. Asking for a second answer
+# while the first is running fails with "Infer Request is busy" and takes both
+# turns down, not just the second. Reachable from a scheduled job firing
+# mid-question, a follow-up sent early, or anything using
+# /v1/chat/completions while the HUD is open.
+
+
+class _SingleUsePipe(_TemplatePipe):
+    """A pipeline that refuses to be used twice at once, like the real one."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.busy = False
+        self.concurrent = False
+        self.calls = 0
+
+    def generate(self, prompt, *, max_new_tokens=512, images=None, on_token=None):
+        if self.busy:
+            self.concurrent = True
+            raise RuntimeError("Infer Request is busy")
+        self.busy = True
+        try:
+            self.calls += 1
+            time.sleep(0.05)
+            return "ok"
+        finally:
+            self.busy = False
+
+
+def test_two_turns_at_once_queue_instead_of_colliding(isolated_config):
+    import threading as _threading
+
+    from models.catalog import LocalModelRuntime
+
+    runtime = LocalModelRuntime()
+    pipe = _SingleUsePipe()
+    _resident(runtime, pipe)
+
+    results: list[str] = []
+    errors: list[Exception] = []
+
+    def _turn() -> None:
+        try:
+            results.append(runtime.chat([{"role": "user", "content": "hi"}]))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [_threading.Thread(target=_turn) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not pipe.concurrent, "two generations overlapped on one pipeline"
+    assert errors == []
+    assert results == ["ok"] * 4
+    assert pipe.calls == 4
+
+
+def test_a_wedged_generation_does_not_strand_the_next_turn_forever(isolated_config):
+    """The queue has a deadline, and it says so rather than hanging."""
+    import models.catalog as catalog
+    from models.catalog import LocalModelRuntime
+
+    runtime = LocalModelRuntime()
+    _resident(runtime, _TemplatePipe())
+    runtime._infer_lock.acquire()  # stand in for a generation that never ends
+
+    original = catalog.INFER_QUEUE_TIMEOUT
+    catalog.INFER_QUEUE_TIMEOUT = 0.05
+    try:
+        with pytest.raises(RuntimeError, match="did not free up"):
+            runtime.chat([{"role": "user", "content": "hi"}])
+    finally:
+        catalog.INFER_QUEUE_TIMEOUT = original
+        runtime._infer_lock.release()
