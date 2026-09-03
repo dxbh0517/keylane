@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""What Keylane is doing, for a status bar or a terminal.
+
+The one genuinely long operation Keylane performs — the first download and
+compile of a model — happens with the window closed. There was no way to see it
+without opening Settings and watching a progress line, which is the opposite of
+what an always-on assistant should ask of you.
+
+    keylane-status                 # one line
+    keylane-status --waybar        # JSON for a Waybar custom module
+    keylane-status --watch         # a line per change, for a pipe
+
+Waybar:
+
+    "custom/keylane": {
+      "exec": "~/.local/share/keylane/current/scripts/keylane-status --waybar --watch",
+      "return-type": "json",
+      "on-click": "keylane-toggle"
+    }
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+DAEMON = "http://127.0.0.1:9100"
+
+# Waybar takes a CSS class per state, so a theme can colour them.
+ICONS = {
+    "off": "󰅚",
+    "loading": "󰔟",
+    "ready": "󰧑",
+    "error": "󰀦",
+    "inbox": "󰇮",
+}
+
+
+def _get(path: str, timeout: float = 3.0) -> dict[str, Any] | None:
+    import httpx
+
+    from ui.api import auth_headers
+
+    try:
+        resp = httpx.get(f"{DAEMON}{path}", headers=auth_headers(), timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def snapshot() -> dict[str, Any]:
+    """One reading of everything the bar cares about."""
+    health = _get("/health")
+    if health is None:
+        return {"state": "off", "text": "Keylane off", "tooltip": "The daemon is not running"}
+
+    npu = health.get("npu") or {}
+    state = str(npu.get("state") or "idle")
+    model = str(npu.get("model_id") or "no model")
+    device = str(npu.get("device") or "")
+    progress = str(npu.get("progress") or "")
+
+    inbox = _get("/inbox?unread_only=true") or {}
+    unread = len(inbox.get("items") or [])
+
+    version = (health.get("version") or {}).get("display", "")
+
+    if state == "error":
+        return {
+            "state": "error",
+            "text": "Keylane error",
+            "tooltip": f"{npu.get('error') or 'unknown error'}\n{version}",
+            "unread": unread,
+        }
+
+    if npu.get("loading") or state in {"downloading", "probing", "loading"}:
+        # This is the whole reason the module exists: the first compile is
+        # minutes long and used to be invisible.
+        return {
+            "state": "loading",
+            "text": progress or f"Keylane {state}…",
+            "tooltip": f"{model} on {device or '?'}\n{progress}\n{version}",
+            "unread": unread,
+        }
+
+    if not npu.get("ready"):
+        return {
+            "state": "off",
+            "text": "Keylane idle",
+            "tooltip": f"No model loaded\n{version}",
+            "unread": unread,
+        }
+
+    text = f"Keylane {model}"
+    if unread:
+        text = f"{text} · {unread}"
+    return {
+        "state": "ready",
+        "text": text,
+        "tooltip": f"{model} on {device}\n{unread} unread in the inbox\n{version}",
+        "unread": unread,
+        "model": model,
+        "device": device,
+    }
+
+
+def as_waybar(reading: dict[str, Any]) -> str:
+    state = reading["state"]
+    icon = ICONS["inbox"] if state == "ready" and reading.get("unread") else ICONS[state]
+    return json.dumps(
+        {
+            "text": f"{icon} {reading['text']}",
+            "tooltip": reading.get("tooltip", ""),
+            "class": state,
+            "alt": state,
+        },
+        ensure_ascii=False,
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--waybar", action="store_true", help="emit JSON for Waybar")
+    parser.add_argument("--watch", action="store_true", help="keep going, a line per change")
+    parser.add_argument("--interval", type=float, default=2.0, help="seconds between polls")
+    args = parser.parse_args()
+
+    render = as_waybar if args.waybar else (lambda r: r["text"])
+
+    if not args.watch:
+        print(render(snapshot()), flush=True)
+        return 0
+
+    last = None
+    while True:
+        try:
+            line = render(snapshot())
+        except KeyboardInterrupt:
+            return 0
+        except Exception:  # noqa: BLE001
+            # A bar module that dies leaves a hole in the bar. Say nothing and
+            # try again rather than exiting.
+            line = render({"state": "off", "text": "Keylane off", "tooltip": ""})
+        if line != last:
+            print(line, flush=True)
+            last = line
+        try:
+            time.sleep(max(args.interval, 0.5))
+        except KeyboardInterrupt:
+            return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

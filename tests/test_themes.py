@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 try:
@@ -20,7 +22,14 @@ from ui.themes import (
     template_tokens,
 )
 
-BUILTIN_IDS = ("glass-console", "paper-terminal", "aurora")
+BUILTIN_IDS = (
+    "glass-console",
+    "paper-terminal",
+    "aurora",
+    "copper-oxide",
+    "nord-frost",
+    "high-contrast",
+)
 
 
 @pytest.fixture()
@@ -131,3 +140,99 @@ def test_both_schemes_are_rendered_into_one_stylesheet(user_themes) -> None:
     css = render_css(load_theme("glass-console"))
     assert "window.spotlight-window.style-light .spotlight-panel" in css
     assert "window.spotlight-window.style-dark .spotlight-panel" in css
+
+
+# ── contrast ─────────────────────────────────────────────────────────────
+#
+# Nothing checked whether a theme's text could actually be read on its own
+# background. Most of the shipped themes are careful about it by eye; the point
+# of high-contrast is to guarantee it, and a guarantee nobody measures is a
+# hope.
+
+
+def _rgb(value: str) -> tuple[float, float, float] | None:
+    """Parse a theme colour. Returns None for anything that is not one.
+
+    A handful of tokens hold a whole CSS value — a shadow, a gradient — and a
+    few colours are rgba() over an unknown backdrop, which has no single
+    contrast to measure. Those are skipped rather than guessed at.
+    """
+    text = value.strip()
+    if text.startswith("#") and len(text) == 7:
+        return tuple(int(text[i : i + 2], 16) / 255 for i in (1, 3, 5))  # type: ignore[return-value]
+    match = re.fullmatch(r"rgb\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)\s*\)", text)
+    if match:
+        return tuple(float(g) / 255 for g in match.groups())  # type: ignore[return-value]
+    return None
+
+
+def _luminance(rgb: tuple[float, float, float]) -> float:
+    def channel(c: float) -> float:
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (channel(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(fg: str, bg: str) -> float | None:
+    a, b = _rgb(fg), _rgb(bg)
+    if a is None or b is None:
+        return None
+    la, lb = _luminance(a), _luminance(b)
+    lighter, darker = max(la, lb), min(la, lb)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+# (text token, the surface it sits on)
+TEXT_ON_SURFACE = (
+    ("hud-text", "hud-bg"),
+    ("hud-headline", "hud-bg"),
+    ("hud-title", "hud-bg"),
+    ("search-text", "panel-bg"),
+    ("title-text", "window-bg"),
+    ("section-title", "window-bg"),
+    ("field-label", "window-bg"),
+    ("control-text", "control-bg"),
+    ("entry-text", "entry-bg"),
+    ("nav-text", "nav-bg"),
+    ("btn-primary-text", "btn-primary-bg"),
+)
+
+
+@pytest.mark.parametrize("theme_id", BUILTIN_IDS)
+@pytest.mark.parametrize(("fg", "bg"), TEXT_ON_SURFACE)
+def test_text_is_readable_on_its_own_surface(theme_id: str, fg: str, bg: str, user_themes) -> None:
+    """WCAG AA for body text, on both schemes, for every shipped theme."""
+    theme = load_theme(theme_id)
+    for scheme_name, dark in (("light", False), ("dark", True)):
+        tokens = theme.scheme(dark)
+        ratio = contrast_ratio(tokens[fg], tokens[bg])
+        if ratio is None:
+            continue  # translucent over an unknown backdrop; nothing to measure
+        assert ratio >= 4.5, (
+            f"{theme_id} {scheme_name}: {fg} on {bg} is {ratio:.1f}:1, below AA"
+        )
+
+
+def test_high_contrast_earns_its_name(user_themes) -> None:
+    """The whole reason this theme exists: AAA, not merely AA."""
+    theme = load_theme("high-contrast")
+    for dark in (False, True):
+        tokens = theme.scheme(dark)
+        for fg, bg in TEXT_ON_SURFACE:
+            ratio = contrast_ratio(tokens[fg], tokens[bg])
+            assert ratio is not None, f"{fg}/{bg} must be an opaque colour here"
+            assert ratio >= 7.0, f"{fg} on {bg} is {ratio:.1f}:1, below AAA"
+
+
+def test_high_contrast_uses_no_translucency(user_themes) -> None:
+    """A translucent surface has whatever contrast the desktop behind it gives."""
+    theme = load_theme("high-contrast")
+    opaque_surfaces = (
+        "panel-bg", "hud-bg", "window-bg", "nav-bg",
+        "control-bg", "entry-bg", "popover-bg", "hud-card-bg",
+    )
+    for dark in (False, True):
+        tokens = theme.scheme(dark)
+        for token in opaque_surfaces:
+            assert "rgba" not in tokens[token], f"{token} is translucent: {tokens[token]}"

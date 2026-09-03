@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -240,6 +241,62 @@ class AIAgent:
         answer = str(data.get("answer") or "").strip()
         return sanitize_response(answer) if answer else ""
 
+    async def _generate(
+        self,
+        messages: list[dict[str, str]],
+        llm: Any,
+        images: list[bytes] | None,
+        on_event: EventCallback | None,
+    ) -> str:
+        """One model call, off the event loop, streaming as it goes.
+
+        Two things were wrong here and they compounded. The call is
+        synchronous and took tens of seconds, and it was made directly inside a
+        coroutine — so for its whole duration the daemon's event loop could not
+        run and no SSE event already queued could leave the process. And it
+        passed ``on_token=None``, so there was nothing to send anyway, on a
+        device where the wait is long enough that watching text appear is the
+        difference between usable and not.
+
+        Tokens are handed back through ``loop.call_soon_threadsafe`` because
+        the runtime calls the streamer from its own thread, and the queue on
+        the other end of ``on_event`` is not thread-safe.
+        """
+        loop = asyncio.get_running_loop()
+
+        forward: Callable[[str], None] | None = None
+        if on_event is not None:
+            # Only a plain answer is streamed. A tool call arrives as markup the
+            # user must never see, so the first sign of one stops the stream and
+            # the HUD keeps whatever status it had.
+            state = {"suppressed": False, "seen": ""}
+
+            def _post(kind: str, text: str) -> None:
+                # call_soon_threadsafe takes positional arguments only, so the
+                # payload is closed over rather than passed as keywords.
+                loop.call_soon_threadsafe(lambda: _emit(on_event, kind, text=text))
+
+            def _on_token(piece: str) -> None:
+                if state["suppressed"]:
+                    return
+                state["seen"] += piece
+                if has_tool_call_markup(state["seen"]) or "<tool_call" in state["seen"]:
+                    state["suppressed"] = True
+                    _post("replace_answer", "")
+                    return
+                _post("token", piece)
+
+            forward = _on_token
+
+        return await asyncio.to_thread(
+            llm.chat,
+            messages,
+            route=self.route,
+            max_new_tokens=512,
+            images=images,
+            on_token=forward,
+        )
+
     async def run(
         self,
         user_message: str,
@@ -307,13 +364,7 @@ class AIAgent:
                 if on_event:
                     _emit(on_event, "replace_answer", text="")
 
-                raw = llm.chat(
-                    messages,
-                    route=self.route,
-                    max_new_tokens=512,
-                    images=images,
-                    on_token=None,
-                )
+                raw = await self._generate(messages, llm, images, on_event)
                 call = parse_tool_call(raw)
 
                 if not call and has_tool_call_markup(raw):

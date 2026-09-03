@@ -130,8 +130,20 @@ class RuntimeBackend(Protocol):
     ) -> LoadedPipeline:
         """Compile and return a resident pipeline."""
 
+    def prompt_budget_tokens(self, device: str, kind: PipelineKind, model_dir: Path) -> int:
+        """How many tokens of prompt this pipeline can actually take.
+
+        The honest unit. Prefer it wherever a tokenizer is available to count
+        with — which is anywhere a pipeline is already loaded.
+        """
+
     def prompt_budget_chars(self, device: str, kind: PipelineKind, model_dir: Path) -> int:
-        """How many characters of prompt this pipeline can actually take."""
+        """The same limit in characters, for callers with no tokenizer.
+
+        Prompt assembly runs before a pipeline is chosen and has nothing to
+        encode with, so it gets a deliberately pessimistic conversion and sheds
+        optional sections early.
+        """
 
     # ── Hugging Face repos ───────────────────────────────────────────────
 
@@ -143,8 +155,21 @@ class RuntimeBackend(Protocol):
 
 
 def status_payload(backend: RuntimeBackend) -> dict[str, Any]:
-    """The shape Settings and /health read a runtime as."""
+    """The shape Settings and /health read a runtime as.
+
+    ``devices`` is what this machine can actually be pointed at, not what the
+    stack supports in the abstract — see ``runtimes/devices.py``.
+    ``all_devices`` keeps the unusable ones so Settings can say why rather than
+    quietly hiding hardware the user knows they have.
+    """
+    from runtimes.devices import device_options  # noqa: PLC0415
+
     installed, detail = backend.installed()
+    options = device_options(backend.info.devices)
+    usable = [o.id for o in options if o.usable]
+    default = backend.info.default_device
+    if usable and default not in usable:
+        default = usable[0]
     return {
         "id": backend.info.id,
         "name": backend.info.name,
@@ -152,6 +177,10 @@ def status_payload(backend: RuntimeBackend) -> dict[str, Any]:
         "installed": installed,
         "detail": detail,
         "install_hint": backend.info.install_hint,
-        "devices": list(backend.info.devices),
-        "default_device": backend.info.default_device,
+        "devices": usable or list(backend.info.devices),
+        "all_devices": [
+            {"id": o.id, "label": o.label, "usable": o.usable, "reason": o.reason}
+            for o in options
+        ],
+        "default_device": default,
     }

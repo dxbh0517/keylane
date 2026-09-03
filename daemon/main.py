@@ -12,13 +12,14 @@ import base64
 import json
 
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent.loop import AIAgent
+from daemon.auth import auth_middleware
 from daemon.config import add_mcp_server, all_settings, list_mcp_servers, remove_mcp_server, reset_settings, save_settings
 from daemon.health import settings_health
+from daemon.openai_api import router as openai_router
 from daemon.paths import ensure_data_dirs
 from models.catalog import (
     active_runtime_id,
@@ -102,6 +103,12 @@ async def lifespan(app: FastAPI):
         restore_scheduled_tasks()
     except Exception:  # noqa: BLE001
         logger.exception("could not restore scheduled tasks")
+    try:
+        from updater.daily import install as install_update_check
+
+        install_update_check()
+    except Exception:  # noqa: BLE001
+        logger.exception("could not arm the daily update check")
     from tools.builtin import register_builtin_tools
     from mcpbridge.client import load_mcp_tools
     from tools.registry import get_registry
@@ -146,17 +153,120 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Keylane", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORS. Nothing that talks to this daemon is a browser, and the header that
+# used to be here told every website it could read /memories. See daemon/auth.py.
+app.middleware("http")(auth_middleware)
+
+# Keylane as a provider: the resident model behind the OpenAI wire format, so
+# anything on this machine that can talk to LM Studio can talk to the NPU.
+app.include_router(openai_router)
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "npu": get_runtime().status}
+    from updater.version import version_info
+
+    return {"ok": True, "npu": get_runtime().status, "version": version_info()}
+
+
+# ── updates ──────────────────────────────────────────────────────────────
+
+
+class UpdateRequest(BaseModel):
+    channel: str = "stable"
+    force: bool = False
+    # Applying an update replaces the running code and restarts the daemon, so
+    # it never happens as a side effect of a status call. The client has to say
+    # so, and Settings only says so after the user has confirmed a dialog.
+    confirm: bool = False
+
+
+def _update_allowed(action: str) -> None:
+    """Refuse an update the user has turned off in Settings.
+
+    The token already keeps this endpoint away from browsers and other users,
+    and no tool exposes it to the model — so the remaining question is whether
+    the person running Keylane wants self-updating at all. `permissions.update
+    = "deny"` says no.
+    """
+    from daemon.config import permission_mode
+
+    if permission_mode(action) == "deny":
+        raise HTTPException(
+            403,
+            f"{action} is set to 'deny' in Settings → Security. "
+            "Change it there, or update by hand.",
+        )
+
+
+@app.get("/update/status")
+def update_status(channel: str = "") -> dict[str, Any]:
+    """Version, channel, and whether something newer is published."""
+    from dataclasses import asdict
+
+    from updater.github import DEFAULT_CHANNEL, check_for_update
+
+    chosen = channel or str(
+        all_settings().get("updates", {}).get("channel", DEFAULT_CHANNEL)
+    )
+    return asdict(check_for_update(chosen))
+
+
+@app.post("/update/check")
+def update_check(body: UpdateRequest) -> dict[str, Any]:
+    """Ask GitHub now, bypassing the once-an-hour cache."""
+    from dataclasses import asdict
+
+    from updater.github import check_for_update
+
+    return asdict(check_for_update(body.channel, force=True))
+
+
+@app.post("/update/apply")
+async def update_apply(body: UpdateRequest) -> dict[str, Any]:
+    """Install the newest release, then restart.
+
+    Three things stand between this and an accident. The token keeps it away
+    from browsers and from other users on the machine. No tool exposes it, so
+    the model cannot reach it. And `confirm` has to be set explicitly, which
+    Settings only does after the user has agreed to a dialog naming the
+    version.
+    """
+    from updater.apply import UpdateError, apply_update
+
+    _update_allowed("update_apply")
+    if not body.confirm:
+        raise HTTPException(
+            400,
+            "pass confirm=true. Installing an update replaces the running code "
+            "and restarts the daemon, so it is never a side effect.",
+        )
+
+    steps: list[str] = []
+    try:
+        result = await asyncio.to_thread(
+            apply_update, body.channel, progress=steps.append
+        )
+    except UpdateError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("update failed")
+        raise HTTPException(500, str(exc)) from exc
+    return {**result, "steps": steps}
+
+
+@app.post("/update/rollback")
+async def update_rollback(body: UpdateRequest) -> dict[str, Any]:
+    from updater.apply import UpdateError, rollback
+
+    _update_allowed("update_apply")
+    if not body.confirm:
+        raise HTTPException(400, "pass confirm=true; a rollback restarts the daemon")
+    steps: list[str] = []
+    try:
+        return {**await asyncio.to_thread(rollback, progress=steps.append), "steps": steps}
+    except UpdateError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/models")
@@ -184,6 +294,8 @@ def list_models(runtime: str = "") -> dict[str, Any]:
                 "runtime": e.runtime,
                 "subfolder": e.subfolder,
                 "source": e.source,
+                "npu_ready": e.npu_ready,
+                "quantization": e.quantization,
                 "device": e.resolve_device(device),
                 "pipeline": e.backend.model_kind(e.model_dir) if e.model_dir.is_dir() else "llm",
                 "downloaded": e.is_downloaded(),
@@ -206,6 +318,38 @@ def list_models(runtime: str = "") -> dict[str, Any]:
         "devices": all_settings().get("models", {}).get("devices", {}),
         "runtimes": [status_payload(b) for b in list_backends()],
         "models": rows,
+    }
+
+
+@app.get("/models/servers")
+def discover_servers() -> dict[str, Any]:
+    """OpenAI-compatible servers answering on this machine right now.
+
+    Settings uses this to fill in the `gpu` adapter rather than making the user
+    know that LM Studio's default port is 1234. It only reports — moving a
+    route is still a decision, because on battery the NPU is the right answer.
+    """
+    from seams.discovery import discover
+
+    found = discover()
+    configured = {
+        str(a.get("id")): str(a.get("base_url", ""))
+        for a in all_settings().get("models", {}).get("adapters", []) or []
+    }
+    return {
+        "servers": [
+            {
+                "name": s.name,
+                "base_url": s.base_url,
+                "models": s.models,
+                "suggested_model": s.suggested_model,
+                "configured_as": next(
+                    (aid for aid, url in configured.items() if url.rstrip("/") == s.base_url.rstrip("/")),
+                    "",
+                ),
+            }
+            for s in found
+        ]
     }
 
 
@@ -486,9 +630,19 @@ def settings_get() -> dict[str, Any]:
 @app.patch("/settings")
 def settings_patch(body: SettingsPatchRequest) -> dict[str, Any]:
     try:
-        return save_settings(body.section, body.values)
+        result = save_settings(body.section, body.values)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    if body.section == "updates":
+        # The daily check is derived from this setting, so turning it off has
+        # to actually disarm the job rather than wait for a restart.
+        try:
+            from updater.daily import install as install_update_check
+
+            install_update_check()
+        except Exception:  # noqa: BLE001
+            logger.exception("could not re-arm the daily update check")
+    return result
 
 
 @app.post("/settings/reset")

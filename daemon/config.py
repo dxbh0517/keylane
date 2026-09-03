@@ -19,7 +19,10 @@ _lock = threading.RLock()
 
 # Sections users may override via PATCH /settings
 ALLOWED_SECTIONS = frozenset(
-    {"assistant", "notify", "speech", "security", "research", "permissions", "mcp", "ui", "models"}
+    {
+        "assistant", "notify", "speech", "security", "research",
+        "permissions", "mcp", "ui", "models", "updates",
+    }
 )
 
 
@@ -53,6 +56,55 @@ def _load_overrides() -> dict[str, Any]:
 def _save_overrides(data: dict[str, Any]) -> None:
     ensure_data_dirs()
     SETTINGS_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    invalidate_cache()
+
+
+# ── the merged-settings cache ────────────────────────────────────────────
+#
+# `all_settings()` re-parses three TOML files and the JSON overrides, and
+# `get_section()` goes through it. `ModelEntry.resolve_device()` then calls
+# `get_section("models")` once per model, and `get_model()` calls
+# `load_catalog()`, which starts the whole thing again — so one `GET /models`
+# used to re-read the configuration dozens of times.
+#
+# The cache is keyed on the mtimes of the files that feed it, so an edit made
+# outside the process is still picked up, and writes through this module drop
+# it explicitly.
+
+_CACHE_KEY: tuple[Any, ...] | None = None
+_CACHE_VALUE: dict[str, Any] | None = None
+
+_CONFIG_FILES = ("assistant.toml", "research.toml", "models.toml", "mcp.toml")
+
+
+def _mark(path: Path) -> tuple[Any, ...]:
+    """The path plus what would have to change for its contents to differ.
+
+    The path is part of the key because a test that points SETTINGS_PATH at a
+    fresh tmp_path leaves a file that does not exist yet — and "missing" alone
+    is the same mark for every such test, which would let one test read the
+    previous one's cached settings.
+    """
+    try:
+        stat = path.stat()
+        return (str(path), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return (str(path), None, None)
+
+
+def _stamp() -> tuple[Any, ...]:
+    """What would have to change for the merged settings to differ."""
+    marks = [_mark(CONFIG_DIR / name) for name in _CONFIG_FILES]
+    marks.append(_mark(SETTINGS_PATH))
+    return tuple(marks)
+
+
+def invalidate_cache() -> None:
+    """Drop the cached merge. Called on every write through this module."""
+    global _CACHE_KEY, _CACHE_VALUE
+    with _lock:
+        _CACHE_KEY = None
+        _CACHE_VALUE = None
 
 
 def _defaults() -> dict[str, Any]:
@@ -77,6 +129,9 @@ def _defaults() -> dict[str, Any]:
             "shell": "ask",
             "memory_write": "ask",
             "schedule_task": "ask",
+        # Not a tool — no model can reach it. Set to "deny" to turn off
+        # in-app updating entirely.
+        "update_apply": "ask",
             "watch_create": "ask",
             "remember": "auto",
             "remind_me": "auto",
@@ -85,6 +140,13 @@ def _defaults() -> dict[str, Any]:
         },
         "mcp": {"disabled_tools": [], "servers": []},
         "ui": {"theme": "system", "theme_id": "glass-console"},
+        "updates": {
+            # "stable" follows published releases; "main" follows the branch.
+            "channel": "stable",
+            # Look once a day and put a note in the inbox. Never install on
+            # its own — replacing the running code is the user's decision.
+            "check_daily": True,
+        },
         "models": {
             "default": models_raw.get("default", ""),
             # Which inference stack Settings browses models for.
@@ -101,13 +163,25 @@ def _defaults() -> dict[str, Any]:
 
 
 def all_settings() -> dict[str, Any]:
-    """Merged defaults + user overrides."""
+    """Merged defaults + user overrides.
+
+    The result is cached against the mtimes of the files behind it, because
+    this is on the path of every settings read in the process and re-parsing
+    four TOML files per model row is not free.
+    """
+    global _CACHE_KEY, _CACHE_VALUE
     with _lock:
+        key = _stamp()
+        if _CACHE_KEY == key and _CACHE_VALUE is not None:
+            return deepcopy(_CACHE_VALUE)
         defaults = _defaults()
         overrides = _load_overrides()
         merged = _deep_merge(defaults, overrides)
         merged["mcp_servers"] = list_mcp_servers()
-        return merged
+        _CACHE_KEY = key
+        _CACHE_VALUE = merged
+        # A copy, so a caller that mutates what it got cannot poison the cache.
+        return deepcopy(merged)
 
 
 def get_section(section: str) -> dict[str, Any]:

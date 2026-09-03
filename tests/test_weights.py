@@ -217,9 +217,20 @@ def test_probe_child_can_import_the_keylane_tree():
     assert _probe_env()["PYTHONPATH"].split(":")[0] == str(ROOT)
 
 
-def test_warm_timeout_covers_a_real_compile():
-    from npu.probe import WARM_TIMEOUT
+def test_warm_timeout_brackets_a_real_compile():
+    """Generous enough for a slow machine, tight enough to catch a wedge.
 
-    # The probe carries the full-length compile now. The load it precedes had
-    # no deadline at all, so too tight a value here fails what used to pass.
-    assert WARM_TIMEOUT >= 3600
+    This used to assert `>= 3600`, from a time when a 4096-token compile
+    really did take half an hour. Measured 2026-09-03 on OpenVINO 2026.3 and
+    an NPU 3720, a cold 7B compile is 60 seconds — so an hour of headroom
+    meant a genuinely stuck compile looked like a slow one for an hour.
+
+    The lower bound is ~5x a measured compile so a bigger model on a slower
+    NPU still passes; the upper bound is what keeps the deadline useful.
+    Re-measure with scripts/npu-bench.py before moving either.
+    """
+    from npu.probe import VLM_WARM_TIMEOUT, WARM_TIMEOUT
+
+    assert 300 <= WARM_TIMEOUT <= 1800
+    # A vision model compiles a vision tower too, and that is genuinely slower.
+    assert VLM_WARM_TIMEOUT > WARM_TIMEOUT

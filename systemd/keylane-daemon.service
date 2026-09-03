@@ -7,7 +7,8 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%KEYLANE_ROOT%
 Environment=PYTHONPATH=%KEYLANE_ROOT%
-Environment=KEYLANE_DATA=%KEYLANE_ROOT%/data
+Environment=KEYLANE_DATA=%KEYLANE_DATA%
+Environment=KEYLANE_VENV=%KEYLANE_VENV%
 ExecStart=%KEYLANE_ROOT%/scripts/keylane-daemon
 Restart=on-failure
 RestartSec=5

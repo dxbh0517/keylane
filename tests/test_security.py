@@ -157,3 +157,119 @@ def test_roots_default_to_the_keylane_checkout() -> None:
 
     assert read_roots(None) == [ROOT.resolve()]
     assert read_roots([]) == [ROOT.resolve()]
+
+
+# ── who may talk to the daemon ───────────────────────────────────────────
+#
+# The SSRF policy above keeps the model off loopback. These keep the browser
+# off it, which is the shorter path to the same data: before this, any page
+# the user visited could read /memories, because the daemon answered every
+# origin and asked for no credential.
+
+
+@pytest.fixture()
+def api_client(monkeypatch, tmp_path):
+    """A test client over the real app, with a token of our own."""
+    from fastapi.testclient import TestClient
+
+    import daemon.auth as auth
+    import daemon.config as config
+    from daemon import paths
+
+    monkeypatch.setenv("KEYLANE_TOKEN", "test-token")
+    monkeypatch.setattr(config, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(paths, "SETTINGS_PATH", tmp_path / "settings.json")
+    config.invalidate_cache()
+
+    from daemon.main import app
+
+    # The lifespan warms a model and loads MCP servers; neither belongs in a
+    # policy test, so the client is built without running it.
+    return TestClient(app), auth.TOKEN_HEADER
+
+
+def test_health_answers_without_a_token(api_client) -> None:
+    """A launcher script asks whether the daemon is up. It says nothing private."""
+    client, _ = api_client
+    assert client.get("/health").status_code == 200
+
+
+def test_memories_need_a_token(api_client) -> None:
+    client, _ = api_client
+    resp = client.get("/memories")
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "token_required"
+
+
+def test_the_token_admits_the_request(api_client) -> None:
+    client, header = api_client
+    assert client.get("/memories", headers={header: "test-token"}).status_code == 200
+
+
+def test_a_wrong_token_is_refused(api_client) -> None:
+    client, header = api_client
+    assert client.get("/memories", headers={header: "nope"}).status_code == 403
+
+
+def test_a_browser_is_refused_even_holding_the_token(api_client) -> None:
+    """Origin is attached by the browser and cannot be removed by a script.
+
+    Refusing it outright means a malicious page fails even in the world where
+    it has somehow read the token out of the settings file.
+    """
+    client, header = api_client
+    resp = client.get(
+        "/memories",
+        headers={header: "test-token", "Origin": "https://evil.example"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "origin_refused"
+
+
+def test_there_is_no_cors_preflight_to_pass(api_client) -> None:
+    client, _ = api_client
+    resp = client.options("/memories", headers={"Origin": "https://evil.example"})
+    assert resp.status_code == 403
+    assert "access-control-allow-origin" not in {k.lower() for k in resp.headers}
+
+
+def test_no_route_answers_a_browser(api_client) -> None:
+    """Not just /memories: every route but /health refuses an Origin."""
+    client, _ = api_client
+    for path in ("/settings", "/sessions", "/models", "/tasks", "/inbox", "/tools"):
+        resp = client.get(path, headers={"Origin": "https://evil.example"})
+        assert resp.status_code == 403, path
+
+
+# ── Keylane as an OpenAI-compatible provider ─────────────────────────────
+
+
+def test_the_openai_endpoint_needs_the_token_too(api_client) -> None:
+    client, _ = api_client
+    assert client.get("/v1/models").status_code == 403
+
+
+def test_an_openai_client_can_authenticate_with_a_bearer_token(api_client) -> None:
+    """Every OpenAI client has a field for an API key. That field is the token."""
+    client, _ = api_client
+    resp = client.get("/v1/models", headers={"Authorization": "Bearer test-token"})
+    assert resp.status_code == 200
+    assert resp.json()["object"] == "list"
+
+
+def test_a_wrong_bearer_token_is_refused(api_client) -> None:
+    client, _ = api_client
+    resp = client.get("/v1/models", headers={"Authorization": "Bearer nope"})
+    assert resp.status_code == 403
+
+
+def test_the_openai_endpoint_says_so_when_no_model_is_loaded(api_client) -> None:
+    """503 with a reason beats a stack trace or an empty 200."""
+    client, header = api_client
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={header: "test-token"},
+        json={"messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert resp.status_code == 503
+    assert "no model is loaded" in resp.json()["detail"]

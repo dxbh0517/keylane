@@ -391,3 +391,173 @@ def test_active_download_file_finds_a_lock_inside_a_subfolder(tmp_path: Path):
     # Hugging Face mirrors the repo's own layout under .cache, so the lock for
     # a nested build is nested too.
     assert _active_download_file(root, ["model.onnx.data"]) == "model.onnx.data"
+
+
+# ── talking to a model the way it was trained ────────────────────────────
+#
+# Messages used to be concatenated as "System: … User: … Assistant:", which is
+# off-distribution for every instruct model in the catalog. Each ships its own
+# template in the export, so the pipeline is asked to render one.
+
+
+class _TemplatePipe:
+    """A pipeline that knows its model's template, like OpenVINO GenAI does."""
+
+    kind = "llm"
+
+    def __init__(self) -> None:
+        self.prompt = ""
+
+    def apply_chat_template(self, messages):
+        return "".join(
+            f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n" for m in messages
+        ) + "<|im_start|>assistant\n"
+
+    def count_tokens(self, text: str) -> int:
+        # One "token" per four characters is wrong in general and exact enough
+        # for a test that only cares which turns survive the trim.
+        return len(text) // 4
+
+    def generate(self, prompt, *, max_new_tokens=512, images=None, on_token=None):
+        self.prompt = prompt
+        if on_token:
+            for piece in ("Par", "is."):
+                on_token(piece)
+        return "Paris."
+
+    def close(self) -> None:
+        pass
+
+
+class _PlainPipe(_TemplatePipe):
+    """An export with no template at all — the fallback has to still work."""
+
+    def apply_chat_template(self, messages):
+        return None
+
+    def count_tokens(self, text: str):
+        return None
+
+
+def _resident(runtime, pipe) -> None:
+    runtime._pipe = pipe
+    runtime._model_id = "qwen2.5-7b-instruct"
+    runtime._runtime_id = "openvino"
+    runtime._device = "NPU"
+    runtime._pipeline_kind = "llm"
+    runtime._status = "ready"
+
+
+def test_chat_uses_the_models_own_template(isolated_config):
+    from models.catalog import LocalModelRuntime
+
+    runtime = LocalModelRuntime()
+    pipe = _TemplatePipe()
+    _resident(runtime, pipe)
+
+    runtime.chat([
+        {"role": "system", "content": "You are Keylane."},
+        {"role": "user", "content": "Where is Paris?"},
+    ])
+
+    assert "<|im_start|>system" in pipe.prompt
+    assert pipe.prompt.endswith("<|im_start|>assistant\n")
+    # The shape it used to send, which no instruct model was trained on.
+    assert "System: " not in pipe.prompt
+
+
+def test_chat_falls_back_when_the_export_has_no_template(isolated_config):
+    from models.catalog import LocalModelRuntime
+
+    runtime = LocalModelRuntime()
+    pipe = _PlainPipe()
+    _resident(runtime, pipe)
+
+    runtime.chat([
+        {"role": "system", "content": "You are Keylane."},
+        {"role": "user", "content": "Where is Paris?"},
+    ])
+
+    assert "System: You are Keylane." in pipe.prompt
+    assert pipe.prompt.endswith("Assistant:")
+
+
+def test_the_trim_keeps_the_system_block_and_the_newest_turns(isolated_config):
+    from models.catalog import LocalModelRuntime
+
+    runtime = LocalModelRuntime()
+    pipe = _TemplatePipe()
+    _resident(runtime, pipe)
+    runtime.prompt_budget_tokens = lambda: 120  # type: ignore[method-assign]
+
+    history = [{"role": "system", "content": "SYSTEM BLOCK"}]
+    for i in range(12):
+        history.append({"role": "user", "content": f"question number {i} " + "x" * 60})
+    runtime.chat(history)
+
+    assert "SYSTEM BLOCK" in pipe.prompt
+    assert "question number 11" in pipe.prompt
+    # The oldest turns are what gets dropped, not the newest.
+    assert "question number 0 " not in pipe.prompt
+
+
+def test_chat_streams_every_piece_to_the_callback(isolated_config):
+    from models.catalog import LocalModelRuntime
+
+    runtime = LocalModelRuntime()
+    _resident(runtime, _TemplatePipe())
+
+    seen: list[str] = []
+    answer = runtime.chat([{"role": "user", "content": "hi"}], on_token=seen.append)
+
+    assert seen == ["Par", "is."]
+    assert answer == "Paris."
+
+
+def test_the_token_budget_is_counted_not_guessed(isolated_config):
+    """The character budget is a pessimistic conversion; tokens are the truth."""
+    from npu.limits import CHARS_PER_TOKEN, prompt_budget_chars, prompt_budget_tokens
+
+    tokens = prompt_budget_tokens("NPU", "llm")
+    chars = prompt_budget_chars("NPU", "llm")
+    assert chars == int(tokens * CHARS_PER_TOKEN)
+    assert tokens > 1000
+
+
+# ── the curated catalog ──────────────────────────────────────────────────
+
+
+def test_the_default_model_is_one_the_npu_can_run(isolated_config):
+    """The default lands on the NPU, so it has to be a symmetric export.
+
+    Intel's NPU guide requires symmetric INT4 or NF4 at group size -1 or 128.
+    Every OpenVINO entry in this catalog was asymmetric once, the default
+    included — they load and then run far below the hardware.
+    """
+    from models.catalog import catalog_default_model_id, get_model
+
+    entry = get_model(catalog_default_model_id())
+    assert entry is not None
+    assert entry.npu_ready, f"{entry.id} is the default but is not an NPU export"
+
+
+def test_every_entry_declares_how_it_was_quantized(isolated_config):
+    """A claim that can't be checked is worse than no claim."""
+    from models.catalog import load_catalog
+
+    _, _, entries = load_catalog()
+    for entry in (e for e in entries if e.source == "curated"):
+        assert entry.quantization, f"{entry.id} does not say how it was quantized"
+
+
+def test_npu_ready_entries_are_symmetric_or_purpose_built(isolated_config):
+    from models.catalog import load_catalog
+
+    _, _, entries = load_catalog()
+    for entry in (e for e in entries if e.npu_ready):
+        quant = entry.quantization.upper()
+        assert "SYM" in quant or "NF4" in quant or "FOR NPU" in quant, (
+            f"{entry.id} claims npu_ready with quantization {entry.quantization!r}"
+        )
+    for entry in (e for e in entries if not e.npu_ready):
+        assert "ASYM" in entry.quantization.upper() or not entry.npu_ready

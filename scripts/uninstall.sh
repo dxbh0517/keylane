@@ -7,7 +7,11 @@
 # Never touches the git checkout you ran it from.
 set -euo pipefail
 
-DEST="${HOME}/.local/share/ai-gateway"
+# Both layouts: the current one, and the pre-rename install that may still be
+# sitting beside it. Removing one and silently leaving the other is how someone
+# ends up with a daemon they cannot find.
+BASE="${KEYLANE_HOME:-${HOME}/.local/share/keylane}"
+LEGACY="${HOME}/.local/share/ai-gateway"
 PURGE=0
 ASSUME_YES=0
 
@@ -23,14 +27,18 @@ done
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
 echo "This will remove:"
-echo "    services      ai-gateway.service, ai-launcher.service"
+echo "    services      keylane-daemon.service, keylane-ui.service"
+echo "                  (and ai-gateway.service, ai-launcher.service, if present)"
 echo "    launcher      desktop entries and icons"
 echo "    hotkey        the Keylane keyboard shortcut"
-if [[ ${PURGE} -eq 1 ]]; then
-  echo "    everything    ${DEST}  (including models, config and skills)"
-else
-  echo "    program       ${DEST}, keeping models/ config/ skills/ themes/"
-fi
+for dir in "${BASE}" "${LEGACY}"; do
+  [[ -d "${dir}" ]] || continue
+  if [[ ${PURGE} -eq 1 ]]; then
+    echo "    everything    ${dir}  (including models, memories and settings)"
+  else
+    echo "    program       ${dir}, keeping data/"
+  fi
+done
 
 if [[ ${ASSUME_YES} -eq 0 ]]; then
   read -r -p $'\nContinue? [y/N] ' reply
@@ -39,12 +47,13 @@ fi
 
 # ------------------------------------------------------------- services ----
 say "Stopping services"
+systemctl --user disable --now keylane-daemon.service keylane-ui.service 2>/dev/null || true
 systemctl --user disable --now ai-gateway.service ai-launcher.service 2>/dev/null || true
-rm -f "${HOME}/.config/systemd/user/ai-gateway.service" \
-      "${HOME}/.config/systemd/user/ai-launcher.service"
-# Older installs left wants-symlinks in more than one target.
-rm -f "${HOME}"/.config/systemd/user/*.target.wants/ai-gateway.service \
-      "${HOME}"/.config/systemd/user/*.target.wants/ai-launcher.service
+for unit in keylane-daemon keylane-ui ai-gateway ai-launcher; do
+  rm -f "${HOME}/.config/systemd/user/${unit}.service"
+  # Older installs left wants-symlinks in more than one target.
+  rm -f "${HOME}"/.config/systemd/user/*.target.wants/"${unit}".service
+done
 systemctl --user daemon-reload 2>/dev/null || true
 
 # Anything still running from a previous version. pkill would match this
@@ -58,6 +67,9 @@ stop_matching() {
   done
 }
 
+stop_matching "keylane/.venv/bin/uvicorn"
+stop_matching "daemon\.main"
+stop_matching "keylane/current/ui/main.py"
 stop_matching "ai-gateway/.venv/bin/uvicorn"
 stop_matching "ai-gateway/launcher/main.py"
 stop_matching "launcher\.tray"
@@ -116,28 +128,32 @@ if command -v gsettings >/dev/null 2>&1; then
 fi
 
 # --------------------------------------------------------------- files -----
-if [[ -d "${DEST}" ]]; then
+# Everything irreplaceable lives in data/ now — models, memories, settings,
+# skills, themes — so keeping your data is keeping one directory rather than
+# picking six out of the tree.
+for dir in "${BASE}" "${LEGACY}"; do
+  [[ -d "${dir}" ]] || continue
   if [[ ${PURGE} -eq 1 ]]; then
-    say "Removing ${DEST} entirely"
-    rm -rf "${DEST}"
+    say "Removing ${dir} entirely"
+    rm -rf "${dir}"
   else
-    say "Removing the program, keeping your data"
-    find "${DEST}" -mindepth 1 -maxdepth 1 \
-      ! -name models ! -name config ! -name skills ! -name themes \
+    say "Removing the program in ${dir}, keeping your data"
+    find "${dir}" -mindepth 1 -maxdepth 1 \
+      ! -name data ! -name models ! -name config ! -name skills ! -name themes \
       ! -name outputs ! -name plugins \
       -exec rm -rf {} + 2>/dev/null || true
-    echo "    kept: $(ls -1 "${DEST}" 2>/dev/null | tr '\n' ' ')"
-    echo "    delete it yourself with:  rm -rf ${DEST}"
+    echo "    kept: $(ls -1 "${dir}" 2>/dev/null | tr '\n' ' ')"
+    echo "    delete it yourself with:  rm -rf ${dir}"
   fi
-fi
+done
 
 cat <<EOF
 
 $(printf '\033[1m==> Keylane removed.\033[0m')
 
 EOF
-if [[ ${PURGE} -eq 0 && -d "${DEST}" ]]; then
-  echo "    Your models and settings are still in ${DEST}."
+if [[ ${PURGE} -eq 0 && -d "${BASE}" ]]; then
+  echo "    Your models and settings are still in ${BASE}/data."
   echo "    Re-running scripts/install.sh will pick them up again."
   echo
 fi

@@ -10,6 +10,7 @@ is a URL in settings rather than a second inference stack in this process.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Callable
 
@@ -119,7 +120,12 @@ class OpenAiCompatAdapter:
             headers["authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    def _post(self, messages: list[dict[str, str]], max_new_tokens: int) -> str:
+    def _post(
+        self,
+        messages: list[dict[str, str]],
+        max_new_tokens: int,
+        on_token: Callable[[str], None] | None = None,
+    ) -> str:
         if not self.available():
             raise LlmError(
                 "LLM_ADAPTER_UNAVAILABLE",
@@ -129,9 +135,12 @@ class OpenAiCompatAdapter:
             "model": self.model,
             "messages": messages,
             "max_tokens": max_new_tokens,
-            "stream": False,
+            "stream": on_token is not None,
             **self._idle_fields(),
         }
+        if on_token is not None:
+            return self._post_streaming(payload, on_token)
+
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 resp = client.post(
@@ -155,6 +164,60 @@ class OpenAiCompatAdapter:
                 f"the {self.id} model returned a response with no message content",
             ) from exc
 
+    def _post_streaming(
+        self,
+        payload: dict[str, Any],
+        on_token: Callable[[str], None],
+    ) -> str:
+        """Read the reply as server-sent deltas, forwarding each one.
+
+        This adapter used to accept ``on_token`` and drop it, which would have
+        left the *fast* model as the one path that could not stream — exactly
+        backwards. The thinking-tag filter is applied here too, so a reasoning
+        model served over this API does not leak its scratchpad into the HUD.
+        """
+        from npu.thinking import OutputStreamFilter  # noqa: PLC0415
+
+        output_filter = OutputStreamFilter()
+        pieces: list[str] = []
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=self._headers(),
+                ) as resp:
+                    resp.raise_for_status()
+                    for line in resp.iter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        body = line[5:].strip()
+                        if not body or body == "[DONE]":
+                            continue
+                        try:
+                            chunk = json.loads(body)
+                        except json.JSONDecodeError:
+                            continue
+                        choices = chunk.get("choices") or [{}]
+                        delta = (choices[0].get("delta") or {}).get("content")
+                        if not delta:
+                            continue
+                        pieces.append(str(delta))
+                        visible = output_filter.feed(str(delta))
+                        if visible:
+                            on_token(visible)
+        except httpx.HTTPError as exc:
+            raise LlmError(
+                "LLM_TRANSPORT_ERROR",
+                f"could not reach the {self.id} model at {self.base_url}: {exc}",
+            ) from exc
+
+        remainder = output_filter.flush()
+        if remainder:
+            on_token(remainder)
+        return "".join(pieces)
+
     def generate(
         self,
         prompt: str,
@@ -170,7 +233,7 @@ class OpenAiCompatAdapter:
         messages.append({"role": "user", "content": prompt})
         if images:
             logger.debug("%s adapter ignores images; text only", self.id)
-        return self._post(messages, max_new_tokens)
+        return self._post(messages, max_new_tokens, on_token)
 
     def chat(
         self,
@@ -182,4 +245,4 @@ class OpenAiCompatAdapter:
     ) -> str:
         if images:
             logger.debug("%s adapter ignores images; text only", self.id)
-        return self._post(list(messages), max_new_tokens)
+        return self._post(list(messages), max_new_tokens, on_token)

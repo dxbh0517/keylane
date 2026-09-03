@@ -15,7 +15,7 @@ from typing import Any, Callable, Iterable
 from npu import probe as ov_probe
 from npu.images import bytes_to_ov_tensors
 from npu.kind import PipelineKind, model_kind
-from npu.limits import prompt_budget_chars
+from npu.limits import prompt_budget_chars, prompt_budget_tokens
 from npu.pipeline_config import create_pipeline
 from npu.thinking import OutputStreamFilter
 from npu.weights import missing_weights, purge_incomplete
@@ -43,6 +43,52 @@ class OpenVinoPipeline:
     def __init__(self, pipe: Any, kind: PipelineKind) -> None:
         self._pipe = pipe
         self.kind: PipelineKind = kind
+
+    # ── the model's own idea of a conversation ───────────────────────────
+
+    def _tokenizer(self) -> Any | None:
+        pipe = self._pipe
+        if pipe is None:
+            return None
+        try:
+            return pipe.get_tokenizer()
+        except Exception:  # noqa: BLE001
+            logger.debug("pipeline exposes no tokenizer", exc_info=True)
+            return None
+
+    def apply_chat_template(self, messages: list[dict[str, str]]) -> str | None:
+        """Render a conversation the way this model was fine-tuned to read it.
+
+        Every instruct model has a template — ``<|im_start|>`` for Qwen,
+        ``<|user|>`` for Phi, ``[INST]`` for Mistral — and it ships in the
+        export. Concatenating ``"System: … User: …"`` instead is the most
+        common reason a good model rambles, ignores a required output format,
+        or will not stop.
+
+        Returns None when the export carries no template, so the caller can
+        fall back rather than fail.
+        """
+        tokenizer = self._tokenizer()
+        if tokenizer is None:
+            return None
+        try:
+            if not tokenizer.chat_template:
+                return None
+            return str(tokenizer.apply_chat_template(list(messages), True))
+        except Exception:  # noqa: BLE001
+            logger.debug("apply_chat_template failed; falling back", exc_info=True)
+            return None
+
+    def count_tokens(self, text: str) -> int | None:
+        """The real token count, from the tokenizer that will do the encoding."""
+        tokenizer = self._tokenizer()
+        if tokenizer is None:
+            return None
+        try:
+            return int(tokenizer.encode(text).input_ids.get_shape()[-1])
+        except Exception:  # noqa: BLE001
+            logger.debug("token count failed; falling back to characters", exc_info=True)
+            return None
 
     def generate(
         self,
@@ -167,6 +213,10 @@ class OpenVinoBackend:
 
     def prompt_budget_chars(self, device: str, kind: PipelineKind, model_dir: Path) -> int:
         return prompt_budget_chars(device, kind)
+
+    def prompt_budget_tokens(self, device: str, kind: PipelineKind, model_dir: Path) -> int:
+        """The limit in the unit the NPU pipeline actually compiles in."""
+        return prompt_budget_tokens(device, kind)
 
     # ── Hugging Face repos ───────────────────────────────────────────────
 

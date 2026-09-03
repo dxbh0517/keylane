@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Your Jarvis — always on, on your NPU</strong><br />
-  Press Super+Space. A ~9B model on the Intel NPU helps you think, search, plan, and act.
+  Press Super+Space. An 8B model on the Intel NPU helps you think, search, plan, and act.
 </p>
 
 ## What is Keylane?
@@ -20,7 +20,7 @@ Keylane is a personal AI assistant that lives on your desktop:
 - Answers render as a **formatted canvas** — headline, sections, key/value rows, steps,
   and code blocks — not one wrapped paragraph
 - **Ask a follow-up** directly in the answer HUD without reopening the bar
-- A **curated 3–14B model** runs **always-on** on your **Intel NPU**, through either
+- A **curated 1.5–14B model** runs **always-on** on your **Intel NPU**, through either
   **OpenVINO GenAI** or **ONNX Runtime GenAI** — pick the runtime in Settings
 - **Import any model from Hugging Face** that either runtime can load
 - **Persistent memory** — Keylane remembers facts about you across sessions and recalls
@@ -33,6 +33,9 @@ Keylane is a personal AI assistant that lives on your desktop:
 - **Voice input** (mic button) via Whisper, and **screenshot capture** to ask about what is on screen
 - **MCP servers** over stdio *or* Streamable HTTP — including Mailspring for mail and calendar
 - **Audio8 TTS** for spoken answers and optional notify speech
+- **Answers stream** into the HUD as the model writes them
+- **Updates itself from GitHub**, on your say-so, with a one-command rollback
+- **Serves its own model** over the OpenAI API, so other tools can use the NPU
 
 Everything binds to `127.0.0.1`. Nothing leaves your machine unless a tool or MCP server you configured does.
 
@@ -47,7 +50,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Start daemon (NPU warm-up may take minutes first run)
+# Start daemon (first run downloads ~4 GB; the compile itself is about a minute)
 PYTHONPATH=. python -m daemon.main
 
 # In another terminal — Spotlight UI
@@ -71,6 +74,7 @@ Open **Settings** from the gear icon in the Spotlight footer, or press **`Ctrl+,
 | Speech | TTS on notify, read aloud, test buttons |
 | Security | Shell allowlist, permitted read directories, permission modes per tool |
 | MCP | Servers over stdio (command, arguments, environment) or HTTP (URL, bearer token) |
+| About | Version, update channel, release notes, install and restart |
 | Appearance (in General) | Theme, and light / dark / system |
 
 CLI:
@@ -104,31 +108,69 @@ package is for — without it, ONNX models run on CPU only.
 
 **Device** is chosen per runtime in the same panel (`NPU` / `GPU` / `CPU`, plus
 `AUTO` on ONNX Runtime, which keeps whatever provider the model shipped with).
-Changing it invalidates the compile cache, so the next load is slow either way.
+Only devices this machine actually has *and* OpenVINO can compile for are
+selectable — on a laptop with a discrete NVIDIA card OpenVINO enumerates it as
+`GPU`, and picking it would start a compile that cannot finish, so it is shown
+greyed with the reason. Changing the device invalidates the compile cache, so
+the next load is slow either way.
+
+To see what a model really costs on your hardware rather than guessing:
+
+```bash
+PYTHONPATH=. python scripts/npu-bench.py
+```
+
+It measures cold compile, warm load and seconds per `generate()` call at three
+reply lengths, and writes them to `data/bench.json`. On an NPU 3720 with
+OpenVINO 2026.3, a cold 7B compile is about a minute and a warm load is six
+seconds; if yours is far worse, the driver and its compiler are probably out of
+step — `scripts/npu-driver-fix.sh` installs a matched pair.
 
 ### Curated models
 
 Pick one in **Settings → Model** or via `POST /models/select`. They auto-download
 from Hugging Face on first activation.
 
-| ID | Model | Runtime |
-| --- | --- | --- |
-| `qwen2.5-7b-instruct` | Qwen 2.5 7B Instruct (default) | OpenVINO |
-| `qwen2.5-7b-npu` | Qwen 2.5 7B NPU-tested | OpenVINO |
-| `qwen2.5-coder-7b` | Qwen 2.5 Coder 7B | OpenVINO |
-| `qwen3-8b` | Qwen 3 8B | OpenVINO |
-| `qwen3.5-9b` | Qwen 3.5 9B (VLM) | OpenVINO |
-| `gemma-2-9b-it` | Gemma 2 9B Instruct | OpenVINO |
-| `mistral-7b-instruct-v03` | Mistral 7B Instruct v0.3 | OpenVINO |
-| `deepseek-r1-qwen-7b` | DeepSeek R1 Distill Qwen 7B | OpenVINO |
-| `phi-4-mini-instruct` | Phi 4 Mini Instruct | OpenVINO |
-| `phi-3.5-mini-instruct` | Phi 3.5 Mini Instruct | OpenVINO |
-| `phi-4-mini-onnx` | Phi 4 Mini Instruct | ONNX Runtime |
-| `phi-3.5-mini-onnx` | Phi 3.5 Mini Instruct (AWQ) | ONNX Runtime |
-| `phi-4-mini-reasoning-onnx` | Phi 4 Mini Reasoning | ONNX Runtime |
-| `llama-3.2-3b-onnx` | Llama 3.2 3B Instruct | ONNX Runtime |
-| `mistral-7b-onnx` | Mistral 7B Instruct v0.2 | ONNX Runtime |
-| `phi-4-onnx` | Phi 4 (14B) | ONNX Runtime |
+| ID | Model | Runtime | NPU |
+| --- | --- | --- | --- |
+| `qwen3-8b-cw` | Qwen 3 8B (default) | OpenVINO | ✅ |
+| `phi-3.5-mini-cw` | Phi 3.5 Mini | OpenVINO | ✅ |
+| `phi-3.5-mini-gq` | Phi 3.5 Mini, group-quantized | OpenVINO | ✅ |
+| `mistral-7b-cw` | Mistral 7B Instruct v0.3 | OpenVINO | ✅ |
+| `deepseek-r1-qwen-1.5b` | DeepSeek R1 Distill Qwen 1.5B | OpenVINO | ✅ |
+| `qwen3-4b-npu` | Qwen 3 4B | OpenVINO | ✅ |
+| `qwen2.5-coder-7b-npu` | Qwen 2.5 Coder 7B | OpenVINO | ✅ |
+| `gemma-3-4b-vlm` | Gemma 3 4B (vision) | OpenVINO | ✅ |
+| `qwen2.5-7b-instruct` | Qwen 2.5 7B Instruct | OpenVINO | — |
+| `qwen3-8b` | Qwen 3 8B (asymmetric) | OpenVINO | — |
+| `qwen2.5-coder-7b` | Qwen 2.5 Coder 7B (asymmetric) | OpenVINO | — |
+| `gemma-2-9b-it` | Gemma 2 9B Instruct | OpenVINO | — |
+| `mistral-7b-instruct-v03` | Mistral 7B Instruct v0.3 (asymmetric) | OpenVINO | — |
+| `deepseek-r1-qwen-7b` | DeepSeek R1 Distill Qwen 7B (asymmetric) | OpenVINO | — |
+| `phi-4-mini-instruct` | Phi 4 Mini Instruct (asymmetric) | OpenVINO | — |
+| `qwen3.5-9b` | Qwen 3.5 9B (vision, asymmetric) | OpenVINO | — |
+| `phi-4-mini-onnx` | Phi 4 Mini Instruct | ONNX Runtime | CPU |
+| `phi-3.5-mini-onnx` | Phi 3.5 Mini Instruct (AWQ) | ONNX Runtime | CPU |
+| `phi-4-mini-reasoning-onnx` | Phi 4 Mini Reasoning | ONNX Runtime | CPU |
+| `llama-3.2-3b-onnx` | Llama 3.2 3B Instruct | ONNX Runtime | CPU |
+| `mistral-7b-onnx` | Mistral 7B Instruct v0.2 | ONNX Runtime | CPU |
+| `phi-4-onnx` | Phi 4 (14B) | ONNX Runtime | CPU |
+
+**The NPU column is not decoration.** Intel's NPU guide requires a *symmetric*
+INT4 or NF4 export at group size `-1` or `128`. Most `OpenVINO/*-int4-ov` repos
+are `INT4_ASYM`, which the NPU does not support — they load, and then run far
+below what the hardware can do. The ✅ rows are symmetric channel-wise (`-cw-`),
+symmetric group-quantized (`-gq-`), or exported for the NPU by their publisher;
+Settings badges each row so you know before a 4 GB download rather than after.
+The rest are fine on CPU and GPU.
+
+The ONNX entries are all `cpu_and_mobile` builds — CPU-targeted graphs with
+int8 accumulation. None of those repos ships an OpenVINO NPU build, so that
+runtime's device default is CPU.
+
+> NF4 needs Lunar Lake or newer. Check your NPU generation with
+> `python -c "import openvino; print(openvino.Core().get_property('NPU','DEVICE_ARCHITECTURE'))"`
+> — `3720` is the Meteor Lake generation and cannot take NF4.
 
 Vision models run on OpenVINO GenAI only.
 
@@ -149,9 +191,9 @@ load, so a 15 GB download never starts on a guess:
 - `genai_config.json` → ONNX Runtime GenAI
 - neither → rejected with the reason (a PyTorch or GGUF repo needs converting first)
 
-ONNX repos usually ship four or five builds of the same model — `cpu-int4`,
-`cuda-fp16`, `directml`, `qnn` — so the import ranks them and takes the one that
-runs on Intel hardware. Pass `"subfolder"` to override the choice. Imported
+ONNX repos ship several builds of the same model — usually `cpu_and_mobile`
+and `gpu`, sometimes `cuda`, `directml` or `qnn` — so the import ranks them and
+takes the one that runs on Intel hardware. Pass `"subfolder"` to override the choice. Imported
 models sit alongside the curated ones and can be removed with **Forget**
 (`DELETE /models/imported/{id}`), which keeps the downloaded files.
 
@@ -244,6 +286,20 @@ directly — the only way to reach one the model is not allowed to load.
 
 ## Security
 
+- **The daemon requires a token.** It listens on loopback, and loopback is not
+  a boundary: any web page you visit can `fetch("http://127.0.0.1:9100/…")`,
+  and every other user on the machine can reach it too. So a token is generated
+  on first run into `data/settings.json` (mode 0600) and required on every route
+  but `/health`, as `X-Keylane-Token` or `Authorization: Bearer`. There is no
+  CORS policy, and a request carrying an `Origin` header is refused outright —
+  a browser attaches that header and a script cannot remove it, so a malicious
+  page fails even if it somehow read the token.
+
+  ```bash
+  TOKEN=$(python -c 'import json;print(json.load(open("data/settings.json"))["security"]["api_token"])')
+  curl -s -H "x-keylane-token: $TOKEN" localhost:9100/memories | jq
+  ```
+
 - **Outbound fetches** are validated per redirect hop; non-public addresses are
   refused, so a page the model just read cannot redirect it at your LAN.
 - **Shell commands** are checked by argument, not just by name. Every file
@@ -269,13 +325,21 @@ Override the choice with `KEYLANE_BACKEND=layer` or `KEYLANE_BACKEND=x11` if you
 
 ## Themes
 
-Keylane ships three themes, each with a light and a dark scheme:
+Keylane ships six themes, each with a light and a dark scheme:
 
 | Theme | Looks like |
 | --- | --- |
 | `glass-console` | Dark glass over the desktop, one cyan accent, hairline structure. The default. |
 | `paper-terminal` | Ink on warm paper: flat surfaces, hairline rules, serif answers, monospace labels. |
 | `aurora` | Translucent material, no borders, large radii, violet and cyan light. |
+| `copper-oxide` | Oxidised copper and verdigris over brown-black. Warm, square, hard shadows. |
+| `nord-frost` | The Nord palette — Polar Night and Snow Storm — so Keylane matches a Nord desktop. |
+| `high-contrast` | Opaque black and white, 2px borders, no translucency. WCAG AAA text. |
+
+`high-contrast` exists because the other five all rely on translucency,
+hairlines and mid-grey text, and each of those is what fails for low vision or
+a glossy screen in daylight. Every shipped theme is checked against WCAG AA for
+text on its own surface; `high-contrast` is checked against AAA.
 
 Pick one in **Settings → General → Appearance**, or from the CLI:
 
@@ -327,6 +391,75 @@ is the file to read when you want to know what something controls. A theme that
 is missing a token, or names a base that does not exist, is skipped with a
 warning rather than leaving the window unstyled.
 
+## Keeping current
+
+Keylane reads its own GitHub releases. It looks once a day, drops a note in the
+inbox, and stops — it never installs anything on its own.
+
+```bash
+keylane-update                 # is there one?
+keylane-update --install       # get it
+keylane-update --channel main  # follow the branch instead of releases
+keylane-update --rollback      # go back to the previous release
+```
+
+Or **Settings → About**, which shows the version, the channel, the release
+notes and an Install button that asks first.
+
+`install.sh` lays the install out so an update is safe:
+
+```text
+~/.local/share/keylane/
+  releases/<tag>/        one version, never modified in place
+  current -> releases/…  what the systemd units follow
+  data/                  memories, models, settings — outside the releases
+  .venv/                 outside too, so a rollback keeps its dependencies
+```
+
+Updating unpacks a new directory beside the old one and moves the symlink;
+rolling back moves it back. `data/` is never inside the part being replaced. A
+git checkout takes the other path — fetch and fast-forward, refused on a dirty
+tree. Downloads are HTTPS-only, pinned to GitHub, and checked against the
+sha256 published with the release; when a release publishes none, Keylane says
+the download was only trusted as far as HTTPS rather than implying otherwise.
+
+Set `permissions.update_apply = "deny"` to turn in-app updating off entirely.
+
+## In your status bar
+
+The first download and compile of a model takes minutes and used to happen
+invisibly. `keylane-status` puts it in the bar:
+
+```jsonc
+// ~/.config/waybar/config
+"custom/keylane": {
+  "exec": "~/.local/share/keylane/current/scripts/keylane-status --waybar --watch",
+  "return-type": "json",
+  "on-click": "keylane-toggle"
+}
+```
+
+It reports the model, the device, compile progress while a model is loading,
+and the unread count from the inbox. Without `--waybar` it prints one plain
+line, which is enough for tmux or a shell prompt.
+
+## Using Keylane's model from other tools
+
+Keylane speaks the OpenAI chat-completions API outward, to reach a larger model
+on a GPU. It also speaks it *inward*: the resident NPU model is available to
+anything else on the machine, at no VRAM cost, because it is already loaded.
+
+```bash
+curl -s localhost:9100/v1/chat/completions \
+  -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"messages": [{"role": "user", "content": "hello"}], "stream": true}'
+```
+
+Point any OpenAI client at `http://127.0.0.1:9100/v1` and give it the token as
+the API key. This is the raw model — no tools, no memory, no research. Anything
+that wants the assistant should use `/chat/stream` and read its events.
+
 ## MCP servers
 
 Add them in **Settings → MCP** — pick the transport, then a command with its arguments, or a URL with its token — or edit `config/mcp.toml` directly. Both transports are supported:
@@ -368,6 +501,8 @@ Servers added in Settings are stored in `data/settings.json` and merged over the
 | `GET/POST /memories` · `DELETE /memories/{id}` | The fact store |
 | `GET /inbox` · `POST /inbox/read` | Results from background work |
 | `POST /permissions/respond` | Approve/deny tool permission prompts |
+| `GET /update/status` · `POST /update/check` · `POST /update/apply` | Version, check, install |
+| `GET /v1/models` · `POST /v1/chat/completions` | The resident model, OpenAI wire format |
 
 ## Architecture
 
