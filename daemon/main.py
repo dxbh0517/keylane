@@ -602,6 +602,10 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
                 }
             )
         except Exception as exc:  # noqa: BLE001
+            # The HUD shows this, and until now that was the only place it went:
+            # a turn could fail every time and the journal would say nothing,
+            # so there was no traceback to debug from and no record it happened.
+            logger.exception("turn failed: %s", exc)
             queue.put_nowait({"type": "error", "message": str(exc)})
         finally:
             queue.put_nowait(None)

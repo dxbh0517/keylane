@@ -561,3 +561,100 @@ def test_npu_ready_entries_are_symmetric_or_purpose_built(isolated_config):
         )
     for entry in (e for e in entries if not e.npu_ready):
         assert "ASYM" in entry.quantization.upper() or not entry.npu_ready
+
+
+# ── a failed generate must not break the next one ────────────────────────
+#
+# A VLM pipeline keeps a tokenized history between generate() calls and
+# asserts each new prompt is at least as long as the history it holds. It
+# clears that itself at the end of a successful call — but a call that throws
+# never gets there, so every later turn died on "Prompt ids size is less than
+# tokenized history size", which is the previous prompt still sitting in the
+# pipeline. One failure broke the assistant until the daemon was restarted.
+
+
+class _StatefulPipe:
+    """A pipeline that carries state, and refuses a prompt shorter than it.
+
+    This is VLMPipeline's contract, reduced to the part that matters: state
+    survives a call, a failure leaves it behind, and finish_chat drops it.
+    """
+
+    def __init__(self, fail_on: set[int] | None = None) -> None:
+        self.history = 0
+        self.finish_chat_calls = 0
+        self.attempts: list[int] = []
+        self._fail_on = fail_on or set()
+
+    def finish_chat(self) -> None:
+        self.finish_chat_calls += 1
+        self.history = 0
+
+    def generate(self, prompt, *, max_new_tokens=512, streamer=None, **kwargs):
+        attempt = len(self.attempts) + 1
+        self.attempts.append(len(prompt))
+        if len(prompt) < self.history:
+            raise RuntimeError("Prompt ids size is less than tokenized history size")
+        if attempt in self._fail_on:
+            # State is left behind exactly as a real mid-generate failure does.
+            self.history = len(prompt)
+            raise RuntimeError("L0 pfnAppendGraphExecute result: ZE_RESULT_ERROR_UNINITIALIZED")
+        self.history = 0
+        return "ok"
+
+
+def _vlm(pipe):
+    from runtimes.openvino_rt import OpenVinoPipeline
+
+    return OpenVinoPipeline(pipe, "vlm")
+
+
+def test_a_failed_generate_does_not_poison_the_next_turn():
+    inner = _StatefulPipe(fail_on={1})
+    pipeline = _vlm(inner)
+
+    with pytest.raises(RuntimeError, match="ZE_RESULT_ERROR_UNINITIALIZED"):
+        pipeline.generate("a long prompt " * 20)
+
+    # The next turn is short — which is what a new session looks like — and
+    # before this fix it died of the previous turn's leftovers.
+    assert pipeline.generate("Hi.") == "ok"
+    assert inner.finish_chat_calls == 1
+
+
+def test_the_original_error_is_the_one_raised():
+    """The caller must see the real failure, not a cascade from it."""
+    inner = _StatefulPipe(fail_on={1})
+    pipeline = _vlm(inner)
+
+    with pytest.raises(RuntimeError) as caught:
+        pipeline.generate("a long prompt " * 20)
+    assert "Prompt ids size" not in str(caught.value)
+
+
+def test_state_is_only_cleared_after_a_failure():
+    """Clearing costs a state reset, so the happy path must not pay for it."""
+    inner = _StatefulPipe()
+    pipeline = _vlm(inner)
+
+    for _ in range(3):
+        pipeline.generate("Hi.")
+    assert inner.finish_chat_calls == 0
+
+
+def test_a_pipeline_that_cannot_clear_still_reports_the_failure():
+    """An older GenAI has no finish_chat. That must not mask the real error."""
+
+    class _NoChatApi(_StatefulPipe):
+        def finish_chat(self):
+            raise AttributeError("finish_chat")
+
+    inner = _NoChatApi(fail_on={1})
+    pipeline = _vlm(inner)
+
+    with pytest.raises(RuntimeError, match="ZE_RESULT_ERROR_UNINITIALIZED"):
+        pipeline.generate("a long prompt " * 20)
+    # The clear failed, so the next call raises the pipeline's own complaint
+    # rather than something swallowed here.
+    with pytest.raises(RuntimeError, match="Prompt ids size"):
+        pipeline.generate("Hi.")
