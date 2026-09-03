@@ -142,7 +142,17 @@ class OpenVinoPipeline:
                     on_token(visible)
                 return False
 
-        kwargs: dict[str, Any] = {"max_new_tokens": max_new_tokens}
+        # Greedy, not sampled. The export's generation_config decides this
+        # otherwise, and the curated models ship `do_sample: true` at
+        # temperature 0.6 — Qwen3-8B does. That is a reasonable default for a
+        # chatbot and the wrong one here: this loop needs the model to emit
+        # `<tool_call>` JSON exactly, and it needs the same prompt to behave
+        # the same way twice. Sampling also made the model wander into a
+        # `<think>` block often enough to run past max_new_tokens, and a
+        # response that is nothing but an unterminated thought strips to the
+        # empty string — which the agent then reported as "I could not produce
+        # a response".
+        kwargs: dict[str, Any] = {"max_new_tokens": max_new_tokens, "do_sample": False}
         if streamer is not None:
             kwargs["streamer"] = streamer
 

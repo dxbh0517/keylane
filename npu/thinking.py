@@ -281,3 +281,22 @@ class OutputStreamFilter:
         emitted = self._hold
         self._hold = ""
         return emitted
+
+
+def ran_out_mid_thought(raw: str) -> bool:
+    """True when a response is an unterminated reasoning block and nothing else.
+
+    A model that starts ``<think>`` and hits ``max_new_tokens`` before closing
+    it leaves a response that is entirely reasoning. Stripping the reasoning —
+    which is right, the user must not see it — then leaves nothing at all, and
+    "nothing at all" used to be reported to the user as "I could not produce a
+    response", which is both unhelpful and untrue: the model produced plenty,
+    it just never got to the answer.
+    """
+    if not raw:
+        return False
+    opened = raw.find(_THINK_OPEN)
+    if opened == -1:
+        return False
+    # An unterminated block is one with no close tag after the last open.
+    return _THINK_CLOSE not in raw[opened:]
