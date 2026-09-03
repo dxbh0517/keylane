@@ -147,28 +147,55 @@ def run(model_id: str, device: str, *, quick: bool) -> dict[str, Any]:
 
     calls: dict[str, Any] = {}
     for n in REPLY_LENGTHS:
-        first: list[float] = []
+        seen: dict[str, Any] = {"first": None, "count": 0}
         start = time.time()
 
-        def _streamer(_piece: str, _seen: list[float] = first, _t0: float = start) -> bool:
-            if not _seen:
-                _seen.append(time.time() - _t0)
+        def _streamer(_piece: str, _s: dict[str, Any] = seen, _t0: float = start) -> bool:
+            # The streamer fires once per token, which is the only honest way
+            # to know how many actually came back — max_new_tokens is a ceiling
+            # and the model stops at EOS well below it on a short question.
+            if _s["first"] is None:
+                _s["first"] = time.time() - _t0
+            _s["count"] += 1
             return False  # False means "keep going"
 
         pipe.generate(PROMPT, max_new_tokens=n, streamer=_streamer)
         seconds = time.time() - start
-        ttft = round(first[0], 1) if first else None
-        calls[str(n)] = {"seconds": round(seconds, 1), "time_to_first_token_s": ttft}
+        ttft = round(seen["first"], 1) if seen["first"] is not None else None
+        produced = seen["count"]
+        calls[str(n)] = {
+            "seconds": round(seconds, 1),
+            "time_to_first_token_s": ttft,
+            "tokens_requested": n,
+            "tokens_produced": produced,
+            # A run that stopped early says nothing about the decode rate, and
+            # dividing by the number asked for would flatter it.
+            "hit_eos": produced < n,
+        }
         suffix = f"  (first token {ttft:.1f}s)" if ttft is not None else ""
-        print(f"  {n:>4} tokens: {seconds:5.1f}s{suffix}", flush=True)
+        stopped = "  [stopped at EOS]" if produced < n else ""
+        print(f"  {n:>4} asked, {produced:>4} produced: {seconds:5.1f}s{suffix}{stopped}", flush=True)
     result["generate"] = calls
 
-    shortest = calls[str(REPLY_LENGTHS[0])]["seconds"]
-    longest = calls[str(REPLY_LENGTHS[-1])]["seconds"]
-    result["fixed_cost_per_call_s"] = shortest
-    if longest > shortest:
-        spread = REPLY_LENGTHS[-1] - REPLY_LENGTHS[0]
-        result["marginal_tokens_per_s"] = round(spread / (longest - shortest), 2)
+    runs = [calls[str(n)] for n in REPLY_LENGTHS]
+    result["fixed_cost_per_call_s"] = runs[0]["seconds"]
+
+    # The decode rate needs two runs that both ran to their limit; a run that
+    # stopped at EOS produced whatever the answer happened to be and tells you
+    # nothing about throughput. Reporting one anyway is how a 4 tokens/second
+    # machine came out at 18.
+    full = [r for r in runs if not r["hit_eos"]]
+    if len(full) >= 2:
+        lo, hi = full[0], full[-1]
+        tokens = hi["tokens_produced"] - lo["tokens_produced"]
+        elapsed = hi["seconds"] - lo["seconds"]
+        if tokens > 0 and elapsed > 0:
+            result["marginal_tokens_per_s"] = round(tokens / elapsed, 2)
+    if "marginal_tokens_per_s" not in result:
+        result["marginal_tokens_note"] = (
+            "every run stopped at EOS before its limit, so no decode rate was "
+            "measurable — raise REPLY_LENGTHS or use a prompt that forces a long reply"
+        )
 
     shutil.rmtree(cold_cache, ignore_errors=True)
     return result

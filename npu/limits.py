@@ -18,17 +18,20 @@ from npu.kind import PipelineKind
 #
 # It used to be believed that raising this was expensive — that 1024 to 4096
 # took a load from thirteen seconds to half an hour. That was true against an
-# older OpenVINO. Measured on 2026-09-03 against 2026.3 on an NPU 3720, a cold
-# 7B compile is 64 s at 1024 and 60 s at 4096: indistinguishable. Since 2025.3
-# the pipeline defaults to PREFILL_HINT: DYNAMIC and chunks the prefill
-# (NPUW_LLM_PREFILL_CHUNK_SIZE, default 1024) rather than compiling a static
-# graph the full width.
+# older OpenVINO. Measured on 2026-09-03 on an NPU 3720, a cold 7B compile is
+# 64 s at 1024 and 60 s at 4096: indistinguishable. With a matched driver and
+# compiler the same compile is 6.8 s, and this setting still makes no
+# difference to it. Since 2025.3 the pipeline defaults to PREFILL_HINT:
+# DYNAMIC and chunks the prefill (NPUW_LLM_PREFILL_CHUNK_SIZE, default 1024)
+# rather than compiling a static graph the full width.
 #
-# What it does still cost is time to first token, and that cost is flat: the
-# same measurement put TTFT at ~15 s for a 38-token prompt whatever the reply
-# length, with decode at ~0.25 s/token afterwards. Prefill runs a whole chunk
-# even for a short prompt, so a smaller MAX_PROMPT_LEN is worth trying if your
-# turns are short.
+# What it does still cost is time to first token, and that cost is flat: ~15 s
+# for a 38-token prompt whatever the reply length, with decode at ~0.25 s/token
+# afterwards. Fixing the driver did not move either number — only the compile.
+# Prefill appears to run a whole chunk even for a short prompt, so a smaller
+# MAX_PROMPT_LEN is worth trying if your turns are short; shrinking the chunk
+# itself is not available, as NPUW_LLM_PREFILL_CHUNK_SIZE below 1024 fails to
+# compile on this architecture.
 #
 # The prompt's required sections need about 1700 tokens, so anything below
 # ~2048 cannot serve a turn at all. Override with KEYLANE_NPU_MAX_PROMPT_TOKENS;

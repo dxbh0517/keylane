@@ -121,10 +121,27 @@ PYTHONPATH=. python scripts/npu-bench.py
 ```
 
 It measures cold compile, warm load and seconds per `generate()` call at three
-reply lengths, and writes them to `data/bench.json`. On an NPU 3720 with
-OpenVINO 2026.3, a cold 7B compile is about a minute and a warm load is six
-seconds; if yours is far worse, the driver and its compiler are probably out of
-step — `scripts/npu-driver-fix.sh` installs a matched pair.
+reply lengths, and writes them to `data/bench.json`.
+
+On an NPU 3720, with the driver and compiler matched to the runtime:
+
+| | |
+| --- | --- |
+| Cold compile, 7B | 6.8 s |
+| Warm load from cache | 5.5 s |
+| Time to first token | ~15 s, flat — it does not depend on reply length |
+| Decode | ~0.25 s/token |
+
+If your compile is a minute rather than seconds, the driver and its compiler
+are out of step with OpenVINO; `scripts/npu-driver-fix.sh` installs a matched
+pair. Be clear about what that buys, though: on the machine these numbers come
+from it took compile time from 60 s to 6.8 s and changed time to first token by
+nothing at all. It also fixes VLM pipelines, which throw
+`ZE_RESULT_ERROR_UNINITIALIZED` on every call against a mismatched stack.
+
+The ~15 s before the first token is the cost that actually shapes a turn: the
+agent makes one model call per ReAct iteration, so a turn using three tools
+pays it four times.
 
 ### Curated models
 

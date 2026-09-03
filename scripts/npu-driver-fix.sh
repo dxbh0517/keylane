@@ -150,8 +150,12 @@ Done. Check the Models page, or:
 Then measure it, rather than guessing whether it helped:
   PYTHONPATH=. python scripts/npu-bench.py
 
-A cold 7B compile should come out around a minute. If it is far more than
-that, the driver and the compiler are still out of step. To undo, remove the
+A cold 7B compile should come out in single-digit seconds — 6.8 s on an
+NPU 3720. A minute or more means the driver and the compiler are still out of
+step. This does not change how fast the model *answers*: on the same machine
+time to first token stayed at ~15 s and decode at ~0.25 s/token before and
+after. What it fixes is compile time, and VLM pipelines, which throw
+ZE_RESULT_ERROR_UNINITIALIZED on a mismatched stack. To undo, remove the
 libraries, run ldconfig, and reinstall the OpenVINO version you had:
 
   sudo rm -f /usr/local/lib64/lib*npu*.so* /etc/ld.so.conf.d/00-keylane-npu.conf
