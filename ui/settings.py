@@ -66,10 +66,12 @@ class SettingsWindow(Gtk.Window):
         self.add_css_class("settings-window")
         self._independent = independent
         if parent and not independent:
+            # Transient so the window manager keeps this above the launcher,
+            # but never modal: a modal grab swallows clicks on the launcher,
+            # including the gear that opens this window, so the button that
+            # got you here stops responding for as long as you are here.
             self.set_transient_for(parent)
-            self.set_modal(True)
-        else:
-            self.set_modal(False)
+        self.set_modal(False)
 
         self._toast_cb: Any = None
         self._scheme_cb: Any = None
@@ -102,6 +104,8 @@ class SettingsWindow(Gtk.Window):
         self._device_ids: list[str] = []
         self._model_devices: dict[str, str] = {}
         self._importing = False
+        # Daemon requests currently off the main loop, one per key.
+        self._inflight: dict[str, bool] = {}
 
         shell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         shell.add_css_class("settings-shell")
@@ -214,7 +218,13 @@ class SettingsWindow(Gtk.Window):
         if self.get_realized():
             _raise(self)
         else:
-            self.connect("realize", _raise, once=True)
+            # `connect(..., once=True)` raises — PyGObject's connect takes no
+            # keyword arguments — so this has to disconnect itself instead.
+            def _raise_once(win: Gtk.Window, *_args: object) -> None:
+                win.disconnect_by_func(_raise_once)
+                _raise(win)
+
+            self.connect("realize", _raise_once)
 
         if self._key_controller is None:
             # present_centered runs on every open; a controller per open would
@@ -252,7 +262,17 @@ class SettingsWindow(Gtk.Window):
         if not self._had_focus or time.monotonic() - self._shown_at < FOCUS_GRACE:
             return
 
+        # Which showing this close belongs to. Re-presenting the window sets a
+        # new one, and a close scheduled for the old showing must not fire:
+        # clicking the gear while the window is open loses it focus and
+        # re-presents it, so without this the click closes what it just opened.
+        showing = self._shown_at
+
         def _confirm() -> bool:
+            if self._shown_at != showing:
+                return False
+            if time.monotonic() - self._shown_at < FOCUS_GRACE:
+                return False
             if (
                 not self.get_property("is-active")
                 and self.get_visible()
@@ -296,6 +316,39 @@ class SettingsWindow(Gtk.Window):
             "}"
         )
         self._textview_provider.load_from_string(css)
+
+    def _fetch_async(self, key: str, work: Any, apply: Any) -> None:
+        """Run *work* off the main loop and hand the result to *apply* on it.
+
+        Settings talks to the daemon over HTTP, and the daemon answers some of
+        it slowly — /settings/health probes SearXNG and every MCP server, which
+        measured over a second on a healthy machine and is bounded only by
+        timeouts on an unhealthy one. Doing that on the GTK thread freezes the
+        whole UI, and a frozen window is indistinguishable from a dead button:
+        the click that opened Settings looks like it did nothing, so it gets
+        clicked again.
+
+        One request per key is in flight at a time, so the once-a-second poll
+        during a download skips a tick rather than queueing up behind itself.
+        """
+        if self._inflight.get(key):
+            return
+        self._inflight[key] = True
+
+        def _worker() -> None:
+            try:
+                result, error = work(), None
+            except Exception as exc:  # noqa: BLE001
+                result, error = None, exc
+
+            def _done() -> bool:
+                self._inflight[key] = False
+                apply(result, error)
+                return False
+
+            GLib.idle_add(_done)
+
+        threading.Thread(target=_worker, daemon=True, name=f"settings-{key}").start()
 
     def _toast(self, message: str) -> None:
         self._footer.set_text(message[:72])
@@ -1499,16 +1552,22 @@ class SettingsWindow(Gtk.Window):
             self._block_save = was_blocked
 
     def _load_routes(self) -> None:
-        try:
-            health = httpx.get(f"{DAEMON}/settings/health", timeout=8).json()
-        except Exception:  # noqa: BLE001
-            return
-        routes = health.get("models", {}).get("routes", {})
-        for route, label in self._route_rows.items():
-            info = routes.get(route, {})
-            resolved = info.get("resolved")
-            preference = " → ".join(info.get("preference", []))
-            label.set_text(resolved or f"none ready ({preference})")
+        def _work() -> dict[str, Any]:
+            return httpx.get(f"{DAEMON}/settings/health", timeout=8).json()
+
+        def _apply(health: dict[str, Any] | None, error: Exception | None) -> None:
+            if error is not None or health is None:
+                for label in self._route_rows.values():
+                    label.set_text("unavailable")
+                return
+            routes = health.get("models", {}).get("routes", {})
+            for route, label in self._route_rows.items():
+                info = routes.get(route, {})
+                resolved = info.get("resolved")
+                preference = " → ".join(info.get("preference", []))
+                label.set_text(resolved or f"none ready ({preference})")
+
+        self._fetch_async("routes", _work, _apply)
 
     def _build_web(self) -> None:
         page = self._page("web")
@@ -1886,10 +1945,18 @@ class SettingsWindow(Gtk.Window):
         self._mcp_http_box.set_visible(value == "http")
 
     def _load_mcp_servers(self) -> None:
-        try:
-            servers = httpx.get(f"{DAEMON}/mcp/servers", timeout=15).json().get("servers", [])
-        except Exception as exc:  # noqa: BLE001
-            self._toast(str(exc))
+        def _work() -> list[dict[str, Any]]:
+            return httpx.get(f"{DAEMON}/mcp/servers", timeout=15).json().get("servers", [])
+
+        self._fetch_async("mcp", _work, self._apply_mcp_servers)
+
+    def _apply_mcp_servers(
+        self,
+        servers: list[dict[str, Any]] | None,
+        error: Exception | None = None,
+    ) -> None:
+        if error is not None or servers is None:
+            self._toast(str(error) if error else "Could not reach the daemon")
             return
 
         child = self._mcp_list.get_first_child()
@@ -2085,13 +2152,28 @@ class SettingsWindow(Gtk.Window):
             self._toast(str(exc))
 
     def load_settings(self) -> None:
-        self._block_save = True
-        try:
-            data = httpx.get(f"{DAEMON}/settings", timeout=5).json()
-        except Exception:  # noqa: BLE001
-            self._block_save = False
-            return
+        """Fill the panel from the daemon, without blocking the window opening.
 
+        The window is presented first and populates a moment later. Fetching
+        first meant every click on the gear froze the UI until the daemon
+        answered — and if the daemon was down, for the whole five-second
+        timeout, which reads as a button that does nothing.
+        """
+        self._block_save = True
+
+        def _work() -> dict[str, Any]:
+            return httpx.get(f"{DAEMON}/settings", timeout=5).json()
+
+        def _apply(data: dict[str, Any] | None, error: Exception | None) -> None:
+            if error is not None or data is None:
+                self._block_save = False
+                self._toast(f"Cannot reach the daemon: {error}" if error else "No settings")
+                return
+            self._apply_settings(data)
+
+        self._fetch_async("settings", _work, _apply)
+
+    def _apply_settings(self, data: dict[str, Any]) -> None:
         assistant = data.get("assistant", {})
         self._name_entry.set_text(str(assistant.get("name", "Keylane")))
         self._user_name_entry.set_text(str(assistant.get("user_name", "") or ""))
