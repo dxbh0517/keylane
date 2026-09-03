@@ -62,6 +62,7 @@ from ui.placement import (
     floating_geometry,
     forced_backend,
     move_resize,
+    scaled_geometry,
     set_always_on_top,
     wayland_session,
     wmctrl_available,
@@ -965,12 +966,14 @@ class SpotlightWindow(Gtk.ApplicationWindow):
         natural_height = child.measure(Gtk.Orientation.VERTICAL, width)[1]
         height = max(natural_height, THINKING_ORB_SIZE if mode == "thinking" else 1)
 
-        # GTK works in logical pixels; the window manager takes device pixels.
-        # Both the position *and* the size need the scale factor — an unscaled
-        # size on a 2x display gives a half-size window that clips the panel.
+        # GTK works in logical pixels and the window manager wants a mix: it
+        # scales the position itself and takes the size literally. Scaling both
+        # — which this used to do — put the panel at twice the offset it asked
+        # for, flush into the bottom-right corner of a 2x screen. See
+        # scaled_geometry for the measurement.
         scale = _monitor_scale()
-        x, y = (v * scale for v in _floating_geometry(mode, width, height))
-        device = (x, y, width * scale, height * scale)
+        x, y = _floating_geometry(mode, width, height)
+        device = scaled_geometry(x, y, width, height, scale)
         if device == self._floating_size:
             return False
 
@@ -1338,6 +1341,22 @@ class SpotlightWindow(Gtk.ApplicationWindow):
         self._stream_text = ""
 
     def _replace_corner_answer(self, answer: str) -> None:
+        if not answer.strip():
+            # "There is nothing to show" — a new ReAct iteration beginning, or
+            # a tool call being pulled back out of the stream. It is not an
+            # answer, so it must not turn the orb into an answer panel: the
+            # model is still thinking and the orb is what says so. This used to
+            # promote regardless, so the orb vanished the instant a turn
+            # started and left an empty card sitting there instead.
+            self._clear_canvas()
+            self._canvas_full_answer = ""
+            self._canvas_summary = ""
+            self._streaming_answer = False
+            self._answer_revealer.set_reveal_child(False)
+            self._corner_orb.set_state("thinking")
+            self._thinking_orb.set_state("thinking")
+            return
+
         if self._mode == "thinking":
             self._promote_to_corner_panel()
         self._corner_orb.set_state("done")

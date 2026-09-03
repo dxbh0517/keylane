@@ -44,6 +44,8 @@ _NAV = (
 # Focus around a freshly mapped override window bounces; don't act on that.
 FOCUS_GRACE = 0.6      # seconds after showing
 FOCUS_SETTLE_MS = 220  # confirm focus is really gone
+# How often to ask whether focus is gone, for the times nothing tells us.
+FOCUS_POLL_MS = 400
 
 # The popover's own border, which sits outside the width it is asked for.
 _MENU_BORDER = 1
@@ -85,6 +87,7 @@ class SettingsWindow(Gtk.Window):
         self._loading_model = False
         self._block_save = False
         self._poll_id: int | None = None
+        self._focus_watch_id: int | None = None
         self._textview_provider = Gtk.CssProvider()
         self._textviews: list[Gtk.TextView] = []
         self._mcp_transport = "stdio"
@@ -205,6 +208,7 @@ class SettingsWindow(Gtk.Window):
         self._had_focus = False
         self.present()
         self.set_visible(True)
+        self._start_focus_watch()
 
         def _raise(_win: Gtk.Window, *_args: object) -> None:
             _win.set_visible(True)
@@ -251,8 +255,47 @@ class SettingsWindow(Gtk.Window):
     def set_scheme_callback(self, cb: Any) -> None:
         self._scheme_cb = cb
 
+    def _start_focus_watch(self) -> None:
+        """Check whether focus is gone, rather than waiting to be told.
+
+        Dismiss-on-click-away hung entirely off ``notify::is-active``, and an
+        edge that never arrives is a window that never closes. It does arrive
+        when focus moves between two X11 windows — but Keylane runs on XWayland
+        under a Wayland compositor, and clicking a native Wayland window is
+        precisely the case the user hits. Observed on this machine with the
+        window still open and `_NET_ACTIVE_WINDOW` pointing at something else.
+
+        So the same question is asked on a timer as well. Polling a property is
+        not elegant; missing the only notification there is, is worse. The edge
+        handler stays, because when it does fire it closes the window without
+        waiting for the next tick.
+        """
+        if self._focus_watch_id:
+            return
+
+        def _tick() -> bool:
+            if not self.get_visible():
+                self._focus_watch_id = None
+                return False
+            self._check_focus_lost()
+            return True
+
+        self._focus_watch_id = GLib.timeout_add(FOCUS_POLL_MS, _tick)
+
+    def _stop_focus_watch(self) -> None:
+        watch_id, self._focus_watch_id = self._focus_watch_id, None
+        if watch_id:
+            try:
+                GLib.source_remove(watch_id)
+            except (GLib.Error, ValueError):
+                pass
+
     def _on_active_changed(self, *_args: object) -> None:
-        """Close when focus goes elsewhere — the launcher's own rule.
+        """Close when focus goes elsewhere — the launcher's own rule."""
+        self._check_focus_lost()
+
+    def _check_focus_lost(self) -> None:
+        """Close if focus has really gone, from either the edge or the poll.
 
         Focus bounces while a freshly mapped window settles, so this waits for
         focus to have really been held, then confirms it is really gone. An
@@ -275,11 +318,12 @@ class SettingsWindow(Gtk.Window):
                 return False
             if time.monotonic() - self._shown_at < FOCUS_GRACE:
                 return False
-            if (
-                not self.get_property("is-active")
-                and self.get_visible()
-                and not any(p.get_visible() for p in self._dropdown_popovers)
-            ):
+            if any(p.get_visible() for p in self._dropdown_popovers):
+                # A dropdown is this window's own business. The poll asks again
+                # once it closes; dropping the close here used to mean the
+                # window stayed up until it was focused and unfocused again.
+                return False
+            if not self.get_property("is-active") and self.get_visible():
                 self.close()
                 if self._dismiss_cb:
                     self._dismiss_cb()
@@ -374,10 +418,22 @@ class SettingsWindow(Gtk.Window):
             self._toast(f"Error: {exc}")
 
     def _on_close(self, *_args) -> bool:
-        if self._poll_id:
-            GLib.source_remove(self._poll_id)
-            self._poll_id = None
+        self._stop_poll()
+        self._stop_focus_watch()
         return False
+
+    def _stop_poll(self) -> None:
+        """Drop the download poll, tolerating a source that already ended.
+
+        Nothing that runs while a window is closing may raise: whatever else
+        happens, the close has to complete.
+        """
+        poll_id, self._poll_id = self._poll_id, None
+        if poll_id:
+            try:
+                GLib.source_remove(poll_id)
+            except (GLib.Error, ValueError):
+                pass
 
     def _on_nav_selected(self, _nav: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         if row is None:
@@ -1350,6 +1406,14 @@ class SettingsWindow(Gtk.Window):
             self._load_models(quiet=True)
             any_busy = any(m.get("downloading") for m in self._models) or self._loading_model
             if not any_busy and not self._loading_model:
+                # Forget the id in the same breath as ending the source. It
+                # used to be left set, which meant two things: _ensure_poll saw
+                # a live poll and never started another, so download progress
+                # stopped updating for the rest of the window's life; and
+                # closing the window called source_remove on an id GLib had
+                # already reclaimed, which is the "Source ID … was not found"
+                # warning in the log.
+                self._poll_id = None
                 return False
             return True
 
@@ -1496,14 +1560,11 @@ class SettingsWindow(Gtk.Window):
         """
 
         def _work() -> dict[str, Any]:
-            try:
-                return api.get("/models/servers", timeout=15).json()
-            except Exception as exc:  # noqa: BLE001
-                return {"error": str(exc)}
+            return api.get("/models/servers", timeout=15).json()
 
-        def _apply(payload: dict[str, Any]) -> None:
-            if payload.get("error"):
-                self._toast(f"Could not look: {payload['error']}")
+        def _apply(payload: dict[str, Any] | None, error: Exception | None) -> None:
+            if error is not None or payload is None:
+                self._toast(f"Could not look: {error}")
                 return
             servers = payload.get("servers") or []
             if not servers:
@@ -2109,19 +2170,20 @@ class SettingsWindow(Gtk.Window):
 
     def _load_about(self) -> None:
         def _work() -> dict[str, Any]:
-            try:
-                return {
-                    "health": api.get("/health", timeout=8).json(),
-                    "update": api.get("/update/status", timeout=20).json(),
-                }
-            except Exception as exc:  # noqa: BLE001
-                return {"error": str(exc)}
+            return {
+                "health": api.get("/health", timeout=8).json(),
+                "update": api.get("/update/status", timeout=20).json(),
+            }
 
         self._fetch_async("about", _work, self._apply_about)
 
-    def _apply_about(self, payload: dict[str, Any]) -> None:
-        if payload.get("error"):
-            self._update_status.set_text(f"Could not reach the daemon: {payload['error']}")
+    def _apply_about(
+        self,
+        payload: dict[str, Any] | None,
+        error: Exception | None = None,
+    ) -> None:
+        if error is not None or payload is None:
+            self._update_status.set_text(f"Could not reach the daemon: {error}")
             return
         version = (payload.get("health") or {}).get("version") or {}
         self._version_label.set_text(str(version.get("display", "unknown")))
@@ -2161,19 +2223,14 @@ class SettingsWindow(Gtk.Window):
         self._update_status.set_text("Asking GitHub…")
 
         def _work() -> dict[str, Any]:
-            try:
-                channel = next(
-                    (c for c, b in self._channel_buttons.items() if b.get_active()), "stable"
-                )
-                return api.post(
-                    "/update/check", json={"channel": channel}, timeout=30
-                ).json()
-            except Exception as exc:  # noqa: BLE001
-                return {"error": str(exc)}
+            channel = next(
+                (c for c, b in self._channel_buttons.items() if b.get_active()), "stable"
+            )
+            return api.post("/update/check", json={"channel": channel}, timeout=30).json()
 
-        def _apply(payload: dict[str, Any]) -> None:
-            if payload.get("error"):
-                self._update_status.set_text(f"Check failed: {payload['error']}")
+        def _apply(payload: dict[str, Any] | None, error: Exception | None) -> None:
+            if error is not None or payload is None:
+                self._update_status.set_text(f"Check failed: {error}")
                 return
             self._apply_update_status(payload)
 
@@ -2215,24 +2272,21 @@ class SettingsWindow(Gtk.Window):
         self._update_status.set_text("Installing…")
 
         def _work() -> dict[str, Any]:
-            try:
-                channel = next(
-                    (c for c, b in self._channel_buttons.items() if b.get_active()), "stable"
-                )
-                resp = api.post(
-                    "/update/apply",
-                    json={"channel": channel, "confirm": True},
-                    timeout=1200,
-                )
-                if resp.status_code >= 400:
-                    return {"error": str(resp.json().get("detail", resp.text))}
-                return resp.json()
-            except Exception as exc:  # noqa: BLE001
-                return {"error": str(exc)}
+            channel = next(
+                (c for c, b in self._channel_buttons.items() if b.get_active()), "stable"
+            )
+            resp = api.post(
+                "/update/apply",
+                json={"channel": channel, "confirm": True},
+                timeout=1200,
+            )
+            if resp.status_code >= 400:
+                raise RuntimeError(str(resp.json().get("detail", resp.text)))
+            return resp.json()
 
-        def _apply(payload: dict[str, Any]) -> None:
-            if payload.get("error"):
-                self._update_status.set_text(f"Update failed: {payload['error']}")
+        def _apply(payload: dict[str, Any] | None, error: Exception | None) -> None:
+            if error is not None or payload is None:
+                self._update_status.set_text(f"Update failed: {error}")
                 self._install_btn.set_sensitive(True)
                 return
             self._update_status.set_text(str(payload.get("detail", "Updated.")))

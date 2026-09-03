@@ -116,3 +116,94 @@ def test_slow_daemon_calls_do_not_run_on_the_main_loop():
     started = time.monotonic()
     window._load_routes()
     assert time.monotonic() - started < 0.25, "_load_routes blocked the caller"
+
+
+def test_the_download_poll_can_restart_after_it_stops():
+    """A finished poll must forget its id, or nothing ever polls again.
+
+    `_tick` returns False when no download is running, which ends the GLib
+    source — but the id was left set, so `_ensure_poll` saw a live poll and
+    never started another. Download progress then stopped updating for the
+    rest of the window's life, and closing the window called source_remove on
+    an id GLib had already reclaimed ("Source ID … was not found").
+    """
+    window = SettingsWindow(independent=True)
+    window._models = []
+    window._loading_model = False
+    # The tick keeps itself alive while the window is hidden, so that a poll
+    # armed before a close resumes on the next open. It has to be visible for
+    # the "nothing is downloading, stop" path to be the one under test.
+    window.present_centered()
+    _pump(100)
+
+    window._ensure_poll()
+    assert window._poll_id is not None
+    first = window._poll_id
+
+    # One tick with nothing downloading ends the source. timeout_add_seconds
+    # aligns to the second, so this waits out two of them rather than racing.
+    _pump(2600)
+    assert window._poll_id is None, "a finished poll must forget its id"
+
+    # And a later download can start a fresh one.
+    window._ensure_poll()
+    assert window._poll_id is not None
+    assert window._poll_id != first
+    window._stop_poll()
+
+
+def test_closing_twice_does_not_raise():
+    """Nothing that runs while a window closes may raise; the close must land."""
+    window = SettingsWindow(independent=True)
+    window._poll_id = 999999  # an id GLib has never heard of
+    assert window._on_close() is False
+    assert window._poll_id is None
+    assert window._on_close() is False
+
+
+def test_focus_loss_closes_the_window_without_a_notification():
+    """The edge is missed on XWayland when focus goes to a Wayland window.
+
+    Dismiss-on-click-away hung entirely off notify::is-active. That fires when
+    focus moves between two X11 windows, which is why it tested fine — but
+    Keylane runs on XWayland under a Wayland compositor, and clicking a native
+    Wayland window is the case that matters. Observed on a real machine: the
+    window still open, `_NET_ACTIVE_WINDOW` pointing at something else.
+
+    So no notification is delivered here at all; the poll has to notice.
+    """
+    window = SettingsWindow(independent=True)
+    _unfocused(window)
+    window.present_centered()
+    window._had_focus = True
+    window._shown_at = time.monotonic() - 10
+
+    dismissed: list[bool] = []
+    window.set_dismiss_callback(lambda: dismissed.append(True))
+
+    # Deliberately never calling _on_active_changed: nothing tells us.
+    _pump(FOCUS_SETTLE_MS + 900)
+
+    assert not window.get_visible()
+    assert dismissed == [True]
+
+
+def test_an_open_dropdown_defers_the_close_rather_than_cancelling_it():
+    """A dropdown is this window's own business — until it is closed."""
+    window = SettingsWindow(independent=True)
+    _unfocused(window)
+    window.present_centered()
+    window._had_focus = True
+    window._shown_at = time.monotonic() - 10
+
+    popover = Gtk.Popover()
+    visible = {"open": True}
+    popover.get_visible = lambda: visible["open"]  # type: ignore[method-assign]
+    window._dropdown_popovers.append(popover)
+
+    _pump(FOCUS_SETTLE_MS + 700)
+    assert window.get_visible(), "an open dropdown should hold the window open"
+
+    visible["open"] = False
+    _pump(FOCUS_SETTLE_MS + 900)
+    assert not window.get_visible(), "closing the dropdown should let it dismiss"
