@@ -46,7 +46,6 @@ from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # type: ignore[attr-define
 if HAS_LAYER_SHELL:
     from gi.repository import Gtk4LayerShell as LayerShell  # type: ignore[attr-defined]
 
-import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -214,6 +213,10 @@ class SpotlightWindow(Gtk.ApplicationWindow):
         self._mode = "spotlight"
         self._busy = False
         self._streaming_answer = False
+        # Tokens arrive faster than the canvas can be re-laid-out, so they are
+        # buffered and flushed on a timer rather than one render per token.
+        self._stream_text = ""
+        self._stream_flush_id: int | None = None
         self._sources: list[dict[str, str]] = []
         self._attached_images: list[bytes] = []
         self._image_preview_path: Path | None = None
@@ -1301,6 +1304,39 @@ class SpotlightWindow(Gtk.ApplicationWindow):
         self._corner_panel.queue_resize()
         self.queue_resize()
 
+    # ── streaming ────────────────────────────────────────────────────────
+
+    STREAM_FLUSH_MS = 90
+
+    def _begin_stream(self) -> None:
+        self._stream_text = ""
+        if self._stream_flush_id is not None:
+            GLib.source_remove(self._stream_flush_id)
+            self._stream_flush_id = None
+
+    def _on_stream_token(self, piece: str) -> None:
+        """Take one token from the daemon and schedule a redraw.
+
+        Re-rendering the answer canvas per token would spend more time in
+        layout than the model spends generating, so a flush is scheduled at
+        most every STREAM_FLUSH_MS and the tokens in between just accumulate.
+        """
+        self._stream_text += piece
+        if self._stream_flush_id is None:
+            self._stream_flush_id = GLib.timeout_add(self.STREAM_FLUSH_MS, self._flush_stream)
+
+    def _flush_stream(self) -> bool:
+        self._stream_flush_id = None
+        if self._stream_text:
+            self._replace_corner_answer(self._stream_text)
+        return False
+
+    def _end_stream(self) -> None:
+        if self._stream_flush_id is not None:
+            GLib.source_remove(self._stream_flush_id)
+            self._stream_flush_id = None
+        self._stream_text = ""
+
     def _replace_corner_answer(self, answer: str) -> None:
         if self._mode == "thinking":
             self._promote_to_corner_panel()
@@ -1378,7 +1414,12 @@ class SpotlightWindow(Gtk.ApplicationWindow):
                         elif etype == "tool":
                             msg = event.get("message") or f"Calling {event.get('name', 'tool')}…"
                             GLib.idle_add(self._set_corner_status, msg)
+                        elif etype == "token":
+                            GLib.idle_add(self._on_stream_token, event.get("text", ""))
                         elif etype == "replace_answer":
+                            # A fresh iteration, or a tool call the user must
+                            # not see: whatever was streamed is discarded.
+                            GLib.idle_add(self._begin_stream)
                             GLib.idle_add(self._replace_corner_answer, event.get("text", ""))
                         elif etype == "permission":
                             GLib.idle_add(self._show_permission_dialog, event)
@@ -1396,6 +1437,7 @@ class SpotlightWindow(Gtk.ApplicationWindow):
                 answer = f"Error: {exc}"
 
             def _finish() -> bool:
+                self._end_stream()
                 if session_id:
                     self.session_id = session_id
                 resolved = answer or "No response."

@@ -21,6 +21,7 @@ from typing import Any, Callable
 from daemon.config import load_toml
 from daemon.paths import MODELS_DIR
 from npu.kind import PipelineKind
+from npu.limits import CHARS_PER_TOKEN
 from npu.thinking import sanitize_response
 from runtimes import DEFAULT_RUNTIME, RuntimeBackend, backend_for, normalise_runtime_id
 
@@ -365,6 +366,7 @@ class LocalModelRuntime:
         self._load_thread: threading.Thread | None = None
         self._downloads: dict[str, dict[str, Any]] = {}
         self._download_lock = threading.RLock()
+        self._warned_no_template = False
 
     def _download_info(self, model_id: str) -> dict[str, Any]:
         with self._download_lock:
@@ -677,6 +679,87 @@ class LocalModelRuntime:
     # Kept because the LLM adapter reached for it before it was public.
     _prompt_budget_chars = prompt_budget_chars
 
+    def prompt_budget_tokens(self) -> int:
+        """The same limit in the unit the pipeline actually enforces."""
+        entry = get_model(self._model_id or "")
+        backend = entry.backend if entry else backend_for(self._runtime_id)
+        model_dir = entry.model_dir if entry else Path()
+        device = self._device or (
+            entry.resolve_device(load_catalog()[1]) if entry else "NPU"
+        )
+        budget = getattr(backend, "prompt_budget_tokens", None)
+        if budget is not None:
+            return int(budget(device, self._pipeline_kind, model_dir))
+        # A runtime that only knows characters: convert back, pessimistically.
+        return int(
+            backend.prompt_budget_chars(device, self._pipeline_kind, model_dir)
+            / CHARS_PER_TOKEN
+        )
+
+    # ── turning a conversation into a prompt ─────────────────────────────
+
+    def _count_tokens(self, pipe: Any, text: str) -> int | None:
+        counter = getattr(pipe, "count_tokens", None)
+        if counter is None:
+            return None
+        return counter(text)
+
+    def _fit_templated(
+        self,
+        pipe: Any,
+        messages: list[dict[str, str]],
+        budget_tokens: int,
+    ) -> str | None:
+        """Render with the model's own template, keeping as much history as fits.
+
+        The system block always stays — it carries the tool format, and a turn
+        without it cannot call anything. Everything else is added newest-first
+        until the real token count says stop, so the trim happens at a turn
+        boundary rather than mid-sentence, and it is measured rather than
+        guessed at 2.6 characters a token.
+        """
+        render = getattr(pipe, "apply_chat_template", None)
+        if render is None:
+            return None
+
+        system = [m for m in messages if m.get("role") == "system"]
+        history = [m for m in messages if m.get("role") != "system"]
+
+        base = render(system + history[-1:]) if history else render(system)
+        if base is None:
+            return None
+        used = self._count_tokens(pipe, base)
+        if used is None:
+            return None
+
+        if used > budget_tokens and system:
+            # Even the system block plus one turn does not fit. Clip the system
+            # text rather than throw — the old path did the same, and a clipped
+            # prompt at least answers.
+            logger.warning(
+                "system prompt plus one turn is %d tokens against a budget of %d; clipping",
+                used,
+                budget_tokens,
+            )
+            ratio = max(budget_tokens / used * 0.9, 0.1)
+            for msg in system:
+                text = str(msg.get("content", ""))
+                msg["content"] = text[: int(len(text) * ratio)].rstrip() + "\n…[prompt clipped]"
+            base = render(system + history[-1:]) if history else render(system)
+            return base
+
+        kept = history[-1:] if history else []
+        for msg in reversed(history[:-1]):
+            candidate = render(system + [msg] + kept)
+            if candidate is None:
+                break
+            size = self._count_tokens(pipe, candidate)
+            if size is None or size > budget_tokens:
+                break
+            kept = [msg, *kept]
+            base = candidate
+        return base
+
     @staticmethod
     def _format_message(msg: dict[str, str]) -> str:
         role = msg.get("role", "user")
@@ -766,9 +849,38 @@ class LocalModelRuntime:
         images: list[bytes] | None = None,
         on_token: Callable[[str], None] | None = None,
     ) -> str:
-        """Format messages into a single prompt for the active pipeline."""
-        budget = self.prompt_budget_chars()
-        prompt = self._fit_chat_prompt(messages, budget)
+        """Format messages into a single prompt for the active pipeline.
+
+        Preferred path: the model's own chat template, trimmed against the
+        tokenizer's own count. Every curated model is instruction-tuned against
+        a specific template that ships in the export, and the "System: … User:
+        …" concatenation this used to do is off-distribution for all of them.
+
+        Fallback: that same concatenation, for an export that carries no
+        template at all. It is worse, not equivalent, so it says so in the log
+        the first time rather than failing silently forever.
+        """
+        with self._lock:
+            pipe = self._pipe
+
+        if pipe is not None:
+            prompt = self._fit_templated(pipe, list(messages), self.prompt_budget_tokens())
+            if prompt is not None:
+                return self.generate(
+                    prompt,
+                    max_new_tokens=max_new_tokens,
+                    images=images,
+                    on_token=on_token,
+                )
+            if not self._warned_no_template:
+                self._warned_no_template = True
+                logger.warning(
+                    "%s carries no chat template; falling back to plain concatenation, "
+                    "which instruct models handle poorly",
+                    self._model_id,
+                )
+
+        prompt = self._fit_chat_prompt(messages, self.prompt_budget_chars())
         return self.generate(
             prompt,
             max_new_tokens=max_new_tokens,

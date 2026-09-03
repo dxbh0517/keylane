@@ -206,6 +206,38 @@ def list_models(runtime: str = "") -> dict[str, Any]:
     }
 
 
+@app.get("/models/servers")
+def discover_servers() -> dict[str, Any]:
+    """OpenAI-compatible servers answering on this machine right now.
+
+    Settings uses this to fill in the `gpu` adapter rather than making the user
+    know that LM Studio's default port is 1234. It only reports — moving a
+    route is still a decision, because on battery the NPU is the right answer.
+    """
+    from seams.discovery import discover
+
+    found = discover()
+    configured = {
+        str(a.get("id")): str(a.get("base_url", ""))
+        for a in all_settings().get("models", {}).get("adapters", []) or []
+    }
+    return {
+        "servers": [
+            {
+                "name": s.name,
+                "base_url": s.base_url,
+                "models": s.models,
+                "suggested_model": s.suggested_model,
+                "configured_as": next(
+                    (aid for aid, url in configured.items() if url.rstrip("/") == s.base_url.rstrip("/")),
+                    "",
+                ),
+            }
+            for s in found
+        ]
+    }
+
+
 @app.get("/runtimes")
 def list_runtimes() -> dict[str, Any]:
     """Which inference stacks are installed, and what each can target."""

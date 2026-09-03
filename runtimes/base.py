@@ -130,8 +130,20 @@ class RuntimeBackend(Protocol):
     ) -> LoadedPipeline:
         """Compile and return a resident pipeline."""
 
+    def prompt_budget_tokens(self, device: str, kind: PipelineKind, model_dir: Path) -> int:
+        """How many tokens of prompt this pipeline can actually take.
+
+        The honest unit. Prefer it wherever a tokenizer is available to count
+        with — which is anywhere a pipeline is already loaded.
+        """
+
     def prompt_budget_chars(self, device: str, kind: PipelineKind, model_dir: Path) -> int:
-        """How many characters of prompt this pipeline can actually take."""
+        """The same limit in characters, for callers with no tokenizer.
+
+        Prompt assembly runs before a pipeline is chosen and has nothing to
+        encode with, so it gets a deliberately pessimistic conversion and sheds
+        optional sections early.
+        """
 
     # ── Hugging Face repos ───────────────────────────────────────────────
 

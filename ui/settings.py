@@ -1459,9 +1459,57 @@ class SettingsWindow(Gtk.Window):
             "LM Studio do; llama.cpp's server does not.",
         )
 
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        detect = self._secondary_btn("Detect running server")
+        detect.connect("clicked", self._detect_gpu_server)
+        buttons.append(detect)
         test = self._secondary_btn("Test connection")
         test.connect("clicked", self._test_gpu_model)
-        self._field(gpu, "", test)
+        buttons.append(test)
+        self._field(
+            gpu,
+            "",
+            buttons,
+            "Detect looks for LM Studio, Ollama and llama.cpp on their usual ports.",
+        )
+
+    def _detect_gpu_server(self, _btn: Gtk.Button) -> None:
+        """Fill the URL and model in from whatever is already running.
+
+        Nobody should have to know that LM Studio's default port is 1234 to get
+        the use of a GPU they already own. The switch stays off — enabling it
+        is a decision, because on battery the NPU is the better answer.
+        """
+
+        def _work() -> dict[str, Any]:
+            try:
+                return api.get("/models/servers", timeout=15).json()
+            except Exception as exc:  # noqa: BLE001
+                return {"error": str(exc)}
+
+        def _apply(payload: dict[str, Any]) -> None:
+            if payload.get("error"):
+                self._toast(f"Could not look: {payload['error']}")
+                return
+            servers = payload.get("servers") or []
+            if not servers:
+                self._toast("No OpenAI-compatible server is running")
+                return
+            first = servers[0]
+            self._block_save = True
+            self._gpu_url.set_text(str(first.get("base_url", "")))
+            self._block_save = False
+            self._gpu_models = [str(m) for m in first.get("models") or []]
+            self._gpu_model_id = str(first.get("suggested_model") or "")
+            self._gpu_model_label.set_text(self._gpu_model_id or "Connect to see models")
+            self._sync_gpu_menu()
+            self._save_gpu_adapter()
+            self._toast(
+                f"Found {first.get('name', 'a server')} — "
+                f"{len(self._gpu_models)} model(s). Tick Enabled to use it."
+            )
+
+        self._fetch_async("gpu-detect", _work, _apply)
 
     def _on_gpu_menu_visible(self, popover: Gtk.Popover, _pspec: object) -> None:
         if popover.get_visible():

@@ -56,6 +56,33 @@ _FALLBACK_CONTEXT_TOKENS = 4096
 
 _TOKENIZER_FILES = ("tokenizer.json", "tokenizer.model", "spiece.model", "vocab.json")
 
+# Loading a Hugging Face tokenizer costs a second or two; the chat template it
+# carries never changes for a directory, so it is loaded once per model.
+_HF_TOKENIZERS: dict[str, Any] = {}
+
+
+def _hf_tokenizer(model_dir: Path) -> Any | None:
+    """The transformers tokenizer beside an ONNX export, for its chat template.
+
+    onnxruntime-genai's tokenizer cannot render one, and an export that came
+    from an instruct model on the Hub ships tokenizer_config.json next to the
+    graph. Absent that, there is no template to apply and None is the answer.
+    """
+    key = str(model_dir)
+    if key in _HF_TOKENIZERS:
+        return _HF_TOKENIZERS[key]
+    tokenizer = None
+    if (model_dir / "tokenizer_config.json").is_file():
+        try:
+            from transformers import AutoTokenizer  # noqa: PLC0415
+
+            tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
+        except Exception:  # noqa: BLE001
+            logger.debug("no usable transformers tokenizer in %s", model_dir, exc_info=True)
+    _HF_TOKENIZERS[key] = tokenizer
+    return tokenizer
+
+
 # ONNX keeps a large model's weights outside the graph, in a blob the graph
 # names but genai_config.json does not. A graph that big is the weights itself,
 # so there is nothing to look for and no reason to read it.
@@ -246,11 +273,52 @@ def open_model(model_dir: Path, device: str, cache: Path | None) -> tuple[Any, A
 class OnnxPipeline:
     """A loaded ONNX Runtime GenAI model, driven one token at a time."""
 
-    def __init__(self, model: Any, tokenizer: Any, *, context_tokens: int) -> None:
+    def __init__(
+        self,
+        model: Any,
+        tokenizer: Any,
+        *,
+        context_tokens: int,
+        model_dir: Path | None = None,
+    ) -> None:
         self._model = model
         self._tokenizer = tokenizer
         self._context_tokens = context_tokens
+        self._model_dir = model_dir
         self.kind: PipelineKind = "llm"
+
+    # ── the model's own idea of a conversation ───────────────────────────
+
+    def apply_chat_template(self, messages: list[dict[str, str]]) -> str | None:
+        """Render a conversation with the template shipped beside the export.
+
+        onnxruntime-genai's own tokenizer has no template support, so the
+        template is read from ``tokenizer_config.json`` — which every export
+        that came from a Hugging Face instruct model carries — and rendered
+        with transformers, which is already a dependency. Returns None if
+        either half is missing, so the caller falls back rather than fails.
+        """
+        if self._model_dir is None:
+            return None
+        try:
+            hf = _hf_tokenizer(self._model_dir)
+            if hf is None or not getattr(hf, "chat_template", None):
+                return None
+            return str(
+                hf.apply_chat_template(
+                    list(messages), tokenize=False, add_generation_prompt=True
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("apply_chat_template failed; falling back", exc_info=True)
+            return None
+
+    def count_tokens(self, text: str) -> int | None:
+        try:
+            return int(len(self._tokenizer.encode(text)))
+        except Exception:  # noqa: BLE001
+            logger.debug("token count failed; falling back to characters", exc_info=True)
+            return None
 
     def generate(
         self,
@@ -484,7 +552,12 @@ class OnnxRuntimeBackend:
             model,
             tokenizer,
             context_tokens=context_length(read_genai_config(model_dir)),
+            model_dir=model_dir,
         )
+
+    def prompt_budget_tokens(self, device: str, kind: PipelineKind, model_dir: Path) -> int:
+        """The model's own declared context, less room for the reply."""
+        return max(context_length(read_genai_config(model_dir)) - RESERVE_TOKENS, 256)
 
     def prompt_budget_chars(self, device: str, kind: PipelineKind, model_dir: Path) -> int:
         tokens = context_length(read_genai_config(model_dir))

@@ -33,15 +33,33 @@ CHARS_PER_TOKEN = 2.6
 RESERVE_TOKENS = 512
 
 
+def npu_prompt_budget_tokens() -> int:
+    """How many tokens of prompt an NPU pipeline can actually take."""
+    return max(NPU_MAX_PROMPT_TOKENS - RESERVE_TOKENS, 256)
+
+
 def npu_prompt_budget_chars() -> int:
     """How many characters of prompt an NPU pipeline can actually take."""
-    usable = max(NPU_MAX_PROMPT_TOKENS - RESERVE_TOKENS, 256)
-    return int(usable * CHARS_PER_TOKEN)
+    return int(npu_prompt_budget_tokens() * CHARS_PER_TOKEN)
+
+
+def prompt_budget_tokens(device: str, kind: PipelineKind) -> int:
+    """The token budget for one pipeline on one device.
+
+    This is the honest unit: the compiled limit is a token count, and the
+    tokenizer that would answer exactly is loaded in the same process. The
+    character budget below exists only for callers that have no tokenizer to
+    ask — prompt assembly sheds optional sections long before a pipeline is
+    chosen — and it stays deliberately pessimistic for that reason.
+    """
+    if device.upper() != "NPU":
+        # CPU and GPU pipelines are bounded by patience, not by a compiled limit.
+        return int(24000 / CHARS_PER_TOKEN)
+    return npu_prompt_budget_tokens()
 
 
 def prompt_budget_chars(device: str, kind: PipelineKind) -> int:
     """The character budget for one pipeline on one device."""
     if device.upper() != "NPU":
-        # CPU and GPU pipelines are bounded by patience, not by a compiled limit.
         return 24000
     return npu_prompt_budget_chars()
