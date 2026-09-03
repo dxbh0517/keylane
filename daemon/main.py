@@ -19,6 +19,7 @@ from agent.loop import AIAgent
 from daemon.auth import auth_middleware
 from daemon.config import add_mcp_server, all_settings, list_mcp_servers, remove_mcp_server, reset_settings, save_settings
 from daemon.health import settings_health
+from daemon.openai_api import router as openai_router
 from daemon.paths import ensure_data_dirs
 from models.catalog import (
     active_runtime_id,
@@ -155,6 +156,10 @@ app = FastAPI(title="Keylane", lifespan=lifespan)
 # No CORS. Nothing that talks to this daemon is a browser, and the header that
 # used to be here told every website it could read /memories. See daemon/auth.py.
 app.middleware("http")(auth_middleware)
+
+# Keylane as a provider: the resident model behind the OpenAI wire format, so
+# anything on this machine that can talk to LM Studio can talk to the NPU.
+app.include_router(openai_router)
 
 
 @app.get("/health")

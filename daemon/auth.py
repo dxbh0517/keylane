@@ -91,6 +91,23 @@ def token_matches(supplied: str) -> bool:
     return hmac.compare_digest(supplied, expected)
 
 
+def supplied_token(request: Request) -> str:
+    """The token from either header Keylane accepts.
+
+    ``X-Keylane-Token`` is what Keylane's own clients send. ``Authorization:
+    Bearer`` is what every OpenAI client sends, and since Keylane serves
+    ``/v1/chat/completions`` those clients should be able to point at it with
+    the token in the field they already have for an API key.
+    """
+    direct = request.headers.get(TOKEN_HEADER, "").strip()
+    if direct:
+        return direct
+    authorization = request.headers.get("authorization", "").strip()
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return ""
+
+
 def _refuse(reason: str, detail: str) -> JSONResponse:
     return JSONResponse({"error": reason, "detail": detail}, status_code=403)
 
@@ -117,10 +134,11 @@ async def auth_middleware(
             "not a web API and a page in your browser must not reach it",
         )
 
-    if not token_matches(request.headers.get(TOKEN_HEADER, "")):
+    if not token_matches(supplied_token(request)):
         return _refuse(
             "token_required",
-            f"send the token from data/settings.json as the {TOKEN_HEADER} header",
+            f"send the token from data/settings.json as the {TOKEN_HEADER} header, "
+            "or as an Authorization: Bearer value",
         )
 
     return await call_next(request)

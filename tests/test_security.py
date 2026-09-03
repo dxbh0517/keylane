@@ -239,3 +239,37 @@ def test_no_route_answers_a_browser(api_client) -> None:
     for path in ("/settings", "/sessions", "/models", "/tasks", "/inbox", "/tools"):
         resp = client.get(path, headers={"Origin": "https://evil.example"})
         assert resp.status_code == 403, path
+
+
+# ── Keylane as an OpenAI-compatible provider ─────────────────────────────
+
+
+def test_the_openai_endpoint_needs_the_token_too(api_client) -> None:
+    client, _ = api_client
+    assert client.get("/v1/models").status_code == 403
+
+
+def test_an_openai_client_can_authenticate_with_a_bearer_token(api_client) -> None:
+    """Every OpenAI client has a field for an API key. That field is the token."""
+    client, _ = api_client
+    resp = client.get("/v1/models", headers={"Authorization": "Bearer test-token"})
+    assert resp.status_code == 200
+    assert resp.json()["object"] == "list"
+
+
+def test_a_wrong_bearer_token_is_refused(api_client) -> None:
+    client, _ = api_client
+    resp = client.get("/v1/models", headers={"Authorization": "Bearer nope"})
+    assert resp.status_code == 403
+
+
+def test_the_openai_endpoint_says_so_when_no_model_is_loaded(api_client) -> None:
+    """503 with a reason beats a stack trace or an empty 200."""
+    client, header = api_client
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={header: "test-token"},
+        json={"messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert resp.status_code == 503
+    assert "no model is loaded" in resp.json()["detail"]
