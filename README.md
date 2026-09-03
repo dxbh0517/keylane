@@ -269,13 +269,21 @@ Override the choice with `KEYLANE_BACKEND=layer` or `KEYLANE_BACKEND=x11` if you
 
 ## Themes
 
-Keylane ships three themes, each with a light and a dark scheme:
+Keylane ships six themes, each with a light and a dark scheme:
 
 | Theme | Looks like |
 | --- | --- |
 | `glass-console` | Dark glass over the desktop, one cyan accent, hairline structure. The default. |
 | `paper-terminal` | Ink on warm paper: flat surfaces, hairline rules, serif answers, monospace labels. |
 | `aurora` | Translucent material, no borders, large radii, violet and cyan light. |
+| `copper-oxide` | Oxidised copper and verdigris over brown-black. Warm, square, hard shadows. |
+| `nord-frost` | The Nord palette — Polar Night and Snow Storm — so Keylane matches a Nord desktop. |
+| `high-contrast` | Opaque black and white, 2px borders, no translucency. WCAG AAA text. |
+
+`high-contrast` exists because the other five all rely on translucency,
+hairlines and mid-grey text, and each of those is what fails for low vision or
+a glossy screen in daylight. Every shipped theme is checked against WCAG AA for
+text on its own surface; `high-contrast` is checked against AAA.
 
 Pick one in **Settings → General → Appearance**, or from the CLI:
 
