@@ -14,7 +14,7 @@ from agent.tools_parse import has_tool_call_markup, parse_tool_call
 from daemon.config import assistant_settings
 from memory.store import get_store
 from seams import get_context
-from npu.thinking import extract_user_answer, sanitize_response
+from npu.thinking import extract_user_answer, ran_out_mid_thought, sanitize_response
 from research.events import set_research_callback
 from seams.prompt import Assembly, latest_context_digest
 from tools.goal_tools import register_goal_tools, render_goal
@@ -453,6 +453,21 @@ class AIAgent:
                             on_event,
                             "I could not complete that request. "
                             "Try asking again or check that web search (SearXNG) is running.",
+                        )
+                    elif ran_out_mid_thought(raw):
+                        # The model reasoned right up to the token limit and
+                        # never reached an answer. Saying "I could not produce
+                        # a response" is untrue and unactionable: it produced
+                        # plenty, and the fix is a bigger budget or a model
+                        # that does not think as hard.
+                        logger.warning(
+                            "model used all %d tokens reasoning without answering", 512
+                        )
+                        final = _emit_user_answer(
+                            on_event,
+                            "The model spent its whole reply thinking and never got to "
+                            "an answer. Try a shorter question, or pick a model that "
+                            "reasons less in Settings → Model.",
                         )
                     else:
                         final = _emit_user_answer(
