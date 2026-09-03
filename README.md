@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Your Jarvis — always on, on your NPU</strong><br />
-  Press Super+Space. A ~9B model on the Intel NPU helps you think, search, plan, and act.
+  Press Super+Space. An 8B model on the Intel NPU helps you think, search, plan, and act.
 </p>
 
 ## What is Keylane?
@@ -20,7 +20,7 @@ Keylane is a personal AI assistant that lives on your desktop:
 - Answers render as a **formatted canvas** — headline, sections, key/value rows, steps,
   and code blocks — not one wrapped paragraph
 - **Ask a follow-up** directly in the answer HUD without reopening the bar
-- A **curated 3–14B model** runs **always-on** on your **Intel NPU**, through either
+- A **curated 1.5–14B model** runs **always-on** on your **Intel NPU**, through either
   **OpenVINO GenAI** or **ONNX Runtime GenAI** — pick the runtime in Settings
 - **Import any model from Hugging Face** that either runtime can load
 - **Persistent memory** — Keylane remembers facts about you across sessions and recalls
