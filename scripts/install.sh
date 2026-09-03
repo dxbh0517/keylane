@@ -31,22 +31,57 @@ say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 systemctl --user stop keylane-daemon.service keylane-ui.service 2>/dev/null || true
 systemctl --user stop ai-gateway.service ai-launcher.service 2>/dev/null || true
 
-say "Installing system packages"
-if command -v dnf >/dev/null 2>&1; then
+# System packages need root, which means a password prompt. Skip it with
+# KEYLANE_SKIP_PACKAGES=1 when they are already installed — a re-install or an
+# upgrade does not need to ask again, and sudo has nothing to prompt on when
+# this runs from anything but a terminal.
+if [[ "${KEYLANE_SKIP_PACKAGES:-0}" != "1" ]] && command -v dnf >/dev/null 2>&1; then
+  say "Installing system packages"
   sudo dnf install -y \
     python3-gobject gtk4 gtk4-layer-shell libnotify portaudio ffmpeg \
     wl-clipboard wmctrl podman podman-compose || true
 fi
 
 # ── migrate an old install ───────────────────────────────────────────────
-# Everything irreplaceable lives in data/. Move that across and leave the old
-# tree alone rather than deleting someone's install out from under them.
+# Everything irreplaceable lives in data/, so that is what moves. It is also
+# the large thing: models and the compile cache run to tens of gigabytes, and
+# a machine with an assistant on it is quite likely not to have that much free
+# twice over. So this is a rename when both paths are on one filesystem —
+# instant, and it cannot run out of room — and only falls back to a copy when
+# they are not, where a copy is the only option anyway.
 if [[ -d "${LEGACY}/data" && ! -d "${BASE}/data" ]]; then
   say "Moving your data from ${LEGACY}"
   mkdir -p "${BASE}"
-  cp -a "${LEGACY}/data" "${BASE}/data"
-  echo "  copied ${LEGACY}/data -> ${BASE}/data"
-  echo "  the old tree is left at ${LEGACY}; remove it once you are happy"
+  if [[ "$(stat -c '%d' "${LEGACY}")" == "$(stat -c '%d' "$(dirname "${BASE}")")" ]]; then
+    mv "${LEGACY}/data" "${BASE}/data"
+    echo "  moved ${LEGACY}/data -> ${BASE}/data"
+  else
+    need=$(du -sk "${LEGACY}/data" | cut -f1)
+    free=$(df -Pk "${BASE}" | awk 'NR==2 {print $4}')
+    if (( free < need + 1048576 )); then
+      echo "!! ${LEGACY}/data is $((need / 1048576)) GB and only $((free / 1048576)) GB is free" >&2
+      echo "   at ${BASE}. Free some space, or move it yourself and re-run." >&2
+      exit 1
+    fi
+    cp -a "${LEGACY}/data" "${BASE}/data"
+    echo "  copied ${LEGACY}/data -> ${BASE}/data (different filesystem)"
+  fi
+  echo "  the old program tree is left at ${LEGACY}; remove it once you are happy"
+fi
+
+# The venv comes across too. It is disposable in principle and expensive in
+# practice — torch and whisper alone are several gigabytes — so re-creating it
+# would mean re-downloading all of that on a machine that may not have room.
+# A moved venv has stale absolute paths in its scripts and pyvenv.cfg, which
+# `venv --upgrade` rewrites without touching site-packages.
+if [[ -d "${LEGACY}/.venv" && ! -d "${BASE}/.venv" ]]; then
+  if [[ "$(stat -c '%d' "${LEGACY}")" == "$(stat -c '%d' "$(dirname "${BASE}")")" ]]; then
+    say "Reusing the existing virtualenv"
+    mkdir -p "${BASE}"
+    mv "${LEGACY}/.venv" "${BASE}/.venv"
+    python3 -m venv --system-site-packages --upgrade "${BASE}/.venv"
+    echo "  moved ${LEGACY}/.venv -> ${BASE}/.venv and repaired its paths"
+  fi
 fi
 
 say "Installing ${SRC} -> ${RELEASE}"
@@ -67,8 +102,11 @@ mv -Tf "${BASE}/.current.new" "${BASE}/current"
 if [[ ! -d "${BASE}/.venv" ]]; then
   python3 -m venv --system-site-packages "${BASE}/.venv"
 fi
-"${BASE}/.venv/bin/pip" install -U pip
-"${BASE}/.venv/bin/pip" install -r "${BASE}/current/requirements.txt"
+# `python -m pip` rather than the pip script: a venv that was moved here still
+# has the old path baked into its console scripts until they are rewritten,
+# and this form never reads them.
+"${BASE}/.venv/bin/python" -m pip install -U pip
+"${BASE}/.venv/bin/python" -m pip install -r "${BASE}/current/requirements.txt"
 
 DEST="${BASE}/current"
 
