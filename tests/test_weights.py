@@ -156,3 +156,70 @@ def test_complete_when_bins_present(tmp_path: Path):
     (model / "openvino_model.xml").write_text("<net/>", encoding="utf-8")
     (model / "openvino_model.bin").write_bytes(b"\0" * 16384)
     assert is_model_complete(model)
+
+
+def _fake_genai(monkeypatch, seen: dict):
+    """Stand in for openvino_genai so construction can be observed, not run."""
+    import sys
+    import types
+
+    class _Pipe:
+        def __init__(self, path, device, **kwargs):
+            seen["path"] = path
+            seen["device"] = device
+            seen["kwargs"] = kwargs
+
+    module = types.ModuleType("openvino_genai")
+    module.LLMPipeline = type("LLMPipeline", (_Pipe,), {})
+    module.VLMPipeline = type("VLMPipeline", (_Pipe,), {})
+    monkeypatch.setitem(sys.modules, "openvino_genai", module)
+    return module
+
+
+def test_create_pipeline_passes_the_declared_options(monkeypatch, tmp_path: Path):
+    from npu.pipeline_config import create_pipeline, pipeline_init_kwargs
+
+    seen: dict = {}
+    genai = _fake_genai(monkeypatch, seen)
+    cache = tmp_path / "cache"
+
+    pipe = create_pipeline(tmp_path / "model", "NPU", cache, "llm")
+    assert isinstance(pipe, genai.LLMPipeline)
+    assert seen["kwargs"] == pipeline_init_kwargs("NPU", cache, "llm")
+
+    pipe = create_pipeline(tmp_path / "model", "NPU", cache, "vlm")
+    assert isinstance(pipe, genai.VLMPipeline)
+    assert seen["kwargs"] == pipeline_init_kwargs("NPU", cache, "vlm")
+
+
+def test_probe_and_load_compile_the_same_thing(monkeypatch, tmp_path: Path):
+    """The invariant that broke: one constructor, not two spellings of one.
+
+    MAX_PROMPT_LEN is part of the compile cache key, so a probe that names a
+    different value is not a cheaper check of the same thing — it compiles a
+    blob the load cannot use, and the load then compiles again from scratch.
+    """
+    from npu.probe import _probe_source
+
+    for kind in ("llm", "vlm"):
+        source = _probe_source(kind)
+        assert "create_pipeline" in source
+        # Anything spelled out here is a value that can drift from the load's.
+        assert "MAX_PROMPT_LEN" not in source
+        assert "GENERATE_HINT" not in source
+        assert "1024" not in source
+
+
+def test_probe_child_can_import_the_keylane_tree():
+    from daemon.paths import ROOT
+    from npu.probe import _probe_env
+
+    assert _probe_env()["PYTHONPATH"].split(":")[0] == str(ROOT)
+
+
+def test_warm_timeout_covers_a_real_compile():
+    from npu.probe import WARM_TIMEOUT
+
+    # The probe carries the full-length compile now. The load it precedes had
+    # no deadline at all, so too tight a value here fails what used to pass.
+    assert WARM_TIMEOUT >= 3600

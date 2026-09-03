@@ -16,7 +16,11 @@ logger = logging.getLogger(__name__)
 
 _CACHE_OVERRIDE = os.environ.get("KEYLANE_NPU_CACHE_DIR") or ""
 PROBE_TIMEOUT = float(os.environ.get("KEYLANE_NPU_PROBE_TIMEOUT", "90"))
-WARM_TIMEOUT = float(os.environ.get("KEYLANE_NPU_WARM_TIMEOUT", "1800"))
+# The probe now compiles at the prompt length the load wants, so the long
+# first compile happens here rather than in the untimed load that followed it.
+# An LLM at MAX_PROMPT_LEN 4096 is minutes, not the seconds a 1024 probe took,
+# so the deadline has to cover the real work or it fails what used to pass.
+WARM_TIMEOUT = float(os.environ.get("KEYLANE_NPU_WARM_TIMEOUT", "3600"))
 VLM_WARM_TIMEOUT = float(os.environ.get("KEYLANE_NPU_VLM_WARM_TIMEOUT", "10800"))
 
 _VERSION_RE = re.compile(r'<openvino_version value="(\d+)\.(\d+)')
@@ -28,39 +32,32 @@ def warm_timeout_for(kind: PipelineKind) -> float:
 
 
 def _probe_source(kind: PipelineKind) -> str:
-    if kind == "vlm":
-        body = """
-device_props = {}
-if device.upper() == "NPU":
-    device_props["GENERATE_HINT"] = "FAST_COMPILE"
-if cache:
-    device_props["CACHE_DIR"] = cache
-if device_props:
-    config = {"DEVICE_PROPERTIES": {device: device_props}}
-    ov_genai.VLMPipeline(path, device, config=config)
-else:
-    ov_genai.VLMPipeline(path, device)
-"""
-    else:
-        body = """
-kwargs = {}
-if device.upper() == "NPU":
-    kwargs["MAX_PROMPT_LEN"] = 1024
-    kwargs["GENERATE_HINT"] = "FAST_COMPILE"
-if cache:
-    kwargs["CACHE_DIR"] = cache
-if kwargs:
-    ov_genai.LLMPipeline(path, device, **kwargs)
-else:
-    ov_genai.LLMPipeline(path, device)
-"""
+    """The child builds the pipeline the daemon is about to build.
+
+    It imports the constructor rather than restating it, so the compile the
+    probe pays for is the compile the load then finds in the cache. When the
+    two were written out separately they drifted apart, and the probe's work
+    was thrown away every time.
+    """
     return f"""
 import sys
+from pathlib import Path
+from npu.pipeline_config import create_pipeline
+
 path, device, cache = sys.argv[1], sys.argv[2], sys.argv[3]
-import openvino_genai as ov_genai
-{body}
+create_pipeline(Path(path), device, Path(cache) if cache else None, "{kind}")
 print("{OK_MARKER}")
 """
+
+
+def _probe_env() -> dict[str, str]:
+    """The child imports from the Keylane tree, so it has to be on the path."""
+    from daemon.paths import ROOT
+
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{ROOT}{os.pathsep}{existing}" if existing else str(ROOT)
+    return env
 
 
 def cache_dir(root: Path | None = None) -> Path:
@@ -145,6 +142,7 @@ def probe(
         timeout=timeout,
         timeout_message=_timeout_message(pipeline_kind, timeout),
         on_tick=on_tick,
+        env=_probe_env(),
     )
 
 
