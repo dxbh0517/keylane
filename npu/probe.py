@@ -22,15 +22,21 @@ PROBE_TIMEOUT = float(os.environ.get("KEYLANE_NPU_PROBE_TIMEOUT", "90"))
 # deadline has to cover it.
 #
 # These used to be one hour and three hours, set when a 4096-token compile
-# really did take half an hour. Measured on 2026-09-03 with OpenVINO 2026.3 on
-# an NPU 3720, a cold 7B compile is 60 seconds and MAX_PROMPT_LEN barely moves
-# it — since 2025.3 the pipeline chunks the prefill instead of compiling a
-# static graph that wide. An hour of headroom over a minute of work is not
-# caution, it is an hour of a wedged compile looking like a slow one.
+# really did take half an hour. Measured on 2026-09-03 on an NPU 3720:
 #
-# Ten minutes is roughly ten times the measured cost, which leaves room for a
-# 14B on a slower NPU and still fails visibly. Re-measure with
-# `scripts/npu-bench.py` rather than adjusting these by feel; it writes what it
+#   OpenVINO 2026.3 + Fedora's driver 1.32.0 / compiler 2025.1 : 60 s
+#   OpenVINO 2026.2.1 + the matched v1.35.0 user-space stack   :  6.8 s
+#
+# So most of that minute was a driver and a compiler five releases apart, and
+# a working stack compiles a 7B in seconds. MAX_PROMPT_LEN barely moves either
+# figure — since 2025.3 the pipeline chunks the prefill instead of compiling a
+# static graph that wide.
+#
+# Ten minutes is far more headroom than 6.8 s needs, and deliberately so: this
+# ceiling also has to cover a larger model, a slower NPU, and the mismatched
+# stack above, which is the configuration someone hits before they know to fix
+# it. It is sized to fail visibly rather than to fit this machine. Re-measure
+# with `scripts/npu-bench.py` rather than adjusting by feel; it writes what it
 # found to data/bench.json so the next person has a number instead of a guess.
 WARM_TIMEOUT = float(os.environ.get("KEYLANE_NPU_WARM_TIMEOUT", "600"))
 # A VLM compiles a vision tower as well, and that part is genuinely slower.
