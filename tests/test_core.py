@@ -284,46 +284,28 @@ def test_centering_clamps_to_the_screen():
     assert centered_geometry(3000, 2000, (1920, 1080)) == (0, 0)
 
 
-def test_scaling_a_rectangle_leaves_the_position_alone():
-    """The window manager scales the position itself and takes the size as given.
+def test_scaling_a_rectangle_scales_both_position_and_size():
+    """wmctrl wants device pixels for both, whatever its readback claims.
 
-    Measured on mutter with XWayland at scale 2: asking for
-    (1200, 620, 1440, 1160) landed the window at (2400, 1240, 1440, 1160) —
-    size exact, position doubled. Scaling both, which the code used to do, put
-    the launcher and Settings at twice the offset they asked for and pinned
-    both into the bottom-right corner of a HiDPI screen.
+    `wmctrl -lG` reports a doubled position, which once persuaded me the
+    position should go out unscaled. It should not: dropping the scale factor
+    moves every window to half its offset, into the top-left corner.
     """
     from ui.placement import scaled_geometry
 
-    assert scaled_geometry(600, 310, 720, 580, 2) == (600, 310, 1440, 1160)
-    # At 1x there is nothing to scale and the rectangle passes through.
+    assert scaled_geometry(600, 310, 720, 580, 2) == (1200, 620, 1440, 1160)
     assert scaled_geometry(600, 310, 720, 580, 1) == (600, 310, 720, 580)
 
 
-def test_a_centred_window_lands_in_the_middle_at_any_scale():
-    """Whatever the scale, the window ends up centred on the physical screen.
-
-    The window manager is modelled here rather than assumed: it multiplies the
-    position it is given by the scale factor and uses the size verbatim. That
-    is the measured behaviour, and it is the whole reason the position must go
-    out unscaled.
-    """
+def test_a_centred_window_has_equal_gaps_on_the_device():
+    """Centred stays centred once everything is in device pixels."""
     from ui.placement import centered_geometry, scaled_geometry
-
-    def as_the_wm_places_it(rect, scale):
-        x, y, w, h = rect
-        return x * scale, y * scale, w, h
 
     logical_screen = (1920, 1200)
     width, height = 720, 580
     for scale in (1, 2, 3):
         x, y = centered_geometry(width, height, logical_screen)
-        on_screen = as_the_wm_places_it(
-            scaled_geometry(x, y, width, height, scale), scale
-        )
-        px, py, pw, ph = on_screen
+        px, py, pw, ph = scaled_geometry(x, y, width, height, scale)
         screen_w, screen_h = (v * scale for v in logical_screen)
-        # Equal gap either side is what "centred" means, and what the old
-        # double-scaled position got wrong by exactly a factor of the scale.
         assert abs((screen_w - pw) - 2 * px) <= scale
         assert abs((screen_h - ph) - 2 * py) <= scale

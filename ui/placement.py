@@ -95,20 +95,22 @@ def scaled_geometry(
 ) -> tuple[int, int, int, int]:
     """Turn a logical rectangle into the one ``wmctrl -e`` wants.
 
-    The scale factor applies to the size and *not* to the position, which is
-    not a guess — it is what the window manager does. Measured on mutter with
-    XWayland at scale 2, asking for one rectangle and reading back another:
+    Both the position and the size are scaled. That is easy to talk yourself
+    out of, so here is the trap, written down.
 
-        asked (1200, 620, 1440, 1160)  ->  landed (2400, 1240, 1440, 1160)
-        asked ( 600, 310, 1440, 1160)  ->  landed (1200,  620, 1440, 1160)
+    ``wmctrl -lG`` **reports a position double the one actually in effect**,
+    while reporting the size correctly. Ask it to put a window at 900 and it
+    will report 1800 — and the window is at 900, where you asked for it. Take
+    that readback as truth and the arithmetic says every window sits at twice
+    the offset it should, which invites "fixing" it by dropping the scale
+    factor from the position. Do that and the windows really do move to half
+    the offset, into the top-left corner, which is how you find out the
+    readback was lying and this line was right all along.
 
-    The size comes back exactly as asked; the position comes back doubled. So
-    the window manager scales the position itself and takes the size literally,
-    and a caller that scales both puts every window at twice the offset it
-    wanted. That is what pinned the launcher and Settings into the bottom-right
-    corner of a HiDPI screen, each one flush against two edges.
+    Trust ``wmctrl -e`` going in. Do not trust ``wmctrl -lG``'s position coming
+    back out. Verify placement with a screenshot, never with a query.
     """
-    return x, y, width * scale, height * scale
+    return x * scale, y * scale, width * scale, height * scale
 
 
 def floating_geometry(
