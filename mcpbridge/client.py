@@ -124,6 +124,21 @@ def _is_disabled(tool_name: str) -> bool:
     return tool_name in disabled
 
 
+def tool_input_schema(tool: Any) -> dict[str, Any]:
+    """The tool's JSON Schema, across SDK generations.
+
+    ``mcp`` 2.0 renamed this attribute to ``input_schema`` and kept
+    ``inputSchema`` only as a wire alias, so reading the camelCase name off the
+    model raises AttributeError. Registration used to do exactly that, and the
+    failure looked like nothing: ``probe_mcp_server`` only counts tools, so a
+    server stayed green in health while zero of its tools reached the model.
+    """
+    schema = getattr(tool, "input_schema", None)
+    if schema is None:
+        schema = getattr(tool, "inputSchema", None)
+    return schema or {"type": "object", "properties": {}}
+
+
 def _result_text(result: Any) -> str:
     parts = [c.text for c in result.content if hasattr(c, "text")]
     return "\n".join(parts)
@@ -150,6 +165,7 @@ async def load_mcp_tools(registry: ToolRegistry) -> int:
             async with _lock:
                 session = await _get_session(sid, srv)
                 tools = await session.list_tools()
+            registered = 0
             for tool in tools.tools:
                 name = f"mcp.{sid}.{tool.name}"
                 if _is_disabled(name):
@@ -163,16 +179,30 @@ async def load_mcp_tools(registry: ToolRegistry) -> int:
                 ) -> str:
                     return await _call_tool(_sid, _srv, _tool, kwargs)
 
-                registry.register(
-                    Tool(
-                        name=name,
-                        description=tool.description or f"MCP tool {tool.name}",
-                        parameters=tool.inputSchema or {"type": "object", "properties": {}},
-                        handler=_handler,
+                # Per tool, so one unreadable entry costs that tool and not the
+                # other twenty the server offers.
+                try:
+                    registry.register(
+                        Tool(
+                            name=name,
+                            description=tool.description or f"MCP tool {tool.name}",
+                            parameters=tool_input_schema(tool),
+                            handler=_handler,
+                        )
                     )
-                )
+                except Exception:  # noqa: BLE001
+                    logger.exception("MCP %s: skipping tool %s", sid, tool.name)
+                    continue
+                registered += 1
                 count += 1
-            logger.info("MCP server %s (%s): %s tools", sid, server_transport(srv), len(tools.tools))
+            offered = len(tools.tools)
+            if registered < offered:
+                logger.warning(
+                    "MCP server %s (%s): registered %s of %s tools",
+                    sid, server_transport(srv), registered, offered,
+                )
+            else:
+                logger.info("MCP server %s (%s): %s tools", sid, server_transport(srv), registered)
         except Exception:  # noqa: BLE001
             logger.exception("failed to load MCP server %s", sid)
     return count

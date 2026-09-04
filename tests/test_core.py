@@ -183,6 +183,58 @@ def test_an_http_server_without_a_url_is_refused(isolated_settings, monkeypatch)
         add_mcp_server({"id": "broken", "transport": "http"})
 
 
+def test_a_tools_schema_is_read_off_the_sdk_model():
+    """The regression that silently emptied every MCP server.
+
+    ``mcp`` 2.0 renamed this attribute to ``input_schema``; ``inputSchema``
+    survives only as a wire alias, so reading it off the model raises. Building
+    the Tool through the SDK is the point of the test — a hand-rolled stub with
+    both names spelled out would pass no matter which one the code reads.
+    """
+    from mcp.types import Tool as SdkTool
+    from mcpbridge.client import tool_input_schema
+
+    schema = {"type": "object", "properties": {"folderId": {"type": "string"}}}
+    tool = SdkTool(name="list_threads", description="", inputSchema=schema)
+
+    assert tool_input_schema(tool) == schema
+
+
+def test_a_server_registers_every_tool_it_offers(monkeypatch):
+    """Registration used to abort on the first tool and report nothing wrong."""
+    import asyncio
+
+    from mcp.types import Tool as SdkTool
+
+    from mcpbridge import client as mcp_client
+    from tools.registry import ToolRegistry
+
+    offered = [
+        SdkTool(name=f"tool_{i}", description="", inputSchema={"type": "object"})
+        for i in range(3)
+    ]
+
+    class _Session:
+        async def list_tools(self):
+            return type("Result", (), {"tools": offered})()
+
+    monkeypatch.setattr(
+        mcp_client, "mcp_settings", lambda: {"servers": [{"id": "mail", "transport": "http"}]}
+    )
+    monkeypatch.setattr(mcp_client, "_is_disabled", lambda name: False)
+
+    async def _session(sid, srv):
+        return _Session()
+
+    monkeypatch.setattr(mcp_client, "_get_session", _session)
+
+    registry = ToolRegistry()
+    count = asyncio.run(mcp_client.load_mcp_tools(registry))
+
+    assert count == 3
+    assert sorted(registry._tools) == ["mcp.mail.tool_0", "mcp.mail.tool_1", "mcp.mail.tool_2"]
+
+
 # ── one transcript, balanced windows ─────────────────────────────────────
 
 
