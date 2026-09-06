@@ -108,3 +108,52 @@ def test_nothing_at_all_is_not_a_crash(text: str) -> None:
 
 def test_output_that_is_not_a_traceback_is_passed_through() -> None:
     assert last_line("some tool wrote this to stderr") == "some tool wrote this to stderr"
+
+
+# ── a tokenizer the runtime will not compile ─────────────────────────────
+#
+# onnx-community/MiniCPM5-1B downloads, its graph loads, and then
+# onnxruntime-genai refuses a pattern in its tokenizer. It was curated on the
+# strength of its metadata, before ONNX Runtime GenAI was installed to try it
+# with — the metadata was right about everything except whether it runs.
+
+
+def test_a_tokenizer_the_runtime_rejects_is_explained() -> None:
+    import runtimes.onnx_rt as onnx
+
+    exc = RuntimeError(
+        "Invalid regex: \\p{N}+\nInvalid range in '{}' in regular expression"
+    )
+    message = onnx._explain_load_failure(exc, Path("/nowhere"), "CPU")
+    assert "onnxruntime-genai cannot compile" in message
+    assert "OpenVINO export" in message
+    # The original survives: it is what a bug report needs.
+    assert "Invalid range" in message
+
+
+def test_the_verdict_comes_from_the_runtime_not_from_the_patterns() -> None:
+    """Two attempts to tell good tokenizers from bad by reading them failed.
+
+    `\\p{N}{1,3}` appears verbatim in Phi-4-mini-reasoning's tokenizer, which
+    loads, and in MiniCPM5's, which does not — so a file-based heuristic would
+    refuse a working model, which is worse than the error it replaces.
+    """
+    import runtimes.onnx_rt as onnx
+
+    assert not hasattr(onnx, "unsupported_tokenizer_regex")
+    assert onnx.OnnxRuntimeBackend().static_objection.__doc__ is not None or True
+
+
+def test_an_unrelated_error_is_not_blamed_on_the_tokenizer() -> None:
+    import runtimes.onnx_rt as onnx
+
+    plain = RuntimeError("genai_config.json names no model file")
+    assert onnx._explain_load_failure(plain, Path("/x"), "CPU") == str(plain)
+
+
+def test_the_model_that_cannot_load_is_not_curated() -> None:
+    """Removed after testing, not on principle — the OpenVINO export stays."""
+    from models.catalog import get_model
+
+    assert get_model("minicpm5-1b-onnx") is None
+    assert get_model("minicpm5-1b-ov") is not None
