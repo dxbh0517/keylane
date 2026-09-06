@@ -40,9 +40,13 @@ INFO = RuntimeInfo(
 class OpenVinoPipeline:
     """A compiled ``LLMPipeline`` or ``VLMPipeline``, wrapped for the seam."""
 
-    def __init__(self, pipe: Any, kind: PipelineKind) -> None:
+    def __init__(self, pipe: Any, kind: PipelineKind, model_dir: Path | None = None) -> None:
         self._pipe = pipe
         self.kind: PipelineKind = kind
+        # Where the export lives, so the chat template beside it can be read
+        # with transformers when the OV tokenizer's API is not expressive
+        # enough — see _render_without_thinking.
+        self._model_dir = model_dir
         # A VLM pipeline accumulates conversation state across generate()
         # calls, and a call that throws leaves that state behind — see
         # _clear_carried_state.
@@ -101,6 +105,10 @@ class OpenVinoPipeline:
         Returns None when the export carries no template, so the caller can
         fall back rather than fail.
         """
+        rendered = self._render_without_thinking(messages)
+        if rendered is not None:
+            return rendered
+
         tokenizer = self._tokenizer()
         if tokenizer is None:
             return None
@@ -111,6 +119,27 @@ class OpenVinoPipeline:
         except Exception:  # noqa: BLE001
             logger.debug("apply_chat_template failed; falling back", exc_info=True)
             return None
+
+    def _render_without_thinking(self, messages: list[dict[str, str]]) -> str | None:
+        """Render the export's own template with `enable_thinking` set false.
+
+        OpenVINO GenAI's `Tokenizer.apply_chat_template` takes a history, a
+        generation flag and an optional template override — there is nowhere to
+        put a template *variable*, so a model whose template defaults to
+        thinking-on cannot be asked for anything else. Measured on
+        MiniCPM5-1B-int4-openvino, the first tokens of a plain "Say OK." were
+        `<think>\\nHmm, the user is saying...`: reasoning is the default, not
+        an edge case, and one Keylane turn is several model calls.
+
+        Returns None whenever the export ships no template, and the caller
+        falls back to the tokenizer's own rendering.
+        """
+        from runtimes.chat_template import render_for
+        from runtimes.onnx_rt import ENABLE_THINKING
+
+        if ENABLE_THINKING or self._model_dir is None:
+            return None
+        return render_for(self._model_dir, messages, enable_thinking=False)
 
     def count_tokens(self, text: str) -> int | None:
         """The real token count, from the tokenizer that will do the encoding."""
@@ -207,7 +236,6 @@ class OpenVinoBackend:
     def installed(self) -> tuple[bool, str]:
         try:
             import openvino as ov  # noqa: PLC0415
-
             import openvino_genai  # noqa: F401,PLC0415
         except ImportError as exc:
             return False, str(exc)
@@ -267,7 +295,9 @@ class OpenVinoBackend:
     ) -> OpenVinoPipeline:
         # Same constructor the probe just ran, so this finds the probe's blob
         # in the cache instead of compiling a second one.
-        return OpenVinoPipeline(create_pipeline(model_dir, device, cache, kind), kind)
+        return OpenVinoPipeline(
+            create_pipeline(model_dir, device, cache, kind), kind, model_dir
+        )
 
     def prompt_budget_chars(self, device: str, kind: PipelineKind, model_dir: Path) -> int:
         return prompt_budget_chars(device, kind)

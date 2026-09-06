@@ -86,6 +86,17 @@ def _strip_tool_markup(text: str) -> str:
         flags=re.DOTALL | re.IGNORECASE,
     )
     text = re.sub(r"<function_call>.*", "", text, flags=re.DOTALL | re.IGNORECASE)
+    # The MiniCPM5 dialect: `<function name="x"><param name="y">v</param></function>`.
+    # Without this the user reads the raw call in the answer card.
+    text = re.sub(
+        r"<function\s+name\s*=\s*[\"\'][^\"\']+[\"\']\s*>.*?</function\s*>",
+        "",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    text = re.sub(
+        r"<function\s+name\s*=.*", "", text, flags=re.DOTALL | re.IGNORECASE
+    )
     return text.strip()
 
 

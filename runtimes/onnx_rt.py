@@ -54,6 +54,25 @@ _MIN_MODEL_BYTES = 8192
 # Context length assumed when genai_config.json does not declare one.
 _FALLBACK_CONTEXT_TOKENS = 4096
 
+# What a *declared* context does not tell you is whether this machine can fill
+# it. MiniCPM5-1B declares 131072, which is true of the model and useless as a
+# budget: at that length the prompt alone is ~340k characters, and prefilling
+# it on a CPU takes minutes per turn. The declared context stays the hard
+# ceiling; this is the practical one, and the smaller of the two wins.
+# Override with KEYLANE_ONNX_MAX_PROMPT_TOKENS.
+MAX_PRACTICAL_PROMPT_TOKENS = int(
+    os.environ.get("KEYLANE_ONNX_MAX_PROMPT_TOKENS", "8192")
+)
+
+# Models with a hybrid `<think>` mode default to thinking *on*. One ReAct turn
+# is several model calls, so on a small local model that is the difference
+# between an answer and a wait — and Keylane strips the reasoning before the
+# user ever sees it, so the tokens buy nothing here. Set
+# KEYLANE_ENABLE_THINKING=1 to leave the model's own default alone.
+ENABLE_THINKING = os.environ.get("KEYLANE_ENABLE_THINKING", "0").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
 _TOKENIZER_FILES = ("tokenizer.json", "tokenizer.model", "spiece.model", "vocab.json")
 
 # Loading a Hugging Face tokenizer costs a second or two; the chat template it
@@ -190,6 +209,18 @@ def context_length(config: dict[str, Any]) -> int:
     return _FALLBACK_CONTEXT_TOKENS
 
 
+def usable_prompt_tokens(config: dict[str, Any]) -> int:
+    """The prompt budget: the declared context, capped at what is practical.
+
+    Kept separate from :func:`context_length` because the two answer different
+    questions. `context_length` is what the model may attend to and bounds
+    generation; this is what Keylane is willing to build, and on a long-context
+    model those numbers are three orders of magnitude apart.
+    """
+    declared = max(context_length(config) - RESERVE_TOKENS, 256)
+    return min(declared, MAX_PRACTICAL_PROMPT_TOKENS)
+
+
 def _is_vision_model(config: dict[str, Any]) -> bool:
     model = config.get("model")
     return isinstance(model, dict) and isinstance(model.get("vision"), dict)
@@ -300,15 +331,27 @@ class OnnxPipeline:
         """
         if self._model_dir is None:
             return None
+
+        if not ENABLE_THINKING:
+            # Direct render first: it is the only route that can pass a
+            # template variable, and it does not need the tokenizer class to
+            # be one this transformers knows.
+            from runtimes.chat_template import render_for
+
+            rendered = render_for(self._model_dir, messages, enable_thinking=False)
+            if rendered is not None:
+                return rendered
+
         try:
             hf = _hf_tokenizer(self._model_dir)
             if hf is None or not getattr(hf, "chat_template", None):
                 return None
-            return str(
-                hf.apply_chat_template(
-                    list(messages), tokenize=False, add_generation_prompt=True
-                )
-            )
+            kwargs: dict[str, Any] = {"tokenize": False, "add_generation_prompt": True}
+            if not ENABLE_THINKING:
+                # Harmless on a template that does not read it: extra kwargs go
+                # into the render context, and one nothing references is unused.
+                kwargs["enable_thinking"] = False
+            return str(hf.apply_chat_template(list(messages), **kwargs))
         except Exception:  # noqa: BLE001
             logger.debug("apply_chat_template failed; falling back", exc_info=True)
             return None
@@ -556,13 +599,11 @@ class OnnxRuntimeBackend:
         )
 
     def prompt_budget_tokens(self, device: str, kind: PipelineKind, model_dir: Path) -> int:
-        """The model's own declared context, less room for the reply."""
-        return max(context_length(read_genai_config(model_dir)) - RESERVE_TOKENS, 256)
+        """What this machine can actually prefill, not what the model declares."""
+        return usable_prompt_tokens(read_genai_config(model_dir))
 
     def prompt_budget_chars(self, device: str, kind: PipelineKind, model_dir: Path) -> int:
-        tokens = context_length(read_genai_config(model_dir))
-        usable = max(tokens - RESERVE_TOKENS, 256)
-        return int(usable * CHARS_PER_TOKEN)
+        return int(usable_prompt_tokens(read_genai_config(model_dir)) * CHARS_PER_TOKEN)
 
     # ── Hugging Face repos ───────────────────────────────────────────────
 
