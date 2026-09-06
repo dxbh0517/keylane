@@ -2341,6 +2341,14 @@ class SettingsWindow(Gtk.Window):
                 f"(you have {status.get('current')})."
             )
             self._install_btn.set_sensitive(True)
+        elif status.get("ahead"):
+            # Saying "X is the latest" here is simply untrue, and it is the
+            # state a released-but-untagged build sits in.
+            self._update_status.set_text(
+                f"{status.get('current')} — newer than the latest release "
+                f"({status.get('latest_version')}). Nothing to install."
+            )
+            self._install_btn.set_sensitive(False)
         else:
             detail = str(status.get("detail") or "")
             current = status.get("current", "?")

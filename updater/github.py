@@ -186,6 +186,11 @@ class UpdateStatus:
     checked_at: float = 0.0
     install: str = ""
     detail: str = ""
+    # The running build is newer than anything published. Distinct from
+    # `available == False`, which otherwise covers both "you are current" and
+    # "you are ahead of every release" — and rendering the second as the first
+    # is how a version bump that was never tagged stays invisible for weeks.
+    ahead: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -207,22 +212,37 @@ def check_for_update(channel: str = DEFAULT_CHANNEL, *, force: bool = False) -> 
             detail="no published release found, or GitHub could not be reached",
         )
 
-    available = release.is_newer
+    # Explicitly against VERSION, so `current`, `available` and `ahead` in
+    # the returned status are all derived from one value.
+    available = is_newer(release.version, VERSION)
+    ahead = False
     if channel == "main":
         # The edge channel compares commits, not versions: a checkout already
         # at that commit is not behind.
         head = git_revision()
         available = bool(head) and not release.version.endswith(head)
+    else:
+        # Strictly newer than the newest release. This is the normal state
+        # between a version bump and the tag that publishes it, and it must be
+        # said out loud: the alternative is telling someone running 0.7.0 that
+        # 0.7.0 is the latest while the newest release is 0.5.0.
+        ahead = is_newer(VERSION, release.version)
 
     return UpdateStatus(
         current=VERSION,
         channel=channel,
         available=available,
+        ahead=ahead,
         latest_version=release.version,
         tag=release.tag,
         notes=release.notes,
         html_url=release.html_url,
         checked_at=checked_at,
         install=shape.name,
+        detail=(
+            f"this build is newer than the latest release ({release.version})"
+            if ahead
+            else ""
+        ),
         extra={"verified_download": bool(release.sha256)},
     )

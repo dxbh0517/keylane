@@ -55,6 +55,12 @@ def main() -> int:
         channel = str(get_section("updates").get("channel", "stable"))
 
     status = check_for_update(channel, force=True)
+    if status.ahead:
+        print(
+            f"{status.current} is newer than the latest release on the "
+            f"{channel} channel ({status.latest_version}). Nothing to install."
+        )
+        return 0
     if not status.available:
         detail = f" — {status.detail}" if status.detail else ""
         print(f"Up to date on the {channel} channel{detail}.")

@@ -292,3 +292,56 @@ def test_a_dirty_checkout_is_not_merged_over(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setattr("updater.apply._git", lambda *a, **k: _Result())
     with pytest.raises(UpdateError, match="uncommitted changes"):
         _update_checkout(tmp_path, lambda _m: None)
+
+
+# ── being ahead of every published release ───────────────────────────────
+#
+# `updater/version.py` went 0.5.0 -> 0.5.1 -> 0.6.0 -> 0.7.0 while the newest
+# published release stayed at v0.5.0, because bumping the version and tagging
+# it were separate steps and only the first was ever done. The check reported
+# "nothing to install", correctly — and Settings rendered that as "0.6.0 is
+# the latest", which is not the same claim and was not true.
+
+
+def _status(monkeypatch, *, running: str, published: str):
+    import updater.github as github
+    import updater.version as version
+
+    # Both: `check_for_update` reports `github.VERSION`, while `Release.is_newer`
+    # defaults to `version.VERSION`. They are the same constant in a real
+    # process, and patching one would quietly test a build that cannot exist.
+    monkeypatch.setattr(version, "VERSION", running)
+    monkeypatch.setattr(github, "VERSION", running)
+    monkeypatch.setattr(github, "latest", lambda channel, force=False: _release(tag=f"v{published}"))
+    monkeypatch.setattr(github, "_read_state", lambda: {})
+    return github.check_for_update("stable")
+
+
+def test_a_build_newer_than_every_release_says_so(monkeypatch) -> None:
+    status = _status(monkeypatch, running="0.7.0", published="0.5.0")
+    assert status.ahead
+    assert not status.available
+    assert "newer than the latest release" in status.detail
+
+
+def test_running_the_latest_release_is_not_ahead(monkeypatch) -> None:
+    status = _status(monkeypatch, running="0.5.0", published="0.5.0")
+    assert not status.ahead
+    assert not status.available
+    assert status.detail == ""
+
+
+def test_a_real_update_is_neither_ahead_nor_silent(monkeypatch) -> None:
+    status = _status(monkeypatch, running="0.5.0", published="0.6.0")
+    assert status.available
+    assert not status.ahead
+
+
+def test_ahead_is_reported_to_the_ui(monkeypatch) -> None:
+    """Settings reads this dict; the flag has to survive the round trip."""
+    from dataclasses import asdict
+
+    payload = asdict(_status(monkeypatch, running="0.7.0", published="0.5.0"))
+    assert payload["ahead"] is True
+    assert payload["current"] == "0.7.0"
+    assert payload["latest_version"] == "0.5.0"
