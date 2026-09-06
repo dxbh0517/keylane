@@ -106,6 +106,7 @@ Keylane can run a local model through two inference stacks. Pick one in
 | --- | --- | --- |
 | **OpenVINO GenAI** (default) | OpenVINO IR exports — repos named `*-int4-ov` | in `requirements.txt` |
 | **ONNX Runtime GenAI** | ONNX exports with a `genai_config.json` | `pip install onnxruntime-genai onnxruntime-openvino` |
+| **… on an NVIDIA GPU** | the same, through CUDA | add `pip install onnxruntime-genai-cuda` |
 
 The runtime is a property of the export, not a preference: an `*-int4-ov` repo
 holds OpenVINO IR and only OpenVINO GenAI can load it. ONNX Runtime reaches the
@@ -116,13 +117,47 @@ package is for — without it, ONNX models run on CPU only.
 > the one `openvino-genai` wants. If OpenVINO GenAI stops loading afterwards,
 > install the two runtimes in separate virtualenvs and keep the one you use.
 
-**Device** is chosen per runtime in the same panel (`NPU` / `GPU` / `CPU`, plus
-`AUTO` on ONNX Runtime, which keeps whatever provider the model shipped with).
-Only devices this machine actually has *and* OpenVINO can compile for are
-selectable — on a laptop with a discrete NVIDIA card OpenVINO enumerates it as
-`GPU`, and picking it would start a compile that cannot finish, so it is shown
-greyed with the reason. Changing the device invalidates the compile cache, so
-the next load is slow either way.
+**Device** is chosen per runtime in the same panel (`NPU` / `GPU` / `CUDA` /
+`CPU`, plus `AUTO` on ONNX Runtime, which keeps whatever provider the model
+shipped with). Changing the device invalidates the compile cache, so the next
+load is slow either way.
+
+`GPU` and `CUDA` are not two names for the same thing, and the difference is
+the reason a discrete card used to be unreachable. `GPU` means an **Intel** GPU
+through the OpenVINO EP. OpenVINO also enumerates an NVIDIA card as `GPU` and
+then cannot compile for it, so picking it would start a compile that never
+finishes — it is shown greyed with the reason. `CUDA` is that same card
+reached through ONNX Runtime's CUDA provider, which is the one path that
+actually runs a model on it.
+
+CUDA is a *device* of the ONNX runtime rather than a runtime of its own,
+because that is what it is: an execution provider of the same stack, exactly as
+OpenVINO is. A separate backend would be a second copy of `runtimes/onnx_rt.py`.
+
+Each device is probed by the runtime that owns it. Asking OpenVINO whether CUDA
+is available — which is what Keylane used to do for every runtime — reports the
+only usable path to a discrete GPU as "not present on this machine".
+
+```
+ONNX Runtime GenAI:
+   ok NPU  — Intel(R) AI Boost
+   NO GPU  — NVIDIA GeForce RTX 5090 (dGPU)   not an Intel device; OpenVINO cannot compile for it
+   NO CUDA — NVIDIA GeForce RTX 5090          onnxruntime-genai has no CUDA provider (pip install onnxruntime-genai-cuda)
+   ok CPU  — Intel(R) Core(TM) Ultra 9 275HX
+```
+
+### Models are listed for the device they would land on
+
+Settings shows the models that suit the selected device and holds the rest
+behind **Show all (N not suited to …)**, with the reason on each. Two things
+make a model unsuited, and neither makes it a bad model:
+
+- an asymmetric INT4 export with the **NPU** selected — it loads and then runs
+  far below the hardware, which is exactly what CPU and GPU are for;
+- OpenVINO IR with **CUDA** selected — an NVIDIA GPU needs an ONNX export.
+
+Anything already downloaded, or currently active, is always listed whatever the
+recommendation: it is already yours.
 
 To see what a model really costs on your hardware rather than guessing:
 

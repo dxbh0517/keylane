@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -34,12 +35,18 @@ INFO = RuntimeInfo(
     id="onnxruntime",
     name="ONNX Runtime GenAI",
     summary=(
-        "Runs ONNX exports (genai_config.json) through the OpenVINO execution "
-        "provider. Opens up the ONNX model zoo — Microsoft's Phi builds and "
-        "anything else exported for onnxruntime-genai."
+        "Runs ONNX exports (genai_config.json). Reaches Intel silicon through "
+        "the OpenVINO execution provider and an NVIDIA card through CUDA, so "
+        "it is the one runtime here that can use a discrete GPU."
     ),
-    install_hint="pip install onnxruntime-genai onnxruntime-openvino",
-    devices=("NPU", "GPU", "CPU", "AUTO"),
+    install_hint=(
+        "pip install onnxruntime-genai onnxruntime-openvino "
+        "(add onnxruntime-genai-cuda for an NVIDIA GPU)"
+    ),
+    # CUDA is a device of this runtime, not a runtime of its own: it is an
+    # execution provider of the same stack, exactly as OpenVINO is, and a
+    # separate backend would be a second copy of this module.
+    devices=("NPU", "GPU", "CUDA", "CPU", "AUTO"),
     default_device="NPU",
 )
 
@@ -231,7 +238,53 @@ def _is_vision_model(config: dict[str, Any]) -> bool:
 # Keylane's device names, mapped onto what the OpenVINO EP calls them. AUTO
 # means "leave the config exactly as the model shipped it", which is the escape
 # hatch for a build that was exported for some other provider entirely.
+#
+# `GPU` here means an *Intel* GPU through the OpenVINO EP. A discrete NVIDIA
+# card is `CUDA` and goes to a different provider entirely — the distinction
+# matters because OpenVINO happily enumerates an NVIDIA card as "GPU" and then
+# cannot compile for it.
 _OPENVINO_DEVICES = {"NPU": "NPU", "GPU": "GPU", "CPU": "CPU"}
+CUDA_DEVICE = "CUDA"
+
+
+def nvidia_present() -> bool:
+    """Whether an NVIDIA driver is loaded. Cheap, and no CUDA import."""
+    return Path("/proc/driver/nvidia/version").exists() or bool(
+        shutil.which("nvidia-smi")
+    )
+
+
+def cuda_provider_available() -> bool:
+    """Whether the installed onnxruntime-genai can actually target CUDA.
+
+    The CUDA execution provider ships in a *different wheel* from the default
+    one (`onnxruntime-genai-cuda`), so having onnxruntime-genai importable says
+    nothing about whether CUDA is reachable. Asking the package is the only
+    honest answer; a driver being present is not one.
+    """
+    try:
+        import onnxruntime_genai as og  # noqa: PLC0415
+    except ImportError:
+        return False
+    # Newer builds expose the provider list; older ones do not, and there the
+    # append is the only way to find out — so assume yes and let build_config
+    # report the real failure rather than refusing up front.
+    providers = getattr(og, "get_available_providers", None)
+    if providers is None:
+        return True
+    try:
+        return any("cuda" in str(name).lower() for name in providers())
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def cuda_status() -> tuple[bool, str]:
+    """``(usable, reason)`` for the CUDA device on this machine."""
+    if not nvidia_present():
+        return False, "no NVIDIA driver on this machine"
+    if not cuda_provider_available():
+        return False, "onnxruntime-genai has no CUDA provider (pip install onnxruntime-genai-cuda)"
+    return True, ""
 
 
 def build_config(model_dir: Path, device: str, cache: Path | None) -> Any:
@@ -257,6 +310,14 @@ def build_config(model_dir: Path, device: str, cache: Path | None) -> Any:
         return config
 
     config.clear_providers()
+
+    if wanted == CUDA_DEVICE:
+        usable, reason = cuda_status()
+        if not usable:
+            raise RuntimeError(f"cannot run on CUDA: {reason}")
+        config.append_provider("cuda")
+        return config
+
     if wanted == "CPU" and not _openvino_ep_available():
         # No OpenVINO EP: plain ONNX Runtime already runs on CPU with no
         # provider appended, so leave the list empty rather than fail.
@@ -635,22 +696,33 @@ class OnnxRuntimeBackend:
         return [f"{subfolder}/*"]
 
 
-# A build named for someone else's hardware. NVIDIA's CUDA, Microsoft's
-# DirectML, Qualcomm's QNN and WebGPU exports all sit in the same repos as the
-# ones that run here, and none of them will load through the OpenVINO EP.
-_FOREIGN_TARGETS = ("cuda", "directml", "dml", "qnn", "webgpu", "web", "rocm", "trt")
+# A build named for hardware this machine does not have. Microsoft's DirectML,
+# Qualcomm's QNN, AMD's ROCm and WebGPU exports all sit in the same repos as
+# the ones that run here, and none of them will load through any provider
+# Keylane can offer.
+_FOREIGN_TARGETS = ("directml", "dml", "qnn", "webgpu", "web", "rocm", "trt")
+
+# CUDA is conditional, not foreign. It is unusable on a machine with no NVIDIA
+# card and no CUDA provider — and on a machine with both it is the best build
+# in the repo by a wide margin, which is the whole reason CUDA was added as a
+# device. Judging it by folder name alone is what made a 5090 invisible.
+_CUDA_TARGETS = ("cuda", "trt-cuda")
 
 # Below this a variant is not a worse choice, it is the wrong machine.
 RUNNABLE_SCORE = 0
 
 
 def _variant_score(folder: str) -> int:
-    """How well one build suits an Intel laptop, from its folder name alone.
+    """How well one build suits *this* machine, from its folder name alone.
 
     Repos publish the same model four or five ways and only name the target in
-    the path. A CPU int4 build is exactly what the OpenVINO EP wants — on the
-    NPU as much as the CPU — while a CUDA build is not a compromise, it is
-    unusable, so it scores below zero rather than merely last.
+    the path. A CPU int4 build is what the OpenVINO EP wants — on the NPU as
+    much as the CPU — while a DirectML or QNN build is not a compromise but
+    the wrong machine, so it scores below zero rather than merely last.
+
+    CUDA is the one target that depends on what is plugged in: worthless
+    without an NVIDIA card and a CUDA provider, and the best build in the repo
+    with them.
     """
     name = folder.lower()
     # Split on every separator these paths use, so "npu/qnn-int4" is seen as a
@@ -658,6 +730,11 @@ def _variant_score(folder: str) -> int:
     segments = set(re.split(r"[/\-_.]+", name))
     if any(target in segments for target in _FOREIGN_TARGETS):
         return -100
+    if any(target in segments for target in _CUDA_TARGETS):
+        usable, _reason = cuda_status()
+        # Above every OpenVINO-EP build when the card is there: a 24 GB GPU
+        # beats an NPU for anything that fits on it.
+        return 200 if usable else -100
 
     score = 50
     for marker, delta in (

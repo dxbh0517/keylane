@@ -917,6 +917,18 @@ class SettingsWindow(Gtk.Window):
         self._model_empty.set_visible(False)
         section.append(self._model_empty)
 
+        # Models that do not suit the selected device are held back rather than
+        # dropped. Hiding hardware or models the user knows exist is how
+        # somebody concludes Keylane lost them; this says how many and why.
+        self._show_all_models = False
+        self._model_more = Gtk.Button()
+        self._model_more.add_css_class("corner-details-btn")
+        self._model_more.set_can_focus(False)
+        self._model_more.set_halign(Gtk.Align.START)
+        self._model_more.set_visible(False)
+        self._model_more.connect("clicked", self._on_toggle_all_models)
+        section.append(self._model_more)
+
         self._build_import(page)
         self._build_routes(page)
 
@@ -1182,7 +1194,14 @@ class SettingsWindow(Gtk.Window):
             if model.get("npu_ready"):
                 top.append(self._badge("NPU ready", "ok"))
             else:
-                top.append(self._badge("Not for NPU", "warn"))
+                badge = self._badge("Not for NPU", "warn")
+                # The badge is only visible once "Show all" reveals the model,
+                # so it is the last chance to say *why* it was held back.
+                badge.set_tooltip_text(
+                    str(model.get("unsuited_reason") or "")
+                    or "this export is not symmetric INT4"
+                )
+                top.append(badge)
 
         box.append(top)
 
@@ -1284,8 +1303,39 @@ class SettingsWindow(Gtk.Window):
         row.set_child(self._model_row_box(model))
         return row
 
+    def _on_toggle_all_models(self, *_args: object) -> None:
+        self._show_all_models = not self._show_all_models
+        self._sync_model_list(self._models)
+
     def _sync_model_list(self, models: list[dict[str, Any]]) -> None:
         models = [m for m in models if m.get("runtime", "openvino") == self._runtime_id]
+
+        # `recommended` is False when the export does not suit the device this
+        # model would land on — an asymmetric INT4 build with the NPU selected,
+        # or OpenVINO IR with CUDA. Downloaded and active models are always
+        # shown: whatever the recommendation, they are already the user's.
+        held_back = [
+            m
+            for m in models
+            if not m.get("recommended", True)
+            and not m.get("downloaded")
+            and not m.get("active")
+        ]
+        if not self._show_all_models and held_back:
+            hidden = {m["id"] for m in held_back}
+            models = [m for m in models if m["id"] not in hidden]
+
+        if held_back:
+            device = next(iter({m.get("device", "") for m in held_back}), "")
+            self._model_more.set_label(
+                f"Show all ({len(held_back)} not suited to {device})"
+                if not self._show_all_models
+                else "Show only what suits this device"
+            )
+            self._model_more.set_visible(True)
+        else:
+            self._model_more.set_visible(False)
+
         self._sync_model_empty(len(models))
         seen: set[str] = set()
         for model in models:

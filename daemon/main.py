@@ -306,6 +306,8 @@ def list_models(runtime: str = "") -> dict[str, Any]:
         if runtime_filter and e.runtime != runtime_filter:
             continue
         info = downloads.get(e.id, {})
+        on_device = e.resolve_device(device)
+        suited, unsuited_reason = e.suits_device(on_device)
         rows.append(
             {
                 "id": e.id,
@@ -318,7 +320,12 @@ def list_models(runtime: str = "") -> dict[str, Any]:
                 "source": e.source,
                 "npu_ready": e.npu_ready,
                 "quantization": e.quantization,
-                "device": e.resolve_device(device),
+                "device": on_device,
+                # Whether to offer this model for the device it would land on.
+                # The unsuited ones stay in the payload with their reason —
+                # hiding a model outright is how a user concludes it is gone.
+                "recommended": suited,
+                "unsuited_reason": unsuited_reason,
                 "pipeline": e.backend.model_kind(e.model_dir) if e.model_dir.is_dir() else "llm",
                 "downloaded": e.is_downloaded(),
                 "downloading": info.get("downloading", False),

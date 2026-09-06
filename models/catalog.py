@@ -70,6 +70,31 @@ class ModelEntry:
         """Where the loadable export sits — the repo root unless it is nested."""
         return self.local_path / self.subfolder if self.subfolder else self.local_path
 
+    def suits_device(self, device: str) -> tuple[bool, str]:
+        """Whether this export is a sensible choice on *device*, and why not.
+
+        Distinct from "will it load". An asymmetric INT4 export loads on the
+        NPU perfectly well and then runs far below the hardware, and an
+        OpenVINO IR pointed at CUDA does not load at all. Both are things to
+        keep out of a recommendation and neither is a thing to hide: the
+        answer carries its reason so the UI can say it.
+        """
+        wanted = (device or "").strip().upper()
+
+        if wanted == "NPU" and not self.npu_ready:
+            return False, (
+                "this export is not symmetric INT4, so the NPU runs it far below "
+                "what the hardware can do"
+            )
+        if wanted == "CUDA" and self.runtime != "onnxruntime":
+            return False, (
+                "OpenVINO IR cannot run on CUDA — an ONNX export is needed for "
+                "an NVIDIA GPU"
+            )
+        # GPU, CPU and AUTO impose nothing: quantization that is wrong for the
+        # NPU is exactly what those devices are kept for.
+        return True, ""
+
     def resolve_device(self, default: str = "") -> str:
         """Per-model override, then the runtime's setting, then its default."""
         if self.device:

@@ -12,6 +12,13 @@ So a device is offered only when it is present *and* it belongs to a vendor the
 runtime can compile for. Anything present but unusable is still reported, with
 the reason, so Settings can grey it out and say why rather than hiding hardware
 the user knows they have.
+
+The probe is per runtime, because the same physical card is a different answer
+to each. OpenVINO cannot compile for an NVIDIA GPU, so it is refused there;
+ONNX Runtime reaches that identical card through CUDA, where it is the whole
+point. Asking OpenVINO about every runtime's devices — which is what this
+module used to do — would have reported the one usable path to a discrete GPU
+as "not present on this machine".
 """
 
 from __future__ import annotations
@@ -62,11 +69,41 @@ def _is_foreign(full_name: str) -> bool:
     return any(vendor in lowered for vendor in _FOREIGN_VENDORS)
 
 
+def _cuda_option() -> DeviceOption:
+    """CUDA is answered by the ONNX runtime, not by OpenVINO's device list."""
+    from runtimes.onnx_rt import cuda_status  # noqa: PLC0415
+
+    usable, reason = cuda_status()
+    label = "CUDA — NVIDIA GPU"
+    name = _nvidia_name()
+    if name:
+        label = f"CUDA — {name}"
+    return DeviceOption("CUDA", label, usable, reason)
+
+
+def _nvidia_name() -> str:
+    """The card's marketing name, for a label a person recognises."""
+    import subprocess  # noqa: PLC0415
+
+    try:
+        done = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip().splitlines()[0].strip() if done.returncode == 0 else ""
+
+
 def device_options(advertised: tuple[str, ...]) -> list[DeviceOption]:
     """Annotate a runtime's advertised devices with what is really here.
 
     ``AUTO`` is never a physical device — it means "leave the model's own
-    provider alone" — so it is always offered and never probed.
+    provider alone" — so it is always offered and never probed. ``CUDA`` is
+    never OpenVINO's to answer for.
     """
     present = _openvino_devices()
     options: list[DeviceOption] = []
@@ -74,6 +111,9 @@ def device_options(advertised: tuple[str, ...]) -> list[DeviceOption]:
         key = device.upper()
         if key == "AUTO":
             options.append(DeviceOption(key, "Auto (as exported)", True))
+            continue
+        if key == "CUDA":
+            options.append(_cuda_option())
             continue
         if not present:
             # Nothing to check against — do not invent an objection.
