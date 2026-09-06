@@ -643,8 +643,20 @@ class LocalModelRuntime:
         path = entry.model_dir
         weights_left = backend.missing_weights(path)
         if weights_left:
+            # Fetch again before giving up. A file that arrived half-written is
+            # the common case here — a download interrupted by a restart, or a
+            # model activated while it was still arriving — and it is fixable
+            # without telling anyone anything. Only a second failure is news.
+            logger.warning("incomplete after download, fetching again: %s", weights_left)
+            self._set_progress("download incomplete — fetching again…", progress)
+            download_model(entry, progress=lambda m: self._set_progress(m, progress), force=True)
+            weights_left = backend.missing_weights(path)
+        if weights_left:
             self._status = "error"
-            self._error = f"missing weights: {', '.join(weights_left)}"
+            self._error = (
+                f"{entry.name} is still incomplete after re-downloading: "
+                f"{', '.join(weights_left)}. Check the disk has room, then try again."
+            )
             raise RuntimeError(self._error)
 
         objection = backend.static_objection(path)
