@@ -13,6 +13,12 @@ Environment=KEYLANE_VENV=%KEYLANE_VENV%
 ExecStart=%KEYLANE_ROOT%/scripts/keylane-ui
 Restart=on-failure
 RestartSec=3
+# Exit 3 is "another Keylane UI already owns the bus name" (EXIT_ALREADY_RUNNING
+# in ui/main.py). Restarting cannot help while that process lives, so systemd
+# stops here — and because the status is non-zero the unit reports `failed`
+# rather than the silent `inactive (dead)` an exit 0 produced, which is the
+# whole point: the journal line says which pid to stop.
+RestartPreventExitStatus=3
 
 [Install]
 WantedBy=graphical-session.target
