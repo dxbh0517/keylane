@@ -575,8 +575,27 @@ warning rather than leaving the window unstyled.
 
 ## Keeping current
 
-Keylane reads its own GitHub releases. It looks once a day, drops a note in the
-inbox, and stops — it never installs anything on its own.
+Keylane reads its own GitHub *releases* — not the source. That distinction is
+the whole of how the version check goes wrong: bumping `updater/version.py`
+changes what a build calls itself and changes nothing an installed copy can
+see. Between 0.5.0 and 0.7.0 the version was bumped three times and tagged
+none, so every installed copy went on reporting nothing to install, correctly
+and uselessly.
+
+So a release is one command, and it does all three parts:
+
+```bash
+scripts/keylane-release 0.7.1              # bump, tag, publish
+scripts/keylane-release --dry-run 0.7.1    # show what it would do
+```
+
+It refuses to go backwards, refuses a tag that exists, and refuses a dirty
+tree. A build that is ahead of every published release now says so —
+`keylane-update` and Settings → About both distinguish "you are current" from
+"you are newer than anything released", which used to render identically.
+
+It looks once a day, drops a note in the inbox, and stops — it never installs
+anything on its own.
 
 ```bash
 keylane-update                 # is there one?

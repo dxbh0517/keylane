@@ -26,10 +26,9 @@ CHECK_MINUTE = 17
 
 def check_and_notify() -> None:
     """Look once, and file a note only when there is something to say."""
+    from daemon.config import get_section
     from memory.store import push_inbox
     from updater.github import check_for_update
-
-    from daemon.config import get_section
 
     channel = str(get_section("updates").get("channel", "stable"))
     try:

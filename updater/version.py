@@ -35,8 +35,16 @@ def parse(version: str) -> tuple[int, ...]:
     return tuple(parts[:3])
 
 
-def is_newer(candidate: str, current: str = VERSION) -> bool:
-    return parse(candidate) > parse(current)
+def is_newer(candidate: str, current: str | None = None) -> bool:
+    """Whether *candidate* is a later version than *current*.
+
+    `current` resolves when the call happens rather than when this module was
+    imported. A default of `VERSION` looks equivalent and is not: it binds the
+    string once, at import, so the comparison could not be made against any
+    other view of the running version — which is exactly what a test, or a
+    process that has just replaced its own code, needs to do.
+    """
+    return parse(candidate) > parse(VERSION if current is None else current)
 
 
 @lru_cache(maxsize=1)

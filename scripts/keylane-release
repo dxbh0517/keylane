@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Cut a release: bump the version, tag it, publish it.
+#
+# This exists because the three were separate steps and only the first was
+# ever done. `updater/version.py` went 0.5.0 -> 0.5.1 -> 0.6.0 -> 0.7.0 while
+# the newest published release stayed at v0.5.0, so `keylane-update` — which
+# reads GitHub *releases*, not the source — went on reporting nothing to
+# install, correctly and uselessly, for three versions.
+#
+# A bump that is not tagged is invisible to every installed copy. So there is
+# one command, and it does all three.
+#
+#   scripts/keylane-release 0.7.1
+#   scripts/keylane-release 0.7.1 --notes-file NOTES.md
+#   scripts/keylane-release --dry-run 0.7.1
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VERSION_FILE="${ROOT}/updater/version.py"
+
+DRY_RUN=0
+NOTES_FILE=""
+NEW_VERSION=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --notes-file) NOTES_FILE="${2:?--notes-file needs a path}"; shift 2 ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -*) echo "unknown option: $1" >&2; exit 2 ;;
+    *) NEW_VERSION="$1"; shift ;;
+  esac
+done
+
+die() { printf '\033[1;31merror:\033[0m %s\n' "$1" >&2; exit 1; }
+say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
+
+[[ -n "${NEW_VERSION}" ]] || die "usage: keylane-release <version> [--notes-file FILE] [--dry-run]"
+[[ "${NEW_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || die "version must be MAJOR.MINOR.PATCH, not '${NEW_VERSION}'"
+
+TAG="v${NEW_VERSION}"
+CURRENT="$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' "${VERSION_FILE}")"
+[[ -n "${CURRENT}" ]] || die "could not read VERSION from ${VERSION_FILE}"
+
+# Refuse to go backwards. The updater compares field by field, so a release
+# numbered below one already published is one nobody is ever offered.
+if ! python3 -c "
+import sys
+sys.path.insert(0, '${ROOT}')
+from updater.version import is_newer
+sys.exit(0 if is_newer('${NEW_VERSION}', '${CURRENT}') else 1)
+"; then
+  die "${NEW_VERSION} is not newer than the current ${CURRENT}"
+fi
+
+git -C "${ROOT}" rev-parse "${TAG}" >/dev/null 2>&1 && die "${TAG} already exists"
+BRANCH="$(git -C "${ROOT}" rev-parse --abbrev-ref HEAD)"
+
+# Checks that would stop a real release, but must not stop a rehearsal of one:
+# --dry-run exists to be run before tidying up, not after.
+if [[ "${DRY_RUN}" != "1" ]]; then
+  command -v gh >/dev/null 2>&1 || die "the GitHub CLI (gh) is required to publish a release"
+  git -C "${ROOT}" diff --quiet || die "working tree is dirty; commit or stash first"
+  [[ "${BRANCH}" == "main" ]] || echo "note: releasing from '${BRANCH}', not main"
+fi
+
+say "Releasing ${CURRENT} -> ${NEW_VERSION}"
+if [[ "${DRY_RUN}" == "1" ]]; then
+  echo "  would write  ${VERSION_FILE}: VERSION = \"${NEW_VERSION}\""
+  echo "  would commit Release ${NEW_VERSION}"
+  echo "  would tag    ${TAG} and push it"
+  echo "  would run    gh release create ${TAG}"
+  exit 0
+fi
+
+sed -i "s/^VERSION = \".*\"$/VERSION = \"${NEW_VERSION}\"/" "${VERSION_FILE}"
+git -C "${ROOT}" add "${VERSION_FILE}"
+git -C "${ROOT}" commit -m "Release ${NEW_VERSION}"
+
+say "Tagging ${TAG}"
+git -C "${ROOT}" tag -a "${TAG}" -m "Keylane ${NEW_VERSION}"
+git -C "${ROOT}" push origin "${BRANCH}"
+git -C "${ROOT}" push origin "${TAG}"
+
+say "Publishing the GitHub release"
+if [[ -n "${NOTES_FILE}" ]]; then
+  gh release create "${TAG}" --title "Keylane ${NEW_VERSION}" --notes-file "${NOTES_FILE}"
+else
+  gh release create "${TAG}" --title "Keylane ${NEW_VERSION}" --generate-notes
+fi
+
+say "Done — installed copies will see ${NEW_VERSION} on their next check"
+echo "  Verify: scripts/keylane-update"
