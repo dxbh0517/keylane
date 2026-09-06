@@ -1791,7 +1791,7 @@ class SpotlightWindow(Gtk.ApplicationWindow):
 
 class KeylaneApp(Gtk.Application):
     def __init__(self) -> None:
-        super().__init__(application_id="app.keylane.Spotlight")
+        super().__init__(application_id=APP_ID)
         self._started = False
         # Held explicitly rather than looked up. See ensure_window().
         self._window: SpotlightWindow | None = None
@@ -1855,6 +1855,15 @@ class KeylaneApp(Gtk.Application):
 # The control port. Commands are one line: a verb, optionally followed by a
 # JSON payload. The daemon reaches the overlay this way, so the read has to be
 # big enough for a walkthrough's worth of shapes rather than a bare verb.
+# The application's unique name on the session bus. One resident UI owns it;
+# every `--toggle` and friend reaches that one through it.
+APP_ID = "app.keylane.Spotlight"
+
+# Exit status for "another instance is already running". The unit names this
+# in RestartPreventExitStatus so systemd stops rather than looping, and the
+# unit then reports `failed` — which is visible — instead of a silent exit 0.
+EXIT_ALREADY_RUNNING = 3
+
 CONTROL_PORT = 9101
 CONTROL_MAX_BYTES = 256 * 1024
 
@@ -1875,7 +1884,7 @@ def _remote_command(command: str, payload: str = "") -> bool:
     if not payload:
         try:
             completed = subprocess.run(
-                ["gapplication", "action", "app.keylane.Spotlight", command],
+                ["gapplication", "action", APP_ID, command],
                 check=False,
                 capture_output=True,
                 timeout=2,
@@ -2179,6 +2188,55 @@ def _select_backend() -> None:
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
+def describe_pid(pid: int) -> str:
+    """The command line of *pid*, as one readable string, or "" if it is gone."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    parts = [part for part in raw.split(b"\0") if part]
+    return " ".join(part.decode("utf-8", errors="replace") for part in parts)
+
+
+def existing_instance_pid(app: Gtk.Application) -> int | None:
+    """The pid already holding this application's bus name, or None.
+
+    `Gio.Application.register` is what settles the question — it either claims
+    the name or discovers somebody else has it, and `get_is_remote` then says
+    which. Asking the bus for the owner's pid afterwards is what turns "already
+    running" into something the user can act on: a stray started by hand and a
+    unit that never stopped look identical until you can name one.
+    """
+    try:
+        app.register(None)
+    except GLib.Error:
+        logger.debug("could not register on the session bus", exc_info=True)
+        return None
+    if not app.get_is_remote():
+        return None
+
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        reply = bus.call_sync(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "GetConnectionUnixProcessID",
+            GLib.Variant("(s)", (APP_ID,)),
+            GLib.VariantType("(u)"),
+            Gio.DBusCallFlags.NONE,
+            2000,
+            None,
+        )
+        return int(reply.unpack()[0])
+    except Exception:  # noqa: BLE001
+        # Remote is remote whether or not the bus will name the owner. Report
+        # the conflict with a pid we do not have rather than pretending there
+        # is none — 0 reads as "another instance, identity unknown".
+        logger.debug("could not read the owner of %s", APP_ID, exc_info=True)
+        return 0
+
+
 def _send_or_start(command: str) -> None:
     """Deliver *command*, starting the UI first if nothing is listening."""
     if _remote_command(command):
@@ -2234,6 +2292,25 @@ def main() -> None:
 
     _select_backend()
     app = KeylaneApp()
+
+    # Before anything else claims a port or a window. A second resident UI is
+    # not an error the user can see: GTK hands the activation to whoever owns
+    # the bus name and this process exits 0, which systemd reads as a clean
+    # shutdown and reports as "inactive (dead)" with nothing in the journal.
+    # Worse, the activation *toggles the other instance's window*, so starting
+    # a service pops the launcher on someone's screen.
+    owner = existing_instance_pid(app)
+    if owner is not None:
+        logger.error(
+            "another Keylane UI already owns %s (pid %d: %s) — this instance is "
+            "exiting. Stop that process, or `systemctl --user restart keylane-ui` "
+            "once it is gone.",
+            APP_ID,
+            owner,
+            describe_pid(owner) or "unknown command",
+        )
+        sys.exit(EXIT_ALREADY_RUNNING)
+
     threading.Thread(target=_socket_server, args=(app,), daemon=True).start()
     app.run(None)
 
