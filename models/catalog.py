@@ -92,11 +92,24 @@ class ModelEntry:
                 "this export is not symmetric INT4, so the NPU runs it far below "
                 "what the hardware can do"
             )
-        if wanted == "CUDA" and self.runtime != "onnxruntime":
-            return False, (
-                "OpenVINO IR cannot run on CUDA — an ONNX export is needed for "
-                "an NVIDIA GPU"
-            )
+        if wanted == "CUDA":
+            if self.runtime != "onnxruntime":
+                return False, (
+                    "OpenVINO IR cannot run on CUDA — an ONNX export is needed "
+                    "for an NVIDIA GPU"
+                )
+            # Only builds exported for CUDA. A `cpu_and_mobile` graph will
+            # technically run on a GPU and is not worth the VRAM: it is built
+            # for int8 accumulation on a CPU, and offering it here means
+            # spending gigabytes of card on a model that was never going to
+            # use it. It also produced the one failure people actually hit —
+            # a 2.2 GB FP16 build offered for CUDA, filling the card and
+            # dying in the allocator.
+            if not self.device:
+                return False, (
+                    "not a CUDA build — this export targets the CPU, so it "
+                    "would occupy the GPU without using it"
+                )
         # GPU, CPU and AUTO impose nothing: quantization that is wrong for the
         # NPU is exactly what those devices are kept for.
         return True, ""

@@ -122,3 +122,46 @@ def test_an_unusable_stored_device_falls_back_rather_than_sticking() -> None:
     panel = _panel(openvino="GPU")
     assert panel._current_device() != "GPU"
     assert panel._current_device() in ("NPU", "CPU")
+
+
+# ── the startup default has to be a model that is actually there ─────────
+
+
+def test_only_downloaded_models_can_be_the_startup_default() -> None:
+    """The daemon skips an undownloaded default at startup.
+
+    Offering one was offering a setting that silently did nothing: the list
+    read like a catalog and behaved like a choice.
+    """
+    panel = _panel()
+    panel._models = [
+        {"id": "here", "name": "Here", "runtime": "openvino", "downloaded": True},
+        {"id": "not-here", "name": "Not here", "runtime": "openvino", "downloaded": False},
+    ]
+    panel._active_model_id = "here"
+    panel._default_model_ids = []
+    panel._block_save = True
+
+    ids = [m["id"] for m in panel._models if m.get("downloaded")]
+    assert ids == ["here"]
+    assert "not-here" not in ids
+
+
+def test_a_load_failure_keeps_its_explanation() -> None:
+    """`message[:60]` left the first clause of a sentence in a vanishing toast.
+
+    The text names how much VRAM was free and what to close; 60 characters is
+    not enough to reach either.
+    """
+    from ui.settings import SettingsWindow
+
+    message = (
+        "not enough free VRAM to load this model on CUDA — minicpm5-1b-onnx "
+        "needs about 2.2 GB of VRAM and 900 MiB is free. Close whatever else "
+        "is using the GPU.\n\nUnderlying error: bfc_arena.cc:359 ..."
+    )
+    headline = message.split("\n", 1)[0]
+    assert len(headline) > 60
+    assert "900 MiB is free" in headline
+    assert not SettingsWindow._looks_like_success(message)
+    assert SettingsWindow._looks_like_success("Activated Phi 4")

@@ -145,6 +145,22 @@ window.spotlight-window.thinking-mode .thinking-orb {
   animation: orb-in 300ms cubic-bezier(0.34, 1.4, 0.5, 1);
 }
 
+/* A model that would not load says why, and it needs to be readable rather
+   than glanced at — the text names free VRAM and what to close. */
+.settings-model-error {
+  padding: 9px 11px;
+  border-radius: {{radius-control}};
+}
+
+window.settings-window.style-light .settings-model-error {
+  color: {{light.badge-warn-text}};
+  background-color: {{light.badge-warn-bg}};
+}
+window.settings-window.style-dark .settings-model-error {
+  color: {{dark.badge-warn-text}};
+  background-color: {{dark.badge-warn-bg}};
+}
+
 /* ── dictation pill ─────────────────────────────────────────────────── */
 /* Deliberately the answer panel's material rather than the command bar's:
    this is a status readout that sits over someone else's window, so it has

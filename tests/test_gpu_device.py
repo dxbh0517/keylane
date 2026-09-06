@@ -144,8 +144,29 @@ def test_openvino_ir_is_not_recommended_on_cuda() -> None:
     assert "ONNX" in reason
 
 
-def test_an_onnx_export_is_recommended_on_cuda() -> None:
-    assert _entry(runtime="onnxruntime").suits_device("CUDA") == (True, "")
+def test_a_cpu_targeted_onnx_export_is_not_recommended_on_cuda() -> None:
+    """It would run, and that is not the same as being worth the VRAM.
+
+    A `cpu_and_mobile` graph is built for int8 accumulation on a CPU, so
+    offering it here spends gigabytes of card on a model that will not use it.
+    It is also the failure people actually hit: a 2.2 GB FP16 build offered for
+    CUDA, filling a busy card and dying in the allocator.
+    """
+    suited, reason = _entry(runtime="onnxruntime").suits_device("CUDA")
+    assert not suited
+    assert "not a CUDA build" in reason
+
+
+def test_a_build_exported_for_cuda_is_recommended_there() -> None:
+    assert _entry(runtime="onnxruntime", device="CUDA").suits_device("CUDA") == (True, "")
+
+
+def test_a_cuda_build_is_offered_nowhere_else() -> None:
+    entry = _entry(runtime="onnxruntime", device="CUDA")
+    for device in ("NPU", "CPU", "GPU"):
+        suited, reason = entry.suits_device(device)
+        assert not suited
+        assert "exported for CUDA" in reason
 
 
 def test_auto_imposes_nothing() -> None:
@@ -238,6 +259,30 @@ def test_an_out_of_vram_load_says_so(tmp_path, monkeypatch) -> None:
     assert "900 MiB is free" in message
     # The original is kept: it is what a bug report needs.
     assert "bfc_arena" in message
+
+
+def test_a_size_that_could_not_be_measured_is_left_out(tmp_path, monkeypatch) -> None:
+    """A model whose files are not where this looked sums to zero.
+
+    "needs about 0.0 GB" reads as a number rather than as a missing one.
+    """
+    import runtimes.onnx_rt as onnx
+
+    monkeypatch.setattr(onnx, "free_vram_mb", lambda: 900)
+    message = onnx._explain_load_failure(_oom(), tmp_path / "gone", "CUDA")
+    assert "0.0 GB" not in message
+    assert "900 MiB is free" in message
+
+
+def test_a_sub_gigabyte_model_is_reported_in_megabytes(tmp_path, monkeypatch) -> None:
+    import runtimes.onnx_rt as onnx
+
+    model = tmp_path / "m"
+    model.mkdir()
+    with (model / "model.onnx.data").open("wb") as fh:
+        fh.truncate(300_000_000)
+    monkeypatch.setattr(onnx, "free_vram_mb", lambda: 100)
+    assert "300 MB" in onnx._explain_load_failure(_oom(), model, "CUDA")
 
 
 def test_the_vram_message_survives_nvidia_smi_being_absent(tmp_path, monkeypatch) -> None:
