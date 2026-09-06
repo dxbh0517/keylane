@@ -33,6 +33,34 @@ onnxruntime = "CPU"
 # Symmetric INT4. These are the ones to use on an NPU; the rest of the
 # OpenVINO section below is kept for CPU and GPU work and for anyone whose
 # model is already on disk.
+#
+# Symmetry was checked by reading the IR rather than by trusting the repo
+# name: OpenVINO writes signed `i4` constants for a symmetric export and
+# unsigned `u4` for an asymmetric one, and a repo called `int4-g128` can still
+# be full of `u4`. Two MiniCPM5 ports were rejected on exactly that.
+#
+# Rejected after downloading and loading them, which is the only test that
+# settles it:
+#
+#   aweussom/LFM2.5-1.2B-Instruct-int4-cw-ov — symmetric i4, 654 MB, and the
+#   most tempting entry here: LFM2.5-1.2B is popular and small. It does not
+#   load. OpenVINO's CPU plugin throws on the hybrid conv layer
+#   (`ScatterNDUpdate ... layers.0.conv`, updates_shape vs indices_shape), so
+#   Lfm2ForCausalLM is not runnable through OpenVINO GenAI at this version.
+#   Everything about the metadata says yes; the model says no.
+#
+#   HarmenWessels/MiniCPM5-1B-int4-g128-ov — the name says g128, the IR is
+#   336 `u4` constants. Asymmetric, so not NPU material.
+
+[[models]]
+id = "jan-nano-npu"
+name = "Jan-nano 4B (NPU, agentic)"
+hf_repo = "rupeshs/jan-nano-int4-npu-ov"
+runtime = "openvino"
+params_b = 4
+npu_ready = true
+quantization = "INT4_SYM (i4), exported for the NPU"
+description = "Qwen3-4B tuned for tool use and web research. Half the size of the default and built for exactly the loop Keylane runs."
 
 [[models]]
 id = "qwen3-8b-cw"
@@ -121,6 +149,16 @@ description = "Reads screenshots. The only vision model here Intel has validated
 # weights are already on disk.
 
 [[models]]
+id = "minicpm5-1b-ov"
+name = "MiniCPM5 1B (CPU/GPU)"
+hf_repo = "oaklight/MiniCPM5-1B-int4-openvino"
+runtime = "openvino"
+params_b = 1
+npu_ready = false
+quantization = "INT4_ASYM (u4) — 755 MB, a third of the ONNX build"
+description = "The same 1B agentic model at a quarter the footprint. Asymmetric, so CPU and GPU only — on an NPU it loads and then crawls."
+
+[[models]]
 id = "qwen2.5-7b-instruct"
 name = "Qwen 2.5 7B Instruct"
 hf_repo = "OpenVINO/Qwen2.5-7B-Instruct-int4-ov"
@@ -206,6 +244,16 @@ description = "A VLM, not a text model — the vision tower is why its first NPU
 # the OpenVINO execution provider. None of these repos ships an OpenVINO NPU
 # build — the only NPU folder anywhere in them is Qualcomm QNN, which is not
 # this hardware — so the device default for this runtime is CPU.
+
+[[models]]
+id = "minicpm5-1b-onnx"
+name = "MiniCPM5 1B (ONNX, agentic)"
+hf_repo = "onnx-community/MiniCPM5-1B"
+runtime = "onnxruntime"
+params_b = 1
+npu_ready = false
+quantization = "FP16 — not quantized; 2.2 GB on disk"
+description = "1B built for on-device agents: XML tool calls, 131k context, Apache-2.0. The smallest model here that is genuinely good at tool use."
 
 [[models]]
 id = "phi-4-mini-onnx"

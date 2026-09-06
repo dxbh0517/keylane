@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
 import time
+from pathlib import Path
 
 import pytest
 
@@ -281,8 +280,14 @@ def test_catalog_entries_carry_their_runtime(isolated_config):
     assert by_runtime["openvino"], "the curated list lost its OpenVINO models"
     assert by_runtime["onnxruntime"], "the curated list has no ONNX Runtime models"
     assert all(e.source == "curated" for e in entries)
-    # Every ONNX entry names the build to fetch; the repos ship several.
-    assert all(e.subfolder for e in by_runtime["onnxruntime"])
+    # A subfolder is required only where the repo nests its builds. Microsoft's
+    # ONNX repos ship several side by side and an entry must say which; the
+    # onnx-community exports are flat, one build with genai_config.json at the
+    # root, and naming a subfolder there would point at nothing. What has to
+    # hold for every entry is that its id is unique and its runtime is real.
+    ids = [e.id for e in entries]
+    assert len(ids) == len(set(ids)), "two curated entries share an id"
+    assert all(e.hf_repo for e in entries)
 
 
 def test_model_dir_descends_into_the_subfolder(isolated_config):
@@ -740,3 +745,116 @@ def test_a_wedged_generation_does_not_strand_the_next_turn_forever(isolated_conf
     finally:
         catalog.INFER_QUEUE_TIMEOUT = original
         runtime._infer_lock.release()
+
+
+# ── long-context models and what is practical ────────────────────────────
+
+
+def test_a_long_context_model_does_not_get_a_long_context_prompt_budget():
+    """MiniCPM5-1B declares 131072 tokens. Building a prompt that size on a
+    1B CPU model costs minutes of prefill per turn, and one ReAct turn is
+    several calls. The declared context bounds generation; it is not a budget.
+    """
+    from runtimes.onnx_rt import MAX_PRACTICAL_PROMPT_TOKENS, usable_prompt_tokens
+
+    config = {"model": {"context_length": 131072}, "search": {"max_length": 131072}}
+    assert usable_prompt_tokens(config) == MAX_PRACTICAL_PROMPT_TOKENS
+
+
+def test_a_short_context_model_keeps_its_own_limit():
+    """The cap is a ceiling, never a floor — a 4k model must not be told 8k."""
+    from runtimes.onnx_rt import usable_prompt_tokens
+
+    assert usable_prompt_tokens({"model": {"context_length": 4096}}) < 4096
+
+
+def test_the_declared_context_still_bounds_generation():
+    """Capping the prompt must not shrink what the model may attend to."""
+    from runtimes.onnx_rt import context_length
+
+    assert context_length({"model": {"context_length": 131072}}) == 131072
+
+
+def test_a_model_that_declares_nothing_gets_the_fallback():
+    from runtimes.onnx_rt import usable_prompt_tokens
+
+    assert usable_prompt_tokens({}) > 0
+
+
+# ── chat templates and their variables ───────────────────────────────────
+
+
+def test_a_template_file_is_preferred_over_the_tokenizer_config(tmp_path: Path):
+    from runtimes.chat_template import load_template
+
+    root = tmp_path / "m"
+    root.mkdir()
+    (root / "chat_template.jinja").write_text("FROM FILE", encoding="utf-8")
+    (root / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "FROM CONFIG"}), encoding="utf-8"
+    )
+    assert load_template(root) == "FROM FILE"
+
+
+def test_an_inlined_template_is_still_found(tmp_path: Path):
+    from runtimes.chat_template import load_template
+
+    root = tmp_path / "m"
+    root.mkdir()
+    (root / "tokenizer_config.json").write_text(
+        json.dumps({"chat_template": "FROM CONFIG"}), encoding="utf-8"
+    )
+    assert load_template(root) == "FROM CONFIG"
+
+
+def test_an_export_with_no_template_says_so(tmp_path: Path):
+    from runtimes.chat_template import load_template
+
+    root = tmp_path / "m"
+    root.mkdir()
+    assert load_template(root) is None
+
+
+# The switch MiniCPM5 and the Qwen3 family actually use.
+_THINK_TEMPLATE = (
+    "{%- for m in messages %}{{ m['content'] }}{%- endfor %}"
+    "{%- if add_generation_prompt %}|A|{%- endif %}"
+    "{%- if enable_thinking is defined %}"
+    "{%- if enable_thinking is false %}<think>\n\n</think>\n\n"
+    "{%- elif enable_thinking is true %}<think>\n{%- endif %}{%- endif %}"
+)
+
+
+def test_thinking_can_be_switched_off_through_the_template():
+    """The whole point: neither runtime could pass a template variable before."""
+    from runtimes.chat_template import render
+
+    out = render(_THINK_TEMPLATE, [{"role": "user", "content": "hi"}], enable_thinking=False)
+    assert out is not None
+    # The pre-closed block is the signal: it tells the model the reasoning turn
+    # is already over. Trailing whitespace is the template's business — the
+    # `{%- elif %}` below strips it here, and the real MiniCPM5 template keeps it.
+    assert "<think>" in out and "</think>" in out
+
+
+def test_thinking_can_be_switched_on():
+    from runtimes.chat_template import render
+
+    out = render(_THINK_TEMPLATE, [{"role": "user", "content": "hi"}], enable_thinking=True)
+    # Opened and left open: the model is being invited to reason.
+    assert "<think>" in out and "</think>" not in out
+
+
+def test_leaving_it_undefined_lets_the_model_decide():
+    from runtimes.chat_template import render
+
+    out = render(_THINK_TEMPLATE, [{"role": "user", "content": "hi"}], enable_thinking=None)
+    assert out == "hi|A|"
+
+
+def test_a_template_that_will_not_render_returns_none_rather_than_raising():
+    """A bad template must fall back to the runtime's own renderer, not fail a turn."""
+    from runtimes.chat_template import render
+
+    assert render("{% for %}", [{"role": "user", "content": "hi"}]) is None
+    assert render("{{ raise_exception('nope') }}", [{"role": "user", "content": "x"}]) is None

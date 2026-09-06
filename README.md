@@ -160,6 +160,7 @@ from Hugging Face on first activation.
 
 | ID | Model | Runtime | NPU |
 | --- | --- | --- | --- |
+| `jan-nano-npu` | Jan-nano 4B (agentic) | OpenVINO | ✅ |
 | `qwen3-8b-cw` | Qwen 3 8B (default) | OpenVINO | ✅ |
 | `phi-3.5-mini-cw` | Phi 3.5 Mini | OpenVINO | ✅ |
 | `phi-3.5-mini-gq` | Phi 3.5 Mini, group-quantized | OpenVINO | ✅ |
@@ -168,6 +169,7 @@ from Hugging Face on first activation.
 | `qwen3-4b-npu` | Qwen 3 4B | OpenVINO | ✅ |
 | `qwen2.5-coder-7b-npu` | Qwen 2.5 Coder 7B | OpenVINO | ✅ |
 | `gemma-3-4b-vlm` | Gemma 3 4B (vision) | OpenVINO | ✅ |
+| `minicpm5-1b-ov` | MiniCPM5 1B (small) | OpenVINO | — |
 | `qwen2.5-7b-instruct` | Qwen 2.5 7B Instruct | OpenVINO | — |
 | `qwen3-8b` | Qwen 3 8B (asymmetric) | OpenVINO | — |
 | `qwen2.5-coder-7b` | Qwen 2.5 Coder 7B (asymmetric) | OpenVINO | — |
@@ -176,6 +178,7 @@ from Hugging Face on first activation.
 | `deepseek-r1-qwen-7b` | DeepSeek R1 Distill Qwen 7B (asymmetric) | OpenVINO | — |
 | `phi-4-mini-instruct` | Phi 4 Mini Instruct (asymmetric) | OpenVINO | — |
 | `qwen3.5-9b` | Qwen 3.5 9B (vision, asymmetric) | OpenVINO | — |
+| `minicpm5-1b-onnx` | MiniCPM5 1B (agentic) | ONNX Runtime | CPU |
 | `phi-4-mini-onnx` | Phi 4 Mini Instruct | ONNX Runtime | CPU |
 | `phi-3.5-mini-onnx` | Phi 3.5 Mini Instruct (AWQ) | ONNX Runtime | CPU |
 | `phi-4-mini-reasoning-onnx` | Phi 4 Mini Reasoning | ONNX Runtime | CPU |
@@ -191,9 +194,73 @@ symmetric group-quantized (`-gq-`), or exported for the NPU by their publisher;
 Settings badges each row so you know before a 4 GB download rather than after.
 The rest are fine on CPU and GPU.
 
-The ONNX entries are all `cpu_and_mobile` builds — CPU-targeted graphs with
+Most ONNX entries are `cpu_and_mobile` builds — CPU-targeted graphs with
 int8 accumulation. None of those repos ships an OpenVINO NPU build, so that
-runtime's device default is CPU.
+runtime's device default is CPU. `minicpm5-1b-onnx` is the exception in shape
+rather than target: a flat repo with one FP16 graph at the root and no
+execution provider baked in.
+
+### Small models that are good at tools
+
+The default is an 8B, and an 8B is the right answer when the question is hard.
+Most turns are not hard — they are "search this", "remind me", "what is on my
+screen" — and there the 8B's ~15 s to first token is the whole cost of the
+turn, paid once per ReAct iteration.
+
+Two entries exist for that case, and both were picked for agentic behaviour
+rather than for size alone:
+
+| | |
+| --- | --- |
+| `jan-nano-npu` | Qwen3-4B tuned for MCP tool use and web research. Symmetric INT4, 2.3 GB, runs on the NPU. Half the default's size. |
+| `minicpm5-1b-onnx` | 1B, Apache-2.0, built for on-device agents. 131k context, and the strongest tool use in its class. |
+
+**MiniCPM5 does not speak Keylane's tool dialect, and now it does not have
+to.** Keylane's prompt asks for `<tool_call>{json}</tool_call>`; MiniCPM5's
+chat template trains it to write
+
+```
+<function name="web_search"><param name="question">tide times</param></function>
+```
+
+and it writes that whatever the prompt says. A parser that knew only the first
+dialect did not fail loudly — every branch missed, the call fell through as
+prose, and the model looked as though it had simply declined to use its tools.
+Both dialects are parsed now, including the CDATA form the template uses for
+values containing markup or newlines.
+
+**A declared context is not a budget.** MiniCPM5-1B declares 131072 tokens,
+which is true of the model and useless as an instruction: at that length the
+prompt alone is ~340,000 characters, and prefilling it on a 1B CPU model costs
+minutes per call. The declared context still bounds generation; what Keylane
+is willing to *build* is capped separately, at 8192 tokens
+(`KEYLANE_ONNX_MAX_PROMPT_TOKENS`).
+
+**Thinking is asked off by default.** Models with a hybrid `<think>` mode
+default to thinking *on*: measured on `minicpm5-1b-ov`, the first tokens of a
+plain "Say OK." were `<think>\nHmm, the user is saying…`. One Keylane turn is
+several model calls and the reasoning is stripped before anyone sees it, so
+those tokens buy nothing here.
+
+Both runtimes now render the export's own template with `enable_thinking=false`
+— neither could pass a template *variable* before, and the obvious route
+(`AutoTokenizer`) does not survive these exports at all: an OpenVINO conversion
+of MiniCPM5 names its tokenizer class `TokenizersBackend`, which transformers
+refuses outright over a class the render never needed. The template is read as
+text and rendered directly instead.
+
+Be clear about what that buys, though. It is the *request* that is now
+possible: the rendered prompt ends with the empty `<think></think>` block the
+template emits for `false`, which is what Qwen3-family models take as "skip
+it". On the `minicpm5-1b-ov` INT4 conversion the model opens a think block
+anyway. Nothing breaks when it does — the reasoning is stripped either way —
+but the latency win is per-model, not universal. Set
+`KEYLANE_ENABLE_THINKING=1` to stop asking.
+
+> Symmetry is checked by reading the IR, not the repo name. OpenVINO writes
+> signed `i4` constants for a symmetric export and unsigned `u4` for an
+> asymmetric one, and a repo called `int4-g128` can still be full of `u4` —
+> two candidates were rejected on exactly that.
 
 > NF4 needs Lunar Lake or newer. Check your NPU generation with
 > `python -c "import openvino; print(openvino.Core().get_property('NPU','DEVICE_ARCHITECTURE'))"`
