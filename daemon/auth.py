@@ -53,6 +53,26 @@ def _generate() -> str:
     return secrets.token_urlsafe(32)
 
 
+def read_token() -> str:
+    """The token if one exists, without creating one. For clients.
+
+    :func:`load_token` *generates and persists* a token when it finds none,
+    which is right for the daemon — it is the authority that owns the
+    credential — and wrong for everything else. A client that mints its own
+    token does not fail to authenticate; it succeeds at authenticating with a
+    secret the server has never heard of, and every request comes back 403
+    with nothing to suggest the two disagree.
+
+    So clients read. An empty string means "ask the daemon", not "invent one".
+    """
+    override = os.environ.get(_ENV_TOKEN, "").strip()
+    if override:
+        return override
+    from daemon.config import get_section
+
+    return str(get_section("security").get("api_token", "") or "").strip()
+
+
 def load_token() -> str:
     """The daemon's token, created and persisted on first call.
 

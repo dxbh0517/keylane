@@ -7,7 +7,9 @@ VENV="${KEYLANE_VENV:-$ROOT/.venv}"
 PYTHON="${VENV}/bin/python"
 
 export PYTHONPATH="${ROOT}${PYTHONPATH:+:$PYTHONPATH}"
-export KEYLANE_DATA="${KEYLANE_DATA:-$ROOT/data}"
+# Deliberately not defaulted here: daemon/paths.py derives it from the
+# install layout, and $ROOT/data is wrong inside a release.
+[[ -n "${KEYLANE_DATA:-}" ]] && export KEYLANE_DATA
 
 if [[ ! -x "$PYTHON" ]]; then
   PYTHON=python3

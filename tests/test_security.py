@@ -273,3 +273,53 @@ def test_the_openai_endpoint_says_so_when_no_model_is_loaded(api_client) -> None
     )
     assert resp.status_code == 503
     assert "no model is loaded" in resp.json()["detail"]
+
+
+# ── a client must not be able to invent a credential ─────────────────────
+
+
+def test_read_token_does_not_create_one(monkeypatch, tmp_path) -> None:
+    """`load_token` generates on miss, which is right only for the daemon.
+
+    A client that mints its own token does not fail to authenticate — it
+    succeeds against a secret the server has never seen, and every request
+    comes back 403 with nothing to suggest the two disagree.
+    """
+    from daemon import config as config_module
+    from daemon import paths
+
+    settings = tmp_path / "settings.json"
+    monkeypatch.setattr(paths, "SETTINGS_PATH", settings)
+    monkeypatch.setattr(config_module, "SETTINGS_PATH", settings)
+    monkeypatch.delenv("KEYLANE_TOKEN", raising=False)
+    config_module.invalidate_cache()
+
+    from daemon.auth import read_token
+
+    assert read_token() == ""
+    assert not settings.exists(), "reading the token must not write a settings file"
+
+
+def test_read_token_returns_one_that_exists(monkeypatch, tmp_path) -> None:
+    import json
+
+    from daemon import config as config_module
+    from daemon import paths
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"security": {"api_token": "abc123"}}), encoding="utf-8")
+    monkeypatch.setattr(paths, "SETTINGS_PATH", settings)
+    monkeypatch.setattr(config_module, "SETTINGS_PATH", settings)
+    monkeypatch.delenv("KEYLANE_TOKEN", raising=False)
+    config_module.invalidate_cache()
+
+    from daemon.auth import read_token
+
+    assert read_token() == "abc123"
+
+
+def test_an_explicit_env_token_still_wins(monkeypatch) -> None:
+    monkeypatch.setenv("KEYLANE_TOKEN", "from-env")
+    from daemon.auth import read_token
+
+    assert read_token() == "from-env"
