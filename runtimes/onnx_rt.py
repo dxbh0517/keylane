@@ -485,6 +485,32 @@ def free_vram_mb() -> int | None:
         return None
 
 
+# What onnxruntime-genai says when its tokenizer will not compile a pattern.
+# Both halves appear: the offending expression, then the C++ regex complaint.
+_TOKENIZER_REGEX_FAILURE = ("invalid regex", "in regular expression")
+
+
+def _explain_tokenizer_failure(text: str) -> str | None:
+    """Recognise a tokenizer the runtime cannot compile.
+
+    Deliberately keyed on the runtime's own verdict rather than on the
+    tokenizer's patterns. Two attempts to tell good patterns from bad by reading
+    them were both wrong: the same bounded Unicode class appears verbatim in
+    both a tokenizer that loads and one that does not, and a heuristic that
+    refuses a working model is worse than the error it replaces. The runtime
+    knows; this only translates.
+    """
+    lowered = text.lower()
+    if not all(part in lowered for part in _TOKENIZER_REGEX_FAILURE):
+        return None
+    return (
+        "this model's tokenizer uses a pattern onnxruntime-genai cannot "
+        "compile, so it loads and then fails inside the tokenizer. The same "
+        "model as an OpenVINO export will usually work — Keylane cannot fix "
+        f"this one from here.\n\nUnderlying error: {text}"
+    )
+
+
 def _explain_load_failure(exc: Exception, model_dir: Path, device: str) -> str:
     """Turn a runtime error from model init into something actionable.
 
@@ -500,6 +526,11 @@ def _explain_load_failure(exc: Exception, model_dir: Path, device: str) -> str:
     """
     text = str(exc)
     lowered = text.lower()
+
+    tokenizer = _explain_tokenizer_failure(text)
+    if tokenizer is not None:
+        return tokenizer
+
     if device.strip().upper() != CUDA_DEVICE:
         return text
     if "allocate" not in lowered and "out of memory" not in lowered:

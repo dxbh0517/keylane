@@ -239,6 +239,21 @@ quantization = "INT4_ASYM group size 128"
 description = "A VLM, not a text model — the vision tower is why its first NPU compile runs long. Use gemma-3-4b-vlm instead."
 
 # ── ONNX Runtime GenAI ───────────────────────────────────────────────────
+#
+# Removed after testing, not on principle: `onnx-community/MiniCPM5-1B`. It
+# downloads, the graph loads, and then onnxruntime-genai 0.15 refuses to
+# compile a pattern in its tokenizer —
+#
+#     Invalid regex: \p{N}+ / Invalid range in '{}' in regular expression
+#
+# It was curated at 0.7.0 on the strength of its metadata, before ONNX Runtime
+# GenAI was installed here to try it with; the metadata was right about
+# everything except whether it runs. `minicpm5-1b-ov` below is the same model
+# as an OpenVINO export and does run.
+#
+# The construct is not the tell. `\p{N}{1,3}` appears verbatim in
+# Phi-4-mini-reasoning's tokenizer too, and that one loads — so the failure is
+# reported by the runtime rather than predicted from the file.
 # Every one of these subfolders is a `cpu_and_mobile` build: a CPU-targeted
 # graph using int8 accumulation (`acc-level-4`). They run well on CPU through
 # the OpenVINO execution provider. None of these repos ships an OpenVINO NPU
@@ -290,16 +305,22 @@ quantization = "0.8 GB of VRAM"
 description = "Small enough to load beside whatever else is on the card. Tuned for tool calls, which is most of what a turn is."
 
 # ── ONNX Runtime GenAI ───────────────────────────────────────────────────
+#
+# Removed after testing, not on principle: `onnx-community/MiniCPM5-1B`. It
+# downloads, the graph loads, and then onnxruntime-genai 0.15 refuses to
+# compile a pattern in its tokenizer —
+#
+#     Invalid regex: \p{N}+ / Invalid range in '{}' in regular expression
+#
+# It was curated at 0.7.0 on the strength of its metadata, before ONNX Runtime
+# GenAI was installed here to try it with; the metadata was right about
+# everything except whether it runs. `minicpm5-1b-ov` below is the same model
+# as an OpenVINO export and does run.
+#
+# The construct is not the tell. `\p{N}{1,3}` appears verbatim in
+# Phi-4-mini-reasoning's tokenizer too, and that one loads — so the failure is
+# reported by the runtime rather than predicted from the file.
 
-[[models]]
-id = "minicpm5-1b-onnx"
-name = "MiniCPM5 1B (ONNX, agentic)"
-hf_repo = "onnx-community/MiniCPM5-1B"
-runtime = "onnxruntime"
-params_b = 1
-npu_ready = false
-quantization = "FP16 — not quantized; 2.2 GB on disk"
-description = "1B built for on-device agents: XML tool calls, 131k context, Apache-2.0. The smallest model here that is genuinely good at tool use."
 
 [[models]]
 id = "phi-4-mini-onnx"
