@@ -11,13 +11,17 @@ is not a privilege it did not already have.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 DAEMON = "http://127.0.0.1:9100"
 
 _cached_token: str | None = None
+_warned = False
 
 
 def auth_headers() -> dict[str, str]:
@@ -30,12 +34,30 @@ def auth_headers() -> dict[str, str]:
     global _cached_token
     if _cached_token is None:
         try:
-            from daemon.auth import load_token
+            # read_token, not load_token: the UI must never create a token the
+            # daemon has not seen. See daemon/auth.py.
+            from daemon.auth import read_token
 
-            _cached_token = load_token()
+            _cached_token = read_token()
         except Exception:  # noqa: BLE001
+            logger.warning("could not read the API token", exc_info=True)
             _cached_token = ""
     if not _cached_token:
+        # Said once, loudly, naming the file. Without this the only symptom is
+        # a 403 from every authenticated route — the models list comes back
+        # empty and nothing anywhere says why.
+        global _warned
+        if not _warned:
+            _warned = True
+            from daemon.paths import SETTINGS_PATH
+
+            logger.error(
+                "no API token in %s — every request to the daemon will be refused "
+                "with 403. The daemon writes the token to its own data directory; "
+                "if this path is inside a release, the two are looking at "
+                "different files.",
+                SETTINGS_PATH,
+            )
         return {}
     from daemon.auth import TOKEN_HEADER
 
@@ -44,8 +66,9 @@ def auth_headers() -> dict[str, str]:
 
 def forget_token() -> None:
     """Drop the cached token, so the next call re-reads it."""
-    global _cached_token
+    global _cached_token, _warned
     _cached_token = None
+    _warned = False
 
 
 def _merged(kwargs: dict[str, Any]) -> dict[str, Any]:

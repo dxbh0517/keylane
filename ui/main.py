@@ -2124,7 +2124,9 @@ def _socket_server(app: KeylaneApp) -> None:
 def _start_ui_daemon() -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT) + (f":{env['PYTHONPATH']}" if env.get("PYTHONPATH") else "")
-    env.setdefault("KEYLANE_DATA", str(ROOT / "data"))
+    # Not set here: daemon/paths.py derives it from the layout. Forcing
+    # ROOT/data pointed a release install at a directory that never exists,
+    # so a UI started this way could not read the API token.
     if os.path.isfile(_LAYER_SHELL_LIB) and _LAYER_SHELL_LIB not in env.get("LD_PRELOAD", ""):
         env["LD_PRELOAD"] = _LAYER_SHELL_LIB + (
             f":{env['LD_PRELOAD']}" if env.get("LD_PRELOAD") else ""

@@ -6,7 +6,41 @@ import os
 from pathlib import Path
 
 ROOT = Path(os.environ.get("KEYLANE_ROOT", Path(__file__).resolve().parents[1]))
-DATA = Path(os.environ.get("KEYLANE_DATA", ROOT / "data"))
+
+
+def default_data_dir(root: Path) -> Path:
+    """Where this install keeps its data, given where its code lives.
+
+    `root / "data"` is right for a git checkout and wrong for a release, and
+    the difference is not cosmetic. An install lays out
+
+        ~/.local/share/keylane/
+          releases/<tag>/     the code — never contains data/
+          current -> …        what the units follow
+          data/               memories, models, settings
+
+    precisely so that replacing the code cannot touch the data. So inside a
+    release, `root / "data"` names a directory that by design does not exist:
+    `settings.json` is missing, the API token with it, and every authenticated
+    call answers 403 — the models list simply comes back empty.
+
+    That was invisible for as long as everything was launched by the systemd
+    units, which set `KEYLANE_DATA` explicitly. Anything else — the UI started
+    cold by `--toggle`, a script run by hand — got the wrong directory and a
+    confusing 403. The layout is unambiguous, so it is read here rather than
+    guessed at in nine launchers.
+    """
+    # Path.resolve() has already followed `current`, so a release always
+    # presents as <base>/releases/<tag>.
+    if root.parent.name == "releases":
+        return root.parent.parent / "data"
+    # Belt and braces for an unresolved symlink path.
+    if root.name == "current":
+        return root.parent / "data"
+    return root / "data"
+
+
+DATA = Path(os.environ.get("KEYLANE_DATA") or default_data_dir(ROOT))
 MODELS_DIR = DATA / "models"
 CACHE_DIR = DATA / "cache" / "openvino"
 DB_PATH = DATA / "keylane.db"
