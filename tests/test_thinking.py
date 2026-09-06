@@ -1,10 +1,4 @@
-from npu.thinking import (
-    OutputStreamFilter,
-    ThinkingStreamFilter,
-    extract_user_answer,
-    sanitize_response,
-    strip_thinking,
-)
+from npu.thinking import OutputStreamFilter, ThinkingStreamFilter, extract_user_answer, strip_thinking, sanitize_response
 
 _THINK_OPEN = "<" + "think" + ">"
 _THINK_CLOSE = "</" + "think" + ">"

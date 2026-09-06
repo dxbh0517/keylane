@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -15,9 +17,9 @@ from daemon.config import (
     reset_settings,
     save_settings,
 )
-from research.provider import bm25_score
-from research.researcher import Source, _chunk_text, _compress_evidence
 from research.search import diversify_candidates
+from research.provider import bm25_score
+from research.researcher import _chunk_text, _compress_evidence, Source
 
 
 @pytest.fixture()
@@ -108,10 +110,9 @@ def test_chunk_text():
 
 
 def test_registry_maps_query_to_question():
-    import asyncio
-
     from tools.builtin import register_builtin_tools
     from tools.registry import get_registry
+    import asyncio
 
     register_builtin_tools()
     reg = get_registry()
@@ -191,7 +192,6 @@ def test_a_tools_schema_is_read_off_the_sdk_model():
     both names spelled out would pass no matter which one the code reads.
     """
     from mcp.types import Tool as SdkTool
-
     from mcpbridge.client import tool_input_schema
 
     schema = {"type": "object", "properties": {"folderId": {"type": "string"}}}

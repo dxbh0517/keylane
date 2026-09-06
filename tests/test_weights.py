@@ -93,7 +93,7 @@ def test_default_model_id_uses_settings_override(tmp_path: Path, monkeypatch):
     from daemon import config as config_module
     from daemon import paths
     from daemon.config import save_settings
-    from models.catalog import catalog_default_model_id, default_model_id
+    from models.catalog import catalog_default_model_id, default_model_id, load_catalog
 
     monkeypatch.setattr(paths, "CONFIG_DIR", Path(__file__).resolve().parents[1] / "config")
     monkeypatch.setattr(paths, "SETTINGS_PATH", tmp_path / "settings.json")

@@ -16,6 +16,7 @@ from mcpbridge.forms import (
 )
 from scheduler.timeparse import describe, parse_when
 
+
 # ── request routing ──────────────────────────────────────────────────────
 #
 # Routing used to be a regex heuristic that skipped the agent loop entirely for
