@@ -1890,18 +1890,24 @@ def _mic_remote() -> bool:
 
 
 def _read_command(conn: socket.socket) -> str:
-    """The first line of the request, however many reads that takes."""
+    """The first line of the request, however many reads that takes.
+
+    Each read is bounded by what is left of the budget rather than a fixed
+    block size. Asking for a full 8 KiB when only a hundred bytes of budget
+    remain lets the last read carry the total past the cap — which made the
+    limit depend on how the sender happened to fragment its write.
+    """
     chunks: list[bytes] = []
-    total = 0
-    while total < CONTROL_MAX_BYTES:
+    remaining = CONTROL_MAX_BYTES
+    while remaining > 0:
         try:
-            chunk = conn.recv(8192)
+            chunk = conn.recv(min(8192, remaining))
         except OSError:
             break
         if not chunk:
             break
         chunks.append(chunk)
-        total += len(chunk)
+        remaining -= len(chunk)
         if b"\n" in chunk:
             break
     raw = b"".join(chunks).decode("utf-8", errors="ignore")
