@@ -295,14 +295,18 @@ def register_builtin_tools() -> None:
     from research.tools import register_research_tools
     from tools.ask_user import register_ask_user_tool
     from tools.jobs_tools import register_job_tools
+    from tools.screen_tools import register_screen_tools
     from tools.subagent_tool import register_subagent_tool
     from tools.todos import register_todo_tools
+    from tools.walkthrough_tools import register_walkthrough_tools
 
     register_ask_user_tool(reg)
     register_subagent_tool(reg)
     register_job_tools(reg)
     register_todo_tools(reg)
     register_research_tools(reg)
+    register_screen_tools(reg)
+    register_walkthrough_tools(reg)
     try:
         from scheduler.tools import register_scheduler_tools
 
@@ -390,12 +394,16 @@ def register_builtin_sections(prompt: Any) -> None:
 
     from research.tools import register_research_sections
     from tools.ask_user import register_ask_user_sections
-    from tools.jobs_tools import register_job_sections
     from tools.goal_tools import register_goal_sections
+    from tools.jobs_tools import register_job_sections
+    from tools.screen_tools import register_screen_sections
     from tools.subagent_tool import register_subagent_sections
     from tools.todos import register_todo_sections
+    from tools.walkthrough_tools import register_walkthrough_sections
 
     register_ask_user_sections(prompt)
+    register_screen_sections(prompt)
+    register_walkthrough_sections(prompt)
     register_goal_sections(prompt)
     register_subagent_sections(prompt)
     register_job_sections(prompt)

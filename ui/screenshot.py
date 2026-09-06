@@ -159,3 +159,52 @@ def capture_region() -> Path | None:
 def capture_fullscreen() -> Path | None:
     """Capture the whole screen. Returns a PNG path, or None on failure."""
     return _grim([]) or _portal_screenshot(interactive=False)
+
+
+# A crop tighter than this is usually a stray click rather than a gesture, and
+# a few pixels of context help a vision model far more than they cost.
+_MIN_CROP_PX = 24
+_CROP_MARGIN = 0.02
+
+
+def crop_fraction(
+    image: bytes, x: float, y: float, width: float, height: float
+) -> bytes | None:
+    """Crop *image* to a fractional box, with a little margin around it.
+
+    Fractions rather than pixels because the caller works in the model's
+    normalised grid and does not know the screenshot's resolution. Returns
+    None when the box is degenerate, so the caller can fall back to the
+    uncropped frame rather than sending a sliver.
+    """
+    import io
+
+    from PIL import Image
+
+    try:
+        img = Image.open(io.BytesIO(image))
+        img.load()
+    except Exception:  # noqa: BLE001
+        logger.info("could not read the screenshot for cropping", exc_info=True)
+        return None
+
+    full_w, full_h = img.size
+
+    # Measured before the margin is added, deliberately. Adding 2% of a 4K
+    # screen to each side inflates a one-pixel stray click into a box well over
+    # the minimum, which would let exactly the gesture this rejects through.
+    if width * full_w < _MIN_CROP_PX or height * full_h < _MIN_CROP_PX:
+        return None
+
+    margin_x, margin_y = _CROP_MARGIN * full_w, _CROP_MARGIN * full_h
+    left = max(0, int(x * full_w - margin_x))
+    top = max(0, int(y * full_h - margin_y))
+    right = min(full_w, int((x + width) * full_w + margin_x))
+    bottom = min(full_h, int((y + height) * full_h + margin_y))
+
+    if right <= left or bottom <= top:
+        return None
+
+    out = io.BytesIO()
+    img.crop((left, top, right, bottom)).save(out, format="PNG")
+    return out.getvalue()

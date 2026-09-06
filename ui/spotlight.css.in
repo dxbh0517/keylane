@@ -145,6 +145,57 @@ window.spotlight-window.thinking-mode .thinking-orb {
   animation: orb-in 300ms cubic-bezier(0.34, 1.4, 0.5, 1);
 }
 
+/* ── dictation pill ─────────────────────────────────────────────────── */
+/* Deliberately the answer panel's material rather than the command bar's:
+   this is a status readout that sits over someone else's window, so it has
+   to read as a HUD, not as something waiting for input. */
+
+.dictation-pill {
+  border-radius: {{radius-control}};
+  padding: 9px 15px 9px 11px;
+}
+
+window.spotlight-window.style-light .dictation-pill {
+  background-color: {{light.hud-bg}};
+  border: 1px solid {{light.hud-border}};
+  box-shadow: {{light.hud-shadow}};
+}
+window.spotlight-window.style-dark .dictation-pill {
+  background-color: {{dark.hud-bg}};
+  border: 1px solid {{dark.hud-border}};
+  box-shadow: {{dark.hud-shadow}};
+}
+
+.dictation-orb {
+  min-width: 20px;
+  min-height: 20px;
+}
+
+.dictation-label {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+window.spotlight-window.style-light .dictation-label {
+  color: {{light.hud-title}};
+}
+window.spotlight-window.style-dark .dictation-label {
+  color: {{dark.hud-title}};
+}
+
+.dictation-target {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+window.spotlight-window.style-light .dictation-target {
+  color: {{light.hud-status}};
+}
+window.spotlight-window.style-dark .dictation-target {
+  color: {{dark.hud-status}};
+}
+
 /* ── command bar ────────────────────────────────────────────────────── */
 
 .spotlight-panel {

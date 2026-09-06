@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import threading
 from contextlib import asynccontextmanager
 from typing import Any
-
-import base64
-import json
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -17,7 +16,14 @@ from pydantic import BaseModel, Field
 
 from agent.loop import AIAgent
 from daemon.auth import auth_middleware
-from daemon.config import add_mcp_server, all_settings, list_mcp_servers, remove_mcp_server, reset_settings, save_settings
+from daemon.config import (
+    add_mcp_server,
+    all_settings,
+    list_mcp_servers,
+    remove_mcp_server,
+    reset_settings,
+    save_settings,
+)
 from daemon.health import settings_health
 from daemon.openai_api import router as openai_router
 from daemon.paths import ensure_data_dirs
@@ -46,6 +52,22 @@ class ChatResponse(BaseModel):
     answer: str
     session_id: str
     tool_calls: int = 0
+
+
+class CleanupRequest(BaseModel):
+    text: str
+
+
+class ComposeRequest(BaseModel):
+    """Screen-aware drafting: what the user said, and what they were looking at."""
+
+    instruction: str
+    app: str = ""
+    image: str = ""
+
+
+class TextResponse(BaseModel):
+    text: str
 
 
 class ModelSelectRequest(BaseModel):
@@ -109,8 +131,8 @@ async def lifespan(app: FastAPI):
         install_update_check()
     except Exception:  # noqa: BLE001
         logger.exception("could not arm the daily update check")
-    from tools.builtin import register_builtin_tools
     from mcpbridge.client import load_mcp_tools
+    from tools.builtin import register_builtin_tools
     from tools.registry import get_registry
 
     register_builtin_tools()
@@ -624,6 +646,61 @@ async def chat_stream(body: ChatRequest) -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/dictation/cleanup", response_model=TextResponse)
+async def dictation_cleanup(body: CleanupRequest) -> TextResponse:
+    """Punctuate a transcript. Never rewords it — see `daemon/compose.py`."""
+    from daemon.compose import clean_transcript
+
+    return TextResponse(text=await asyncio.to_thread(clean_transcript, body.text))
+
+
+@app.post("/compose", response_model=TextResponse)
+async def compose(body: ComposeRequest) -> TextResponse:
+    """Draft text from a spoken instruction plus a screenshot."""
+    from daemon.compose import compose_text
+
+    image: bytes | None = None
+    if body.image:
+        try:
+            image = base64.b64decode(body.image)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(400, "image is not valid base64") from exc
+
+    text = await asyncio.to_thread(compose_text, body.instruction, body.app, image)
+    return TextResponse(text=text)
+
+
+@app.get("/walkthrough")
+def walkthrough_state() -> dict[str, Any]:
+    """What step the user is on, if a walkthrough is running."""
+    from seams.walkthrough import get_walkthroughs
+
+    active = get_walkthroughs().active
+    return {"running": active is not None, **(active.describe() if active else {})}
+
+
+@app.post("/walkthrough/advance")
+def walkthrough_advance() -> dict[str, Any]:
+    """Move to the next step and hand back what to draw.
+
+    The UI calls this, not the model: by the time the user finishes step one
+    the turn that set the walkthrough up has long since ended.
+    """
+    from seams.walkthrough import get_walkthroughs
+
+    walkthrough = get_walkthroughs().advance()
+    if walkthrough is None:
+        return {"running": False, "finished": True}
+    return {"running": not walkthrough.finished, **walkthrough.describe()}
+
+
+@app.delete("/walkthrough")
+def walkthrough_cancel() -> dict[str, Any]:
+    from seams.walkthrough import get_walkthroughs
+
+    return {"stopped": get_walkthroughs().stop()}
 
 
 @app.get("/settings")

@@ -42,6 +42,32 @@ async def check_mcp_servers() -> list[dict[str, Any]]:
     return out
 
 
+def check_screen_layer() -> dict[str, Any]:
+    """Whether dictation and annotation can work on this machine.
+
+    Both depend on binaries rather than on configuration, and both fail in ways
+    that look like a Keylane bug from the outside — nothing typed, nothing
+    drawn. Reporting them beside SearXNG and MCP is what makes the cause
+    visible before the user files it as one.
+    """
+    from vision import ocr
+
+    try:
+        from inject import describe as describe_injection
+
+        injection = describe_injection()
+    except Exception as exc:  # noqa: BLE001
+        injection = {"ok": False, "error": str(exc), "available": []}
+
+    return {
+        "injection": injection,
+        "ocr": {
+            "ok": ocr.available(),
+            "reason": "" if ocr.available() else "tesseract is not installed",
+        },
+    }
+
+
 async def settings_health() -> dict[str, Any]:
     searx = await check_searxng()
     mcp = await check_mcp_servers()
@@ -58,6 +84,7 @@ async def settings_health() -> dict[str, Any]:
         "subagents": ctx.subagents.status(),
         "searxng": searx,
         "mcp": mcp,
+        "screen": check_screen_layer(),
         "research": {
             "search_backend": cfg.get("search_backend", "searxng"),
             "extract_backend": cfg.get("extract_backend", "local"),

@@ -102,11 +102,30 @@ def _skills_context() -> str:
     """
     from seams import get_context
 
-    skills = get_context().skills.for_model()
+    registry = get_context().skills
+    skills = registry.for_model()
     if not skills:
         return ""
+
+    # Only ask what window is focused when some skill actually cares. Reading
+    # the focused window means a subprocess, and paying for one on every turn
+    # to serve the common case of no app-scoped skills would be waste.
+    here: list[str] = []
+    if any(s.scoped() for s in skills):
+        try:
+            from ui.window_ctx import focused_window
+
+            window = focused_window()
+        except Exception:  # noqa: BLE001
+            window = None
+        if window is not None and window.known:
+            skills = registry.for_window(window.app_id, window.title)
+            here = [s.name for s in skills if s.matches(window.app_id, window.title)]
+
     entries = "\n".join(
-        f"- `{s.name}`: {s.description}" + (f" (use when: {s.when_to_use})" if s.when_to_use else "")
+        f"- `{s.name}`: {s.description}"
+        + (f" (use when: {s.when_to_use})" if s.when_to_use else "")
+        + (" — **about the app in front of the user right now**" if s.name in here else "")
         for s in skills
     )
     return (

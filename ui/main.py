@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import cairo
 import json
 import logging
 import os
@@ -16,6 +15,8 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+import cairo
 
 _LAYER_SHELL_LIB = "/usr/lib64/libgtk4-layer-shell.so.0"
 if (
@@ -52,12 +53,10 @@ sys.path.insert(0, str(ROOT))
 
 from npu.thinking import extract_user_answer, sanitize_response
 from ui import api
-from ui.clipboard_image import read_image_bytes
-from ui.canvas import block_markup, headline_text, is_compact, parse_blocks, plain_text
 from ui.canvas import _inline as _inline_markup
-from ui.thinking_orb import ThinkingOrb
-from ui.settings import FOCUS_GRACE, FOCUS_SETTLE_MS, SettingsWindow
-from ui.screenshot import capture_fullscreen, capture_region
+from ui.canvas import block_markup, headline_text, is_compact, parse_blocks, plain_text
+from ui.clipboard_image import read_image_bytes
+from ui.dictation import Dictation, DictationResult
 from ui.placement import (
     floating_geometry,
     forced_backend,
@@ -67,7 +66,15 @@ from ui.placement import (
     wayland_session,
     wmctrl_available,
 )
-from ui.theme import apply_scheme_classes, apply_spotlight_theme, watch_color_scheme, watch_theme
+from ui.screenshot import capture_fullscreen, capture_region, crop_fraction
+from ui.settings import FOCUS_GRACE, FOCUS_SETTLE_MS, SettingsWindow
+from ui.theme import (
+    apply_scheme_classes,
+    apply_spotlight_theme,
+    watch_color_scheme,
+    watch_theme,
+)
+from ui.thinking_orb import ThinkingOrb
 from ui.voice import mic_recording, start_mic, stop_mic
 
 PANEL_WIDTH = 680
@@ -230,6 +237,16 @@ class SpotlightWindow(Gtk.ApplicationWindow):
         self._spotlight_had_focus = False
         self._shown_at = 0.0
         self._on_top_applied = False
+        self._dictation = Dictation()
+        self._annotation_overlay = None
+        # The last thing submitted, kept so a failed turn can be retried
+        # without the user retyping it.
+        self._last_submission: tuple[str, list[bytes]] | None = None
+        # Text from files dropped on the surface, carried into the next turn.
+        self._dropped_context = ""
+        # What the window was doing before dictation borrowed the surface, so
+        # cancelling puts it back rather than leaving a stray HUD on screen.
+        self._pre_dictation_mode: str | None = None
 
         self._layered = _configure_layer_shell_overlay(self)
         if not self._layered:
@@ -279,7 +296,10 @@ class SpotlightWindow(Gtk.ApplicationWindow):
 
         self._build_spotlight_page()
         self._build_thinking_page()
+        self._build_dictation_page()
         self._build_corner_page()
+
+        self._install_drop_target(self)
 
         apply_scheme_classes(self)
         watch_color_scheme(lambda _dark: apply_scheme_classes(self))
@@ -409,6 +429,287 @@ class SpotlightWindow(Gtk.ApplicationWindow):
             GLib.idle_add(self._update_pass_through_input_region)
             GLib.timeout_add(80, self._update_pass_through_input_region)
 
+    def _build_dictation_page(self) -> None:
+        """The listening pill: what mode is running, and where the text will go."""
+        wrap = Gtk.Box()
+        wrap.set_halign(Gtk.Align.END)
+        wrap.set_valign(Gtk.Align.START)
+        self._dictation_wrap = wrap
+        self._stack.add_named(wrap, "dictation")
+
+        pill = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        pill.add_css_class("dictation-pill")
+        wrap.append(pill)
+
+        self._dictation_orb = ThinkingOrb(size=20)
+        self._dictation_orb.add_css_class("dictation-orb")
+        self._dictation_orb.set_valign(Gtk.Align.CENTER)
+        pill.append(self._dictation_orb)
+
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        text.set_valign(Gtk.Align.CENTER)
+        pill.append(text)
+
+        self._dictation_label = Gtk.Label(label="Listening…")
+        self._dictation_label.add_css_class("dictation-label")
+        self._dictation_label.set_xalign(0.0)
+        text.append(self._dictation_label)
+
+        self._dictation_target = Gtk.Label(label="")
+        self._dictation_target.add_css_class("dictation-target")
+        self._dictation_target.set_xalign(0.0)
+        text.append(self._dictation_target)
+
+    # ── dictation ────────────────────────────────────────────────────────
+
+    def toggle_dictation(self, mode: str = "dictate") -> None:
+        """Start listening, or finish the utterance already in progress.
+
+        One action for both edges is what lets a single WM binding work as
+        press-to-start / press-again-to-send, without Keylane needing to see
+        the key itself.
+        """
+        if self._dictation.active:
+            self._finish_dictation()
+        else:
+            self._begin_dictation(mode)
+
+    def _begin_dictation(self, mode: str) -> None:
+        from ui.dictation import DictationSettings
+
+        if not DictationSettings.load().enabled:
+            self._show_toast("Dictation is switched off in Settings.")
+            return
+
+        # Capture the target *before* showing our own window: on a compositor
+        # that focuses the pill, asking afterwards names Keylane.
+        target = self._dictation.start(mode)
+
+        self._pre_dictation_mode = self._mode if self.get_visible() else None
+        self._mode = "dictation"
+        self.add_css_class("corner-mode")
+        self.add_css_class("thinking-mode")
+        self._scrim.remove_css_class("visible")
+        self._dictation_label.set_text(
+            "Listening — say what to write" if mode == "compose" else "Listening…"
+        )
+        self._dictation_target.set_text(
+            f"→ {target.label()}" if target.known else "→ the focused window"
+        )
+        self._dictation_orb.set_state("thinking")
+
+        self._configure_thinking_layout()
+        self._stack.set_visible_child_name("dictation")
+        self.set_visible(True)
+        self.present()
+        if self._layered:
+            GLib.idle_add(self._update_pass_through_input_region)
+        self._start_region_tracking()
+
+    def _finish_dictation(self) -> None:
+        mode = self._dictation.mode
+        self._dictation_label.set_text(
+            "Writing…" if mode == "compose" else "Transcribing…"
+        )
+        self._dictation_target.set_text("")
+
+        def _done(result: DictationResult) -> None:
+            GLib.idle_add(self._dictation_finished, result)
+
+        self._dictation.stop(
+            on_done=_done,
+            capture_screen=self._screen_bytes if mode == "compose" else None,
+        )
+
+    def cancel_dictation(self) -> None:
+        if not self._dictation.active:
+            return
+        self._dictation.cancel()
+        self._end_dictation_ui()
+
+    def _screen_bytes(self) -> bytes | None:
+        """A full-screen grab for compose mode, read off disk and cleaned up."""
+        path = capture_fullscreen()
+        if path is None:
+            return None
+        try:
+            return path.read_bytes()
+        except OSError:
+            return None
+        finally:
+            path.unlink(missing_ok=True)
+
+    def _dictation_finished(self, result: DictationResult) -> bool:
+        self._end_dictation_ui()
+        if result.error:
+            # The words still exist even when injection failed, so they go on
+            # the clipboard and into the HUD rather than being dropped.
+            if result.text:
+                self._copy_to_clipboard(result.text)
+                self._show_corner_answer(
+                    f"Could not type that ({result.error}).\n\n"
+                    f"It is on your clipboard:\n\n{result.text}"
+                )
+            else:
+                self._show_toast(f"Dictation failed: {result.error}")
+        elif not result.text:
+            self._show_toast("Nothing was said.")
+        return False
+
+    def _end_dictation_ui(self) -> None:
+        self._mode = self._pre_dictation_mode or "spotlight"
+        self._pre_dictation_mode = None
+        self._stop_region_tracking()
+        self.set_visible(False)
+        self.remove_css_class("thinking-mode")
+        self.remove_css_class("corner-mode")
+
+    def _retry_last(self) -> None:
+        """Re-run the last question, in the same session."""
+        if self._last_submission is None or self._busy:
+            return
+        text, images = self._last_submission
+        self._retry_btn.set_visible(False)
+        self._submit_query(text, images)
+
+    # ── dropped files ────────────────────────────────────────────────────
+
+    def _install_drop_target(self, widget: Gtk.Widget) -> None:
+        """Accept files dropped anywhere on this surface."""
+        target = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
+        target.connect("drop", self._on_files_dropped)
+        widget.add_controller(target)
+
+    def _on_files_dropped(self, _target, value, _x: float, _y: float) -> bool:
+        try:
+            files = value.get_files()
+        except AttributeError:
+            return False
+        paths = [Path(f.get_path()) for f in files if f.get_path()]
+        if not paths:
+            return False
+        # Reading a dropped PDF is not instant, so it happens off the GTK
+        # thread; only the resulting summary comes back.
+        threading.Thread(target=self._load_dropped, args=(paths,), daemon=True).start()
+        return True
+
+    def _load_dropped(self, paths: list[Path]) -> None:
+        from ui.documents import load
+
+        loaded = [load(path) for path in paths]
+        GLib.idle_add(self._apply_dropped, loaded)
+
+    def _apply_dropped(self, loaded: list) -> bool:
+        from ui.documents import as_context
+
+        # Show the bar if the drop landed on the orb or the answer card, so
+        # the user has somewhere to type the question the file is about.
+        if self._mode != "spotlight":
+            self._mode = "spotlight"
+            self.remove_css_class("corner-mode")
+            self.remove_css_class("thinking-mode")
+            self._configure_spotlight_layout()
+            self._stack.set_visible_child_name("spotlight")
+            if self._layered:
+                self._scrim.add_css_class("visible")
+            self._shown_at = time.monotonic()
+            self.set_visible(True)
+            self.present()
+            self._start_region_tracking()
+
+        errors = [item for item in loaded if item.kind == "error"]
+        images = [item for item in loaded if item.kind == "image"]
+        texts = [item for item in loaded if item.kind == "text"]
+
+        for item in images:
+            self._attached_images.append(item.image)
+            self._show_attached_image(item.image, item.label)
+
+        self._dropped_context = as_context(texts)
+        if texts:
+            names = ", ".join(item.label for item in texts)
+            truncated = any(item.truncated for item in texts)
+            self._show_toast(
+                f"Attached {names}" + (" (truncated)" if truncated else "")
+            )
+        if errors:
+            self._show_toast(errors[0].error)
+
+        self.entry.grab_focus()
+        return False
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        display = Gdk.Display.get_default()
+        if display is not None:
+            display.get_clipboard().set(text)
+
+    # ── annotations ──────────────────────────────────────────────────────
+
+    def _overlay(self):
+        """The annotation surface, built the first time something draws."""
+        if self._annotation_overlay is None:
+            from ui.overlay import AnnotationOverlay
+
+            app = self.get_application()
+            self._annotation_overlay = AnnotationOverlay(app)
+        return self._annotation_overlay
+
+    def draw_annotation(self, annotation) -> None:
+        """Put an already-grounded annotation on screen. GTK thread only."""
+        if not annotation.shapes and not annotation.caption:
+            logger.info("ignoring an annotation with nothing in it")
+            return
+        self._overlay().show_annotation(annotation)
+
+    def clear_annotations(self) -> None:
+        if self._annotation_overlay is not None:
+            self._annotation_overlay.clear()
+
+    def pick_region_for_question(self) -> None:
+        """Let the user circle something, then ask about that crop."""
+
+        def _picked(region: tuple[float, float, float, float]) -> None:
+            GLib.idle_add(self._ask_about_region, region)
+
+        self._overlay().pick_region(_picked)
+
+    def _ask_about_region(self, region: tuple[float, float, float, float]) -> bool:
+        """Screenshot, crop to what was circled, and open the bar to ask."""
+        from ui.annotations import GRID
+
+        shot = capture_fullscreen()
+        if shot is None:
+            self._show_toast("Could not capture the screen.")
+            return False
+        try:
+            raw = shot.read_bytes()
+        except OSError:
+            return False
+        finally:
+            shot.unlink(missing_ok=True)
+
+        gx, gy, gw, gh = region
+        cropped = crop_fraction(raw, gx / GRID, gy / GRID, gw / GRID, gh / GRID)
+        # The full screen goes with it: the crop says *what*, the whole frame
+        # says what it is part of, and a 4B model needs both.
+        self._attached_images = [cropped or raw]
+        self._show_attached_image(cropped or raw, "Circled region")
+
+        self._mode = "spotlight"
+        self.remove_css_class("corner-mode")
+        self._configure_spotlight_layout()
+        self._stack.set_visible_child_name("spotlight")
+        self.entry.set_text("")
+        self.entry.set_sensitive(True)
+        self._shown_at = time.monotonic()
+        if self._layered:
+            self._scrim.add_css_class("visible")
+        self.set_visible(True)
+        self.present()
+        self._start_region_tracking()
+        self.entry.grab_focus()
+        return False
+
     def _build_corner_page(self) -> None:
         panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         panel.add_css_class("corner-panel")
@@ -505,6 +806,16 @@ class SpotlightWindow(Gtk.ApplicationWindow):
         copy_btn.connect("clicked", lambda *_: self._copy_answer())
         details_row.append(copy_btn)
 
+        # A failed turn on the NPU costs fifteen seconds the user cannot get
+        # back, and retyping the question to try again costs them more. Shown
+        # only when the last turn actually failed.
+        self._retry_btn = Gtk.Button(label="Retry")
+        self._retry_btn.add_css_class("corner-details-btn")
+        self._retry_btn.set_can_focus(False)
+        self._retry_btn.set_visible(False)
+        self._retry_btn.connect("clicked", lambda *_: self._retry_last())
+        details_row.append(self._retry_btn)
+
         self._canvas_full_answer = ""
         self._canvas_summary = ""
         self._canvas_showing_full = False
@@ -540,10 +851,8 @@ class SpotlightWindow(Gtk.ApplicationWindow):
         text = plain_text(self._canvas_full_answer or self._canvas_summary)
         if not text:
             return
-        display = Gdk.Display.get_default()
-        if display is not None:
-            display.get_clipboard().set(text)
-            self._set_corner_status("Copied to clipboard")
+        self._copy_to_clipboard(text)
+        self._set_corner_status("Copied to clipboard")
 
     def _on_followup(self, *_args: object) -> None:
         text = self._followup_entry.get_text().strip()
@@ -884,6 +1193,8 @@ class SpotlightWindow(Gtk.ApplicationWindow):
             return self._thinking_orb
         if self._mode == "corner":
             return self._corner_panel
+        if self._mode == "dictation":
+            return self._dictation_wrap
         return None
 
     def _update_pass_through_input_region(self) -> bool:
@@ -1135,6 +1446,7 @@ class SpotlightWindow(Gtk.ApplicationWindow):
             self.entry.set_text("")
             self.entry.set_sensitive(True)
             self._clear_attached_image()
+            self._dropped_context = ""
             self._spotlight_had_focus = False
             self._shown_at = time.monotonic()
             if self._layered:
@@ -1403,6 +1715,12 @@ class SpotlightWindow(Gtk.ApplicationWindow):
             return
 
         display_query = text or "Describe this image"
+        attached, self._dropped_context = self._dropped_context, ""
+        if attached:
+            # In front of the question: the model reads the document, then
+            # what to do with it, which is the order a person would use.
+            text = f"{attached}\n\n{text}" if text else attached
+        self._last_submission = (text, list(images))
         self._enter_corner_mode(display_query)
         encoded_images = [base64.b64encode(img).decode("ascii") for img in images]
         self._clear_attached_image()
@@ -1462,6 +1780,7 @@ class SpotlightWindow(Gtk.ApplicationWindow):
                 resolved = answer or "No response."
                 self._turns.append((text, resolved))
                 self._show_corner_answer(resolved, sources or None)
+                self._retry_btn.set_visible(resolved.startswith("Error:"))
                 return False
 
             GLib.idle_add(_finish)
@@ -1479,6 +1798,10 @@ class KeylaneApp(Gtk.Application):
         self._mic_action = Gio.SimpleAction.new("mic", None)
         self._mic_action.connect("activate", self._on_mic_action)
         self.add_action(self._mic_action)
+        for name, mode in (("dictate", "dictate"), ("compose", "compose")):
+            action = Gio.SimpleAction.new(name, None)
+            action.connect("activate", self._on_dictate_action, mode)
+            self.add_action(action)
 
     def ensure_window(self) -> SpotlightWindow:
         win = self.props.active_window
@@ -1497,6 +1820,9 @@ class KeylaneApp(Gtk.Application):
     def _on_mic_action(self, *_args) -> None:
         self.ensure_window().toggle_mic()
 
+    def _on_dictate_action(self, _action, _param, mode: str = "dictate") -> None:
+        self.ensure_window().toggle_dictation(mode)
+
     def do_startup(self) -> None:
         Gtk.Application.do_startup(self)
         apply_spotlight_theme()
@@ -1514,21 +1840,42 @@ class KeylaneApp(Gtk.Application):
         self.toggle_window()
 
 
-def _remote_command(command: str) -> bool:
+# The control port. Commands are one line: a verb, optionally followed by a
+# JSON payload. The daemon reaches the overlay this way, so the read has to be
+# big enough for a walkthrough's worth of shapes rather than a bare verb.
+CONTROL_PORT = 9101
+CONTROL_MAX_BYTES = 256 * 1024
+
+# Verbs that take no payload, mapped to what they do to the window.
+_SIMPLE_COMMANDS: dict[str, str] = {
+    "toggle": "toggle",
+    "mic": "mic",
+    "dictate": "dictate",
+    "compose": "compose",
+    "point": "point",
+    "annotate_clear": "annotate_clear",
+    "next": "next",
+}
+
+
+def _remote_command(command: str, payload: str = "") -> bool:
+    """Send a command to a running UI process. True if one took it."""
+    if not payload:
+        try:
+            completed = subprocess.run(
+                ["gapplication", "action", "app.keylane.Spotlight", command],
+                check=False,
+                capture_output=True,
+                timeout=2,
+            )
+            if completed.returncode == 0:
+                return True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    line = f"{command} {payload}".strip() if payload else command
     try:
-        completed = subprocess.run(
-            ["gapplication", "action", "app.keylane.Spotlight", command],
-            check=False,
-            capture_output=True,
-            timeout=2,
-        )
-        if completed.returncode == 0:
-            return True
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    try:
-        with socket.create_connection(("127.0.0.1", 9101), timeout=1) as sock:
-            sock.sendall(f"{command}\n".encode())
+        with socket.create_connection(("127.0.0.1", CONTROL_PORT), timeout=1) as sock:
+            sock.sendall(f"{line}\n".encode())
         return True
     except OSError:
         return False
@@ -1542,34 +1889,184 @@ def _mic_remote() -> bool:
     return _remote_command("mic")
 
 
+def _read_command(conn: socket.socket) -> str:
+    """The first line of the request, however many reads that takes."""
+    chunks: list[bytes] = []
+    total = 0
+    while total < CONTROL_MAX_BYTES:
+        try:
+            chunk = conn.recv(8192)
+        except OSError:
+            break
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if b"\n" in chunk:
+            break
+    raw = b"".join(chunks).decode("utf-8", errors="ignore")
+    return raw.split("\n", 1)[0].strip()
+
+
+def _apply_command(app: KeylaneApp, verb: str) -> None:
+    """Run one payload-free control command. GTK thread only."""
+    window = app.ensure_window()
+    if verb == "mic":
+        window.toggle_mic()
+    elif verb in ("dictate", "compose"):
+        window.toggle_dictation(verb)
+    elif verb == "annotate_clear":
+        window.clear_annotations()
+    elif verb == "point":
+        window.pick_region_for_question()
+    else:
+        app.toggle_window()
+
+
+def _draw_grounded(app: KeylaneApp, data: dict) -> dict:
+    """Ground the shapes, then hand them to the overlay.
+
+    Deliberately runs on the caller's thread rather than GTK's. Grounding means
+    a screenshot and a tesseract pass — seconds of work — and doing that on the
+    GTK thread would freeze every window Keylane owns while it ran. Only the
+    final draw hops back.
+    """
+    from ui.annotations import parse_annotation
+    from vision.ground import resolve
+
+    needs_ocr = any(
+        isinstance(s, dict) and str(s.get("target_text", "")).strip()
+        for s in (data.get("shapes") or [])
+        if isinstance(data.get("shapes"), list)
+    )
+
+    screenshot: bytes | None = None
+    if needs_ocr:
+        shot = capture_fullscreen()
+        if shot is not None:
+            try:
+                screenshot = shot.read_bytes()
+            except OSError:
+                screenshot = None
+            finally:
+                shot.unlink(missing_ok=True)
+
+    grounding = resolve(data, screenshot)
+    annotation = parse_annotation(grounding.payload)
+    if not annotation.shapes and not annotation.caption:
+        return {"ok": False, "error": "no drawable shapes in that annotation"}
+
+    GLib.idle_add(lambda: (app.ensure_window().draw_annotation(annotation), False)[1])
+
+    reply: dict = {"ok": True, "shapes": len(annotation.shapes)}
+    if grounding.resolved:
+        reply["located"] = grounding.resolved
+    if grounding.unresolved:
+        reply["ok"] = False
+        reply["not_found"] = grounding.unresolved
+        reply["error"] = (
+            "could not find {} on screen; drew at the coordinates given instead".format(
+                ", ".join(repr(t) for t in grounding.unresolved)
+            )
+            if grounding.ocr_available
+            else "tesseract is not installed, so named targets cannot be located"
+        )
+    return reply
+
+
+def _handle_annotate(app: KeylaneApp, payload: str) -> dict:
+    """The `annotate` control command: parse the request, then draw it."""
+    try:
+        data = json.loads(payload) if payload else {}
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": f"annotation payload is not valid JSON: {exc}"}
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "annotation payload must be an object"}
+    return _draw_grounded(app, data)
+
+
+def _handle_next(app: KeylaneApp) -> dict:
+    """Advance the running walkthrough and draw the step that comes back.
+
+    The daemon owns the sequence, so the UI asks it what is next rather than
+    keeping a second copy of the state that could disagree.
+    """
+    try:
+        response = api.post("/walkthrough/advance", timeout=15)
+        response.raise_for_status()
+        state = response.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"could not reach the daemon: {exc}"}
+
+    if not state.get("running"):
+        GLib.idle_add(lambda: (app.ensure_window().clear_annotations(), False)[1])
+        return {"ok": True, "finished": True}
+
+    annotation = dict(state.get("annotation") or {})
+    step, total = state.get("step", 0), state.get("total", 0)
+    # The step's own shapes still name their targets by text, so this goes
+    # through grounding exactly as the first step did.
+    annotation["caption"] = f"{step}/{total}  {state.get('caption', '')}".strip()
+    result = _draw_grounded(app, annotation)
+    result["step"], result["total"] = step, total
+    return result
+
+
+def _serve_connection(app: KeylaneApp, conn: socket.socket) -> None:
+    """One control request: read it, run it, answer with a JSON line.
+
+    Answering matters for `annotate`: without a reply the model has no way to
+    learn that the button it named is not on screen, and would keep pointing
+    at nothing.
+    """
+    with conn:
+        line = _read_command(conn) or "toggle"
+        verb, _, payload = line.partition(" ")
+        verb = verb.strip().lower()
+        payload = payload.strip()
+
+        try:
+            if verb == "annotate":
+                reply = _handle_annotate(app, payload)
+            elif verb == "next":
+                reply = _handle_next(app)
+            else:
+                if verb not in _SIMPLE_COMMANDS:
+                    verb = "toggle"
+                GLib.idle_add(lambda v=verb: (_apply_command(app, v), False)[1])
+                reply = {"ok": True}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("control command %r failed", verb)
+            reply = {"ok": False, "error": str(exc)}
+
+        try:
+            conn.sendall((json.dumps(reply, ensure_ascii=False) + "\n").encode())
+        except OSError:
+            # A fire-and-forget client (`--toggle`) has already gone.
+            pass
+
+
 def _socket_server(app: KeylaneApp) -> None:
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    for attempt in range(5):
+    for _attempt in range(5):
         try:
-            server.bind(("127.0.0.1", 9101))
+            server.bind(("127.0.0.1", CONTROL_PORT))
             break
         except OSError:
             time.sleep(0.5)
     else:
-        logger.error("could not bind toggle socket on :9101")
+        logger.error("could not bind the control socket on :%d", CONTROL_PORT)
         return
     server.listen(5)
 
     while True:
         conn, _ = server.accept()
-        with conn:
-            raw = conn.recv(64).decode("utf-8", errors="ignore").strip() or "toggle"
-        cmd = raw.split("\n", 1)[0].strip().lower()
-
-        def _dispatch(app_ref: KeylaneApp = app, command: str = cmd) -> bool:
-            if command == "mic":
-                app_ref.ensure_window().toggle_mic()
-            else:
-                app_ref.toggle_window()
-            return False
-
-        GLib.idle_add(_dispatch)
+        # A thread per connection: grounding an annotation takes seconds, and
+        # a toggle arriving meanwhile must not queue behind it.
+        threading.Thread(
+            target=_serve_connection, args=(app, conn), daemon=True
+        ).start()
 
 
 def _start_ui_daemon() -> None:
@@ -1628,34 +2125,58 @@ def _select_backend() -> None:
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
+def _send_or_start(command: str) -> None:
+    """Deliver *command*, starting the UI first if nothing is listening."""
+    if _remote_command(command):
+        return
+    _start_ui_daemon()
+    for _ in range(30):
+        time.sleep(0.1)
+        if _remote_command(command):
+            return
+    print("Keylane UI failed to start.", file=sys.stderr)
+    sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--toggle", action="store_true")
-    parser.add_argument("--mic", action="store_true")
+    parser.add_argument("--toggle", action="store_true", help="show or hide the command bar")
+    parser.add_argument("--mic", action="store_true", help="dictate into Keylane's own entry box")
+    parser.add_argument(
+        "--dictate",
+        action="store_true",
+        help="dictate into whatever window has the caret; press again to send",
+    )
+    parser.add_argument(
+        "--compose",
+        action="store_true",
+        help="say what you want written; Keylane reads the screen and types the draft",
+    )
+    parser.add_argument(
+        "--point",
+        action="store_true",
+        help="circle something on screen and ask about it",
+    )
+    parser.add_argument(
+        "--next",
+        action="store_true",
+        dest="next_step",
+        help="advance the running walkthrough to its next step",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
 
-    if args.mic:
-        if _mic_remote():
+    for flag, command in (
+        ("mic", "mic"),
+        ("dictate", "dictate"),
+        ("compose", "compose"),
+        ("point", "point"),
+        ("next_step", "next"),
+        ("toggle", "toggle"),
+    ):
+        if getattr(args, flag):
+            _send_or_start(command)
             return
-        _start_ui_daemon()
-        for _ in range(30):
-            time.sleep(0.1)
-            if _mic_remote():
-                return
-        print("Keylane UI failed to start.", file=sys.stderr)
-        sys.exit(1)
-
-    if args.toggle:
-        if _toggle_remote():
-            return
-        _start_ui_daemon()
-        for _ in range(30):
-            time.sleep(0.1)
-            if _toggle_remote():
-                return
-        print("Keylane UI failed to start.", file=sys.stderr)
-        sys.exit(1)
 
     _select_backend()
     app = KeylaneApp()

@@ -40,6 +40,8 @@ SECTION_ORDER: dict[str, int] = {
     # would naturally reach for them.
     "memory": 100,
     "web": 110,
+    "screen": 115,
+    "walkthrough": 116,
     "skills": 120,
     "todo": 130,
     "goal": 135,

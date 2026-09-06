@@ -22,3 +22,31 @@ shell_allowlist = ["ls", "pwd", "date", "whoami", "cat", "head", "tail", "grep",
 # filesystem, because `cat` and `grep` will read anything they are pointed at.
 # Empty means the Keylane checkout only. Paths may use ~.
 shell_read_roots = []
+
+[dictation]
+# Hold-to-talk that types into whatever window has the caret, rather than into
+# Keylane's own entry box. Bind a key to `ui/main.py --dictate`.
+enabled = true
+# A Whisper size: tiny | base | small | medium | large. `base` loads fastest;
+# `small` is the first size that keeps technical vocabulary intact.
+model = "base"
+# Blank auto-detects. An explicit code ("en", "de") is faster and steadier.
+language = ""
+# A second pass that fixes punctuation and casing only. It must never reword.
+cleanup = true
+# auto | wtype | ydotool | xdotool | clipboard. `auto` picks what the session
+# supports, and avoids key-position providers on a non-QWERTY layout.
+provider = "auto"
+
+[overlay]
+# Drawing on the desktop: target rings, arrows and highlights.
+enabled = true
+# How long a plain highlight stays before fading. Walkthrough steps ignore this
+# and persist until the step is advanced.
+highlight_ms = 2000
+# Wobble the strokes so a shape reads as a pointer rather than as a rendering
+# artefact of the compositor.
+hand_drawn = true
+# Snap a named target onto the OCR box of its label when tesseract is present.
+# Without it the model's own coordinates are used, which are far less reliable.
+ocr_snap = true
