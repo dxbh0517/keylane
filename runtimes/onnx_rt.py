@@ -503,13 +503,23 @@ def _explain_load_failure(exc: Exception, model_dir: Path, device: str) -> str:
 
     free = free_vram_mb()
     weights = sum(f.stat().st_size for f in model_dir.glob("*.onnx*") if f.is_file())
-    detail = f"{model_dir.name} needs about {weights / 1e9:.1f} GB of VRAM"
+
+    # Only measurements that were actually taken. A model whose files are not
+    # where this looked sums to zero, and "needs about 0.0 GB" is worse than
+    # saying nothing — it reads as a number rather than as a missing one.
+    parts = [f"{model_dir.name} could not be loaded on the GPU"]
+    if weights > 0:
+        size = (
+            f"{weights / 1e9:.1f} GB" if weights >= 1e9 else f"{weights / 1e6:.0f} MB"
+        )
+        parts.append(f"it needs about {size} of VRAM")
     if free is not None:
-        detail += f" and {free} MiB is free"
+        parts.append(f"{free} MiB is free")
+
     return (
-        f"not enough free VRAM to load this model on CUDA — {detail}. "
-        "Close whatever else is using the GPU (nvidia-smi lists it), or pick a "
-        f"smaller model or another device.\n\nUnderlying error: {text}"
+        f"not enough free VRAM — {'; '.join(parts)}. Close whatever else is "
+        "using the GPU (nvidia-smi lists it), or pick a smaller model or "
+        f"another device.\n\nUnderlying error: {text}"
     )
 
 

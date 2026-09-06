@@ -798,14 +798,16 @@ class SettingsWindow(Gtk.Window):
         self._sync_model_list(self._models)
 
     def _sync_default_model_menu(self, selected_id: str | None = None) -> None:
+        # Downloaded only. The daemon skips an undownloaded default at startup,
+        # so offering one here is offering a setting that silently does
+        # nothing — the list read like a catalog and behaved like a choice.
         labels: list[str] = []
         ids: list[str] = []
         for model in self._models:
-            name = str(model.get("name") or model.get("id", "?"))
-            name = f"{name} · {self._runtime_tag(str(model.get('runtime', '')))}"
             if not model.get("downloaded"):
-                name = f"{name} (not downloaded)"
-            labels.append(name)
+                continue
+            name = str(model.get("name") or model.get("id", "?"))
+            labels.append(f"{name} · {self._runtime_tag(str(model.get('runtime', '')))}")
             ids.append(str(model["id"]))
         self._default_model_ids = ids
 
@@ -816,7 +818,7 @@ class SettingsWindow(Gtk.Window):
             child = nxt
 
         if not ids:
-            self._default_model_label.set_text("No models")
+            self._default_model_label.set_text("No downloaded models")
             return
 
         pick = selected_id if selected_id in ids else None
@@ -916,6 +918,12 @@ class SettingsWindow(Gtk.Window):
         self._model_empty.add_css_class("settings-field-hint")
         self._model_empty.set_visible(False)
         section.append(self._model_empty)
+
+        self._model_error = Gtk.Label(label="", xalign=0, wrap=True, selectable=True)
+        self._model_error.add_css_class("settings-field-hint")
+        self._model_error.add_css_class("settings-model-error")
+        self._model_error.set_visible(False)
+        section.append(self._model_error)
 
         # Models that do not suit the selected device are held back rather than
         # dropped. Hiding hardware or models the user knows exist is how
@@ -1571,9 +1579,27 @@ class SettingsWindow(Gtk.Window):
         self._loading_model = False
         self._activating_model_id = None
         self._model_load_progress = ""
-        self._toast(message[:60])
+
+        # A failure explains itself in a couple of sentences — which free VRAM
+        # there was, what to close — and `message[:60]` threw all of that away,
+        # leaving the first clause of a sentence in a toast that then vanished.
+        # The toast keeps the headline; the panel keeps the whole thing until
+        # something else happens.
+        headline = message.split("\n", 1)[0]
+        self._toast(headline[:90])
+        self._show_model_error("" if self._looks_like_success(message) else message)
         self._load_models()
         return False
+
+    @staticmethod
+    def _looks_like_success(message: str) -> bool:
+        return message.strip().startswith(("Activated", "Downloaded", "Ready"))
+
+    def _show_model_error(self, message: str) -> None:
+        """Put a load failure where it can be read, or clear the last one."""
+        text = (message or "").strip()
+        self._model_error.set_text(text)
+        self._model_error.set_visible(bool(text))
 
     def _load_models(self, quiet: bool = False) -> None:
         try:
