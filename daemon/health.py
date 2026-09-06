@@ -68,6 +68,47 @@ def check_screen_layer() -> dict[str, Any]:
     }
 
 
+def check_prompt_budget() -> dict[str, Any]:
+    """How much of the prompt budget the conversation actually gets.
+
+    A prompt that has crowded out the conversation does not fail — it answers,
+    without history and without whatever guidance was dropped to fit. That is
+    how twenty-one working MCP tools looked like a broken MCP server, so the
+    number is reported next to the things that do fail loudly.
+    """
+    from seams import get_context
+    from tools.registry import get_registry
+
+    ctx = get_context()
+    budget = ctx.llm.prompt_budget_chars("interactive")
+    if budget <= 0:
+        # No model resident, so nothing has imposed a limit yet. Saying "100%
+        # free" here would be a fiction, and a reassuring one.
+        return {"ok": True, "budget_chars": 0, "reason": "no model loaded yet"}
+    try:
+        assembly = ctx.prompt.assemble(budget_chars=budget)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+
+    tools = len(get_registry().visible())
+    return {
+        "ok": not assembly.starved,
+        "budget_chars": budget,
+        "headroom_chars": max(assembly.headroom_chars, 0),
+        "headroom_percent": round(assembly.headroom_share * 100),
+        "tools": tools,
+        "reason": (
+            ""
+            if not assembly.starved
+            else (
+                f"{tools} tools leave only {max(assembly.headroom_chars, 0)} of "
+                f"{budget} characters for the conversation. Disable tools you do "
+                "not use, or raise KEYLANE_NPU_MAX_PROMPT_TOKENS."
+            )
+        ),
+    }
+
+
 async def settings_health() -> dict[str, Any]:
     searx = await check_searxng()
     mcp = await check_mcp_servers()
@@ -85,6 +126,7 @@ async def settings_health() -> dict[str, Any]:
         "searxng": searx,
         "mcp": mcp,
         "screen": check_screen_layer(),
+        "prompt": check_prompt_budget(),
         "research": {
             "search_backend": cfg.get("search_backend", "searxng"),
             "extract_backend": cfg.get("extract_backend", "local"),

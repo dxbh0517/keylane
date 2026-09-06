@@ -249,6 +249,38 @@ The ~15 s before the first token is the cost that actually shapes a turn: the
 agent makes one model call per ReAct iteration, so a turn using three tools
 pays it four times.
 
+### The prompt has to fit the pipeline
+
+The NPU compiles a maximum prompt length in, so the budget is a hard number
+rather than a preference. **8192 tokens**, overridable with
+`KEYLANE_NPU_MAX_PROMPT_TOKENS`.
+
+It was 4096, which was enough for the built-in tools and stopped being enough
+the moment a real MCP server was connected. Every tool contributes a line to
+the tool index, and that index is a *required* section — a model that loses it
+cannot call anything — so the floor grows with the tool count. Measured with
+Mailspring's 21 tools registered, 55 in total:
+
+| | at 4096 | at 8192 |
+| --- | --- | --- |
+| required floor | 8171 chars | 8171 chars |
+| budget | 9318 chars | 19968 chars |
+| left for the conversation | **342 chars** | 6823 chars |
+| optional sections | all dropped | all kept |
+
+342 characters is not a turn. Nothing failed, which was the problem: the model
+kept its tools, lost the guidance explaining them, and had no room for history
+— so a working MCP server looked like a broken one.
+
+The compile cost this was set low to avoid does not appear. `qwen3-8b-cw`
+compiled for the NPU at 8192 in **22.7 s**.
+
+Two things say so now rather than leaving it to be inferred: dropping guidance
+to fit is logged as a warning rather than an info line, and
+`GET /settings/health` reports `prompt.headroom_percent` beside the checks that
+do fail loudly. If it is low, disable tools you do not use in **Settings →
+MCP** — an MCP server's tools can be turned off individually.
+
 ### Curated models
 
 Pick one in **Settings → Model** or via `POST /models/select`. They auto-download
