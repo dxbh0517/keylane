@@ -84,3 +84,63 @@ def test_an_unterminated_flood_stops_at_the_cap() -> None:
 def test_an_empty_request_reads_as_nothing() -> None:
     # The caller turns this into the default command rather than guessing here.
     assert _send_and_read(b"") == ""
+
+
+# ── the GTK hand-off ─────────────────────────────────────────────────────
+
+
+def test_work_that_fails_on_the_gtk_thread_is_reported() -> None:
+    """A control reply must mean the work happened, not that it was scheduled.
+
+    `screen_annotate` used to answer "drew 2 marks" the instant the callback
+    was queued. When the callback then raised, the model was told the ring was
+    on screen and the user saw nothing.
+    """
+    from gi.repository import GLib
+
+    from ui.main import _on_gtk_thread
+
+    loop = GLib.MainLoop()
+    thread = threading.Thread(target=loop.run, daemon=True)
+    thread.start()
+    try:
+        def _boom() -> None:
+            raise RuntimeError("no overlay here")
+
+        assert _on_gtk_thread(_boom, timeout=10) == "no overlay here"
+        assert _on_gtk_thread(lambda: None, timeout=10) is None
+    finally:
+        loop.quit()
+        thread.join(timeout=5)
+
+
+def test_a_stalled_interface_times_out_rather_than_hanging() -> None:
+    """With no main loop running, nothing drains the idle queue."""
+    from ui.main import _on_gtk_thread
+
+    result = _on_gtk_thread(lambda: None, timeout=0.2)
+    assert result is not None
+    assert "did not respond" in result
+
+
+def test_the_main_window_survives_a_second_application_window() -> None:
+    """The overlay is a second Gtk.ApplicationWindow on the same application.
+
+    `ensure_window` used to return `props.active_window`, so presenting the
+    overlay made *it* the answer — and toggle, mic and every annotation then
+    ran against a window with none of those methods.
+    """
+    from ui.main import KeylaneApp
+
+    app = KeylaneApp()
+    window = app.ensure_window()
+
+    from ui.overlay import AnnotationOverlay
+
+    overlay = AnnotationOverlay(app)
+    overlay.set_visible(True)
+    try:
+        assert app.ensure_window() is window
+    finally:
+        overlay.set_visible(False)
+        overlay.destroy()

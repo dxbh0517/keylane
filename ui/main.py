@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import cairo
@@ -1792,6 +1793,8 @@ class KeylaneApp(Gtk.Application):
     def __init__(self) -> None:
         super().__init__(application_id="app.keylane.Spotlight")
         self._started = False
+        # Held explicitly rather than looked up. See ensure_window().
+        self._window: SpotlightWindow | None = None
         self._toggle_action = Gio.SimpleAction.new("toggle", None)
         self._toggle_action.connect("activate", self._on_toggle_action)
         self.add_action(self._toggle_action)
@@ -1804,12 +1807,21 @@ class KeylaneApp(Gtk.Application):
             self.add_action(action)
 
     def ensure_window(self) -> SpotlightWindow:
-        win = self.props.active_window
-        if win is None:
-            win = SpotlightWindow(self)
-            win.set_application(self)
+        """The Spotlight window, built on first use.
+
+        This used to read `props.active_window`, which was correct for exactly
+        as long as Keylane had one window. The annotation overlay is a second
+        `Gtk.ApplicationWindow` on the same application, so presenting it made
+        it the active one — and every caller here, `toggle` and the mic action
+        included, then ran against the overlay and died on the first attribute
+        it did not have. The main window is held by reference instead: it is
+        the one thing that must never depend on what is focused.
+        """
+        if self._window is None:
+            self._window = SpotlightWindow(self)
+            self._window.set_application(self)
             self.hold()  # the UI is a resident service, not a one-shot window
-        return win  # type: ignore[return-value]
+        return self._window
 
     def toggle_window(self) -> None:
         self.ensure_window().toggle()
@@ -1929,6 +1941,35 @@ def _apply_command(app: KeylaneApp, verb: str) -> None:
         app.toggle_window()
 
 
+def _on_gtk_thread(work: "Callable[[], None]", timeout: float = 15.0) -> str | None:
+    """Run *work* on the GTK thread and wait for it. None means it succeeded.
+
+    `GLib.idle_add` alone was not enough here, and the way it failed is the
+    reason this exists. `screen_annotate` answered "drew 2 marks" the instant
+    the callback was *scheduled*, so when the callback then raised, the model
+    was told the ring was on screen and the user saw nothing. A tool that
+    cannot fail is worse than one that has no error path, because it teaches
+    the model to trust an outcome that never happened.
+    """
+    done = threading.Event()
+    failure: list[str] = []
+
+    def _run() -> bool:
+        try:
+            work()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("GTK work failed")
+            failure.append(str(exc))
+        finally:
+            done.set()
+        return False
+
+    GLib.idle_add(_run)
+    if not done.wait(timeout):
+        return f"the interface did not respond within {timeout:g}s"
+    return failure[0] if failure else None
+
+
 def _draw_grounded(app: KeylaneApp, data: dict) -> dict:
     """Ground the shapes, then hand them to the overlay.
 
@@ -1962,7 +2003,9 @@ def _draw_grounded(app: KeylaneApp, data: dict) -> dict:
     if not annotation.shapes and not annotation.caption:
         return {"ok": False, "error": "no drawable shapes in that annotation"}
 
-    GLib.idle_add(lambda: (app.ensure_window().draw_annotation(annotation), False)[1])
+    drawn = _on_gtk_thread(lambda: app.ensure_window().draw_annotation(annotation))
+    if drawn is not None:
+        return {"ok": False, "error": f"the overlay could not draw: {drawn}"}
 
     reply: dict = {"ok": True, "shapes": len(annotation.shapes)}
     if grounding.resolved:
@@ -2005,8 +2048,8 @@ def _handle_next(app: KeylaneApp) -> dict:
         return {"ok": False, "error": f"could not reach the daemon: {exc}"}
 
     if not state.get("running"):
-        GLib.idle_add(lambda: (app.ensure_window().clear_annotations(), False)[1])
-        return {"ok": True, "finished": True}
+        failed = _on_gtk_thread(lambda: app.ensure_window().clear_annotations())
+        return {"ok": failed is None, "finished": True, **({"error": failed} if failed else {})}
 
     annotation = dict(state.get("annotation") or {})
     step, total = state.get("step", 0), state.get("total", 0)
@@ -2039,8 +2082,11 @@ def _serve_connection(app: KeylaneApp, conn: socket.socket) -> None:
             else:
                 if verb not in _SIMPLE_COMMANDS:
                     verb = "toggle"
-                GLib.idle_add(lambda v=verb: (_apply_command(app, v), False)[1])
-                reply = {"ok": True}
+                failed = _on_gtk_thread(lambda v=verb: _apply_command(app, v))
+                reply = {"ok": failed is None} if failed is None else {
+                    "ok": False,
+                    "error": failed,
+                }
         except Exception as exc:  # noqa: BLE001
             logger.exception("control command %r failed", verb)
             reply = {"ok": False, "error": str(exc)}
