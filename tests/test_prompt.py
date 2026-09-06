@@ -276,3 +276,63 @@ def test_the_required_prompt_fits_a_modest_npu_pipeline() -> None:
     required = build_context().prompt.assemble(budget_chars=1).system
     assert len(required) / 2.8 < 2048
     assert "<tool_call>" in required
+
+
+# ── the preamble can crowd out the conversation without failing ──────────
+#
+# Connecting Mailspring's MCP server registered 21 tools, each a line in the
+# tool index — which is a *required* section, because a model that loses it
+# cannot call anything. At the old 4096-token NPU budget the required floor was
+# 8171 of 9318 characters: every optional section dropped, and 342 characters
+# left for the conversation. Nothing failed. The model simply had the tools and
+# no room to be asked to use them.
+
+
+def _prompt_with(required_chars: int):
+    from seams.prompt import SystemPrompt
+
+    prompt = SystemPrompt()
+    prompt.section("identity", "i" * required_chars, required=True)
+    prompt.section("memory", "m" * 400, required=False)
+    prompt.section("web", "w" * 400, required=False)
+    return prompt
+
+
+def test_a_roomy_prompt_is_not_starved() -> None:
+    assembly = _prompt_with(200).assemble(budget_chars=8000)
+    assert not assembly.starved
+    assert assembly.headroom_chars > 0
+
+
+def test_a_preamble_that_fills_the_budget_is_starved() -> None:
+    """The signal that was missing: nothing raises, so nothing said so."""
+    assembly = _prompt_with(7900).assemble(budget_chars=8000)
+    assert assembly.starved
+    assert assembly.headroom_share < 0.25
+
+
+def test_optional_sections_are_dropped_before_the_required_ones() -> None:
+    """Losing the tool index would leave the model unable to call anything."""
+    assembly = _prompt_with(7000).assemble(budget_chars=7400)
+    assert "i" * 100 in assembly.system
+    assert "m" * 100 not in assembly.system
+
+
+def test_no_budget_means_no_verdict() -> None:
+    """Nothing imposed a limit, so nothing is being starved by one."""
+    assembly = _prompt_with(9000).assemble()
+    assert not assembly.starved
+    assert assembly.headroom_share == 1.0
+
+
+def test_the_npu_budget_leaves_room_for_a_real_tool_set() -> None:
+    """4096 tokens stopped being enough the moment an MCP server was added.
+
+    Measured with 55 tools registered: a required floor of 8171 characters
+    against 9318 available. The floor is the thing that grows with every tool,
+    so the budget has to clear it with room to spare rather than by a margin.
+    """
+    from npu.limits import NPU_MAX_PROMPT_TOKENS, npu_prompt_budget_chars
+
+    assert NPU_MAX_PROMPT_TOKENS >= 8192
+    assert npu_prompt_budget_chars() > 8171 * 2

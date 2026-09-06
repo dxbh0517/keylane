@@ -101,10 +101,33 @@ class PromptContext:
 class Assembly:
     system: str
     context: str
+    # Characters of the budget the preamble did not consume — what is left for
+    # the conversation. Zero when nothing imposed a budget.
+    headroom_chars: int = 0
+    budget_chars: int = 0
 
     @property
     def context_digest(self) -> str:
         return digest_of(self.context)
+
+    @property
+    def headroom_share(self) -> float:
+        """How much of the budget the conversation gets, 0..1."""
+        if self.budget_chars <= 0:
+            return 1.0
+        return max(0.0, self.headroom_chars) / self.budget_chars
+
+    @property
+    def starved(self) -> bool:
+        """Whether the preamble has crowded out the conversation.
+
+        Nothing has failed when this is true, which is the problem it exists to
+        surface: the model still answers, with no room for history and none of
+        the guidance that was dropped to make it fit.
+        """
+        from npu.limits import MIN_CONVERSATION_SHARE
+
+        return self.budget_chars > 0 and self.headroom_share < MIN_CONVERSATION_SHARE
 
 
 def digest_of(text: str) -> str:
@@ -225,14 +248,38 @@ class SystemPrompt:
         context_parts += [t.strip() for t in (extra_contexts or []) if t and t.strip()]
 
         system = self.render("\n\n".join(system_parts))
-        if not context_parts:
-            return Assembly(system=system, context="")
+        context = ""
+        if context_parts:
+            body = self.render("\n\n".join(context_parts))
+            context = f"{CONTEXT_OPEN}\n{body}\n{CONTEXT_CLOSE}"
 
-        body = self.render("\n\n".join(context_parts))
-        return Assembly(
+        assembly = Assembly(
             system=system,
-            context=f"{CONTEXT_OPEN}\n{body}\n{CONTEXT_CLOSE}",
+            context=context,
+            budget_chars=budget_chars,
+            headroom_chars=budget_chars - len(system) - len(context),
         )
+        if assembly.starved:
+            logger.warning(
+                "the prompt leaves only %d of %d characters for the conversation "
+                "(%.0f%%). %d tools are registered; disable the ones you do not "
+                "use, or raise KEYLANE_NPU_MAX_PROMPT_TOKENS.",
+                max(assembly.headroom_chars, 0),
+                budget_chars,
+                assembly.headroom_share * 100,
+                _tool_count(),
+            )
+        return assembly
+
+
+def _tool_count() -> int:
+    """How many tools the index is describing — the usual reason for a squeeze."""
+    try:
+        from tools.registry import get_registry
+
+        return len(get_registry().visible())
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _fit_sections(
@@ -267,8 +314,15 @@ def _fit_sections(
         dropped.add(name)
         kept = [pair for pair in resolved if pair[0].name not in dropped]
         if size(kept) <= budget_chars:
-            logger.info(
-                "prompt over budget; dropped %d optional section(s): %s",
+            # Warning, not info. Dropping guidance is invisible from outside —
+            # the model still answers, just without being told how to use the
+            # tools it can see — and that is exactly how a working MCP server
+            # looked like a broken one.
+            logger.warning(
+                "prompt over budget by %d chars; dropped %d optional section(s): %s. "
+                "The model keeps its tools and loses the guidance for them — "
+                "raise KEYLANE_NPU_MAX_PROMPT_TOKENS or disable tools you do not use.",
+                size(resolved) - budget_chars,
                 len(dropped),
                 ", ".join(sorted(dropped)),
             )

@@ -33,10 +33,32 @@ from npu.kind import PipelineKind
 # itself is not available, as NPUW_LLM_PREFILL_CHUNK_SIZE below 1024 fails to
 # compile on this architecture.
 #
-# The prompt's required sections need about 1700 tokens, so anything below
-# ~2048 cannot serve a turn at all. Override with KEYLANE_NPU_MAX_PROMPT_TOKENS;
-# changing it invalidates the compile cache, so the next load is slow either way.
-NPU_MAX_PROMPT_TOKENS = int(os.environ.get("KEYLANE_NPU_MAX_PROMPT_TOKENS", "4096"))
+# The prompt's required sections need about 1700 tokens on their own, and far
+# more once tools are connected: an MCP server contributes a line per tool to
+# the index, and that index is a *required* section — losing it would leave the
+# model unable to call anything.
+#
+# 4096 was enough for the built-in tools and stopped being enough the moment a
+# real MCP server was added. Measured with Mailspring's 21 tools connected, at
+# 4096 the required floor was 8171 of 9318 available characters: every optional
+# section was dropped to fit and 342 characters were left for the conversation,
+# which is not a turn. The model had the tools and no room to be asked to use
+# them.
+#
+# 8192 leaves ~6800 characters for the conversation with the same tools, and
+# the compile cost this was set low to avoid does not appear: qwen3-8b-cw
+# compiled for the NPU at 8192 in 22.7 s, against a documented 60 s at 4096 on
+# a mismatched driver stack and 6.8 s on a matched one.
+#
+# Override with KEYLANE_NPU_MAX_PROMPT_TOKENS; changing it invalidates the
+# compile cache, so the next load is slow either way.
+NPU_MAX_PROMPT_TOKENS = int(os.environ.get("KEYLANE_NPU_MAX_PROMPT_TOKENS", "8192"))
+
+# Below this share of the budget left for the conversation, a turn is being
+# starved by its own preamble even though nothing has failed. Warned about,
+# because the failure mode is silence: the model keeps answering, without the
+# guidance and without the history.
+MIN_CONVERSATION_SHARE = 0.25
 
 # Characters per token, deliberately pessimistic. Prose runs nearer 4, but a
 # prompt full of punctuation, JSON and tool names runs far lower — the system
