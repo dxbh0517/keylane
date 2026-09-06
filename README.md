@@ -106,7 +106,7 @@ Keylane can run a local model through two inference stacks. Pick one in
 | --- | --- | --- |
 | **OpenVINO GenAI** (default) | OpenVINO IR exports — repos named `*-int4-ov` | in `requirements.txt` |
 | **ONNX Runtime GenAI** | ONNX exports with a `genai_config.json` | `pip install onnxruntime-genai onnxruntime-openvino` |
-| **… on an NVIDIA GPU** | the same, through CUDA | add `pip install onnxruntime-genai-cuda` |
+| **… on an NVIDIA GPU** | the same, through CUDA | `pip install onnxruntime-genai-cuda "onnxruntime-gpu[cuda,cudnn]"` |
 
 The runtime is a property of the export, not a preference: an `*-int4-ov` repo
 holds OpenVINO IR and only OpenVINO GenAI can load it. ONNX Runtime reaches the
@@ -133,6 +133,55 @@ actually runs a model on it.
 CUDA is a *device* of the ONNX runtime rather than a runtime of its own,
 because that is what it is: an execution provider of the same stack, exactly as
 OpenVINO is. A separate backend would be a second copy of `runtimes/onnx_rt.py`.
+
+Install the `[cuda,cudnn]` extras, not just the wheel. `onnxruntime-genai-cuda`
+pulls `onnxruntime-gpu`, whose CUDA libraries arrive as separate `nvidia-*`
+wheels that unpack to `site-packages/nvidia/<pkg>/lib` — a directory no loader
+searches. Keylane dlopens them itself before building a CUDA session, so the
+common failure
+
+```
+Cuda interface not available: Failed to load library:
+libcublasLt.so.13: cannot open shared object file
+```
+
+does not happen; without that preload, a complete-looking install is unusable.
+It is also why `import torch` before `onnxruntime` is a folk remedy for this —
+torch solves the same problem the same way.
+
+Being listed is not being loadable, and Keylane checks both.
+`onnxruntime.get_available_providers()` reports CUDA because the provider was
+*compiled in*; it says nothing about whether its libraries resolve. Trusting it
+produced a Settings panel that offered CUDA and a stack trace when it was
+chosen.
+
+**Measured** on an RTX 5090 Laptop (Blackwell, sm_120) with driver 610.57 and
+CUDA 13, running Qwen2.5-0.5B through Keylane's own backend:
+
+| Device | Load | Decode |
+| --- | --- | --- |
+| CUDA | 1.2 s | 83 tok/s |
+| CPU | 0.7 s | 173 tok/s |
+
+CPU wins at 0.5B, and that is not a defect: at that size per-token launch
+overhead dominates and the GPU never gets to work. The 24 GB is for the models
+that do not fit anywhere else.
+
+A GPU is shared, so running out of VRAM is the normal failure rather than an
+exotic one — and ONNX Runtime reports it by naming the *last small allocation
+it tried*, which on a 24 GB card reads as a bug. Keylane says what it means:
+
+```
+not enough free VRAM to load this model on CUDA — gpu-int4-awq-block-128 needs
+about 2.3 GB of VRAM and 2141 MiB is free. Close whatever else is using the GPU
+(nvidia-smi lists it), or pick a smaller model or another device.
+```
+
+> Microsoft publishes the same CUDA build under two names: Phi-3-mini has
+> `cuda/cuda-int4-rtn-block-32`, while Phi-3.5-mini and Phi-4-mini have
+> `gpu/gpu-int4-awq-block-128`. So a folder called `gpu` in an ONNX repo means
+> NVIDIA, while `GPU` as a Keylane device means an Intel GPU through the
+> OpenVINO EP — opposite vendors, same three letters. Both are recognised.
 
 Each device is probed by the runtime that owns it. Asking OpenVINO whether CUDA
 is available — which is what Keylane used to do for every runtime — reports the
