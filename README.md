@@ -31,6 +31,12 @@ Keylane is a personal AI assistant that lives on your desktop:
 - **Todo list**, **goals**, **background jobs**, **subagents**, and an **inbox** of
   results you have not seen yet
 - **Voice input** (mic button) via Whisper, and **screenshot capture** to ask about what is on screen
+- **Dictation into any window** — hold a key, talk, and the text lands where your caret is,
+  not in Keylane's box. **Compose** does the same for intent: say what you want written,
+  and Keylane reads the screen and drafts it
+- **Keylane draws on your screen** — rings, arrows and step-by-step walkthroughs over your
+  live desktop, with targets located by reading the screen rather than guessed at
+- **Drop a file on it** — images, PDFs, code and web pages become the subject of the turn
 - **MCP servers** over stdio *or* Streamable HTTP — including Mailspring for mail and calendar
 - **Audio8 TTS** for spoken answers and optional notify speech
 - **Answers stream** into the HUD as the model writes them
@@ -44,6 +50,9 @@ Everything binds to `127.0.0.1`. Nothing leaves your machine unless a tool or MC
 ```bash
 # Install system deps (Fedora)
 sudo dnf install python3-gobject gtk4 gtk4-layer-shell libnotify portaudio ffmpeg
+# For the screen layer: typing into other windows, and locating targets by text.
+# wtype on wlroots; ydotool on GNOME/Wayland (see "The screen layer").
+sudo dnf install wtype tesseract   # or: ydotool tesseract
 
 # Python env
 python -m venv .venv
@@ -72,6 +81,7 @@ Open **Settings** from the gear icon in the Spotlight footer, or press **`Ctrl+,
 | Model | Inference runtime, device, active model, switch / download, Hugging Face import |
 | Web | Search backend (searxng / ddgs), SearXNG URL, Playwright, fallback |
 | Speech | TTS on notify, read aloud, test buttons |
+| Screen | Dictation on/off, Whisper size, language, cleanup; annotation style, OCR targeting; which typing backend was selected |
 | Security | Shell allowlist, permitted read directories, permission modes per tool |
 | MCP | Servers over stdio (command, arguments, environment) or HTTP (URL, bearer token) |
 | About | Version, update channel, release notes, install and restart |
@@ -243,6 +253,94 @@ API is on `127.0.0.1:9100`, so this is not hypothetical.
 1. **No results** — ensure SearXNG is running (`podman ps`) or switch backend to `ddgs` in Settings
 2. **Thin / empty pages** — enable Playwright fetch in Settings if you have a sidecar at `playwright_url`
 3. **Wrong answers** — try **thorough** depth by asking explicitly; check NPU model is loaded (`curl /health`)
+
+## The screen layer
+
+Three things that happen outside Keylane's own window. All of them are local:
+Whisper transcribes, tesseract reads, and nothing is sent anywhere.
+
+### Dictation
+
+Hold-to-talk that types into whatever window has the caret. Bind the commands in
+your compositor — Keylane deliberately does not read your keyboard globally:
+
+```
+# Sway / Hyprland
+bindsym $mod+d exec keylane-dictate    # ui/main.py --dictate
+bindsym $mod+g exec keylane-compose    # ui/main.py --compose
+bindsym $mod+p exec keylane-point      # ui/main.py --point
+```
+
+Press once to start, again to send. `--dictate` types what you said; `--compose`
+takes what you said as an *instruction*, looks at the screen, and types the draft.
+`--point` lets you circle something and then ask about it.
+
+The transcript goes through a second pass that fixes punctuation and casing. That
+pass is checked against the original and **discarded if the words moved** — a model
+asked to tidy text will otherwise paraphrase it, and watching your own sentence get
+rewritten is worse than an uncapitalised one.
+
+Two safety rules are enforced for every backend, in `inject/base.py`:
+
+- **Return is never synthesised.** Trailing newlines are always stripped, and inside
+  a terminal *every* newline is folded to a space — the second line of a two-line
+  paste executes as surely as the first.
+- **A non-QWERTY layout never gets key positions.** `wtype` and `xdotool` press
+  places, not letters, so on Dvorak or Colemak Keylane switches to the clipboard
+  route, which carries the text itself and puts your clipboard back afterwards.
+
+**Typing into other windows needs a helper, and which one is not a preference:**
+
+| Session | Backend | Install |
+| --- | --- | --- |
+| wlroots (Sway, Hyprland, river) | `wtype` | `sudo dnf install wtype` |
+| **GNOME / Wayland** | `ydotool` | `sudo dnf install ydotool`, plus `ydotoold` running |
+| X11 | `xdotool` | `sudo dnf install xdotool` |
+
+GNOME is the awkward one for the same reason it is awkward for the display backend:
+**Mutter has never implemented `zwp_virtual_keyboard_v1`**, which is the protocol
+`wtype` uses. `ydotool` goes underneath the display server through `/dev/uinput`
+instead, so it needs its daemon running and your user in a group that can open that
+device. Without one of these three, dictation transcribes and then tells you it
+could not type — and puts the text on your clipboard so nothing is lost.
+
+Settings → Screen reports which backend was selected, or that none was.
+
+### Drawing on the screen
+
+`screen_annotate` puts rings, arrows, boxes and labels over the live desktop, and
+`walkthrough_show` runs up to fifteen of them in sequence. The surface is a
+full-screen layer with an **empty input region**, so the desktop underneath stays
+completely clickable while the marks sit on top of it.
+
+Strokes are drawn with a seeded wobble rather than true. That is not whimsy: a
+geometrically perfect ring over someone's desktop reads as a compositor glitch,
+and an uneven one reads as somebody pointing.
+
+The part that decides whether this is useful is **how a target is located**. The
+model is asked to name the control — `target_text: "Export"` — not to estimate its
+coordinates, and Keylane finds it with tesseract:
+
+```bash
+sudo dnf install tesseract
+```
+
+Without tesseract the model's own coordinates are used and land visibly worse; a 4B
+vision model does not ground UI positions reliably. When a named target is not on
+screen, the tool says so rather than drawing in the wrong place, so the model can
+tell you it could not find it.
+
+Walkthrough steps persist until they are passed. Advance one with `keylane-next`
+(`ui/main.py --next`), which you can bind to a key, or by asking Keylane to move on.
+There is no automatic click detection: Wayland gives no global click events without
+an input grab, and Keylane does not take one.
+
+### Dropping files
+
+Drop a file anywhere on the Spotlight bar, the orb or the answer card. Images attach
+as images; PDFs, HTML, Markdown, code and plain text are read and carried into the
+turn as `<attached_file>` blocks, explicitly framed as data rather than instructions.
+Reading PDFs needs `pypdf`; everything else works without it.
 
 ## Memory and background work
 
@@ -517,6 +615,9 @@ Servers added in Settings are stored in `data/settings.json` and merged over the
 | `GET /tasks` · `POST /tasks/reminder` · `DELETE /tasks/{id}` | Reminders, watchers, background jobs |
 | `GET/POST /memories` · `DELETE /memories/{id}` | The fact store |
 | `GET /inbox` · `POST /inbox/read` | Results from background work |
+| `POST /dictation/cleanup` | Punctuate a transcript without rewording it |
+| `POST /compose` | Draft text from a spoken instruction plus a screenshot |
+| `GET /walkthrough` · `POST /walkthrough/advance` | Step state, and moving through it |
 | `POST /permissions/respond` | Approve/deny tool permission prompts |
 | `GET /update/status` · `POST /update/check` · `POST /update/apply` | Version, check, install |
 | `GET /v1/models` · `POST /v1/chat/completions` | The resident model, OpenAI wire format |
@@ -525,6 +626,8 @@ Servers added in Settings are stored in `data/settings.json` and merged over the
 
 ```text
 Super+Space → GTK Spotlight → floating orb → answer HUD (click-through)
+  --dictate → Whisper → inject/ → the caret in someone else's window
+  screen_annotate → control socket (:9101) → OCR → overlay (click-through)
                     ↓
               FastAPI daemon (:9100)
                     ↓
@@ -534,6 +637,7 @@ Super+Space → GTK Spotlight → floating orb → answer HUD (click-through)
       llm · web · skills · jobs · subagents · goals · spill
                     ↓
    NPU via runtimes/  ·  optional GPU model over the OpenAI API
+   inject/ (wtype · ydotool · xdotool · clipboard) · vision/ (tesseract)
    (OpenVINO GenAI · ONNX Runtime GenAI + OpenVINO EP)
 ```
 

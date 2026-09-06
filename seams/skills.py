@@ -52,6 +52,32 @@ class SkillSummary:
     invocation: InvocationPolicy = field(default_factory=InvocationPolicy)
     source: str = "user"
     rank: int = RANK_USER
+    # Window classes and hostnames this skill is about. Empty means "always
+    # relevant" — scoping narrows a skill, it never makes one mandatory.
+    apps: tuple[str, ...] = ()
+    sites: tuple[str, ...] = ()
+
+    def scoped(self) -> bool:
+        return bool(self.apps or self.sites)
+
+    def matches(self, app_id: str = "", title: str = "") -> bool:
+        """Whether this skill is about the window the user is looking at.
+
+        Both sides are matched as lowercase substrings, in both directions:
+        a skill scoped to `code` should fire for `code-oss` and for
+        `com.visualstudio.code`, and a skill scoped to `org.gimp.GIMP` should
+        fire for a window that merely calls itself `gimp`.
+        """
+        if not self.scoped():
+            return False
+        app = (app_id or "").lower()
+        haystack = f"{app} {(title or '').lower()}"
+        for want in self.apps:
+            if want and (want in app or (app and app in want)):
+                return True
+        # A site is matched against the title, because that is where a browser
+        # puts the page — the window class only ever says "firefox".
+        return any(site and site in haystack for site in self.sites)
 
 
 @dataclass(frozen=True)
@@ -78,6 +104,8 @@ def summarize(skill: SkillSummary) -> SkillSummary:
         invocation=skill.invocation,
         source=skill.source,
         rank=skill.rank,
+        apps=skill.apps,
+        sites=skill.sites,
     )
 
 
@@ -130,6 +158,22 @@ def parse_policy(meta: dict[str, str]) -> InvocationPolicy:
         model_invocable=not _flag(meta, "disable-model-invocation", False),
         user_invocable=_flag(meta, "user-invocable", True),
     )
+
+
+def parse_scope(raw: str) -> tuple[str, ...]:
+    """Read an `apps:` or `sites:` list from frontmatter.
+
+    Both spellings people actually write are accepted — `apps: [code, gimp]`
+    and `apps: code, gimp` — because the frontmatter parser here is a line
+    reader, not YAML, and rejecting the bracketed form would reject the one
+    that looks correct.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ()
+    text = text.strip("[]")
+    parts = [p.strip().strip("\'\"").lower() for p in text.split(",")]
+    return tuple(p for p in parts if p)
 
 
 def _clip(text: str, limit: int = DESCRIPTION_MAX_CHARS) -> str:
@@ -194,6 +238,8 @@ class LocalSkillProvider:
             invocation=parse_policy(meta),
             source=root.source,
             rank=root.rank,
+            apps=parse_scope(meta.get("apps", "")),
+            sites=parse_scope(meta.get("sites", "")),
             content=body.strip(),
             path=path,
         )
@@ -255,6 +301,18 @@ class SkillRegistry:
 
     def for_model(self) -> list[SkillSummary]:
         return [s for s in self.list() if s.invocation.model_invocable]
+
+    def for_window(self, app_id: str = "", title: str = "") -> list[SkillSummary]:
+        """Model-invocable skills, the ones about this window first.
+
+        Ordering rather than filtering: a skill scoped to another app is still
+        loadable, it is just not the one being suggested. Filtering would make
+        "open the GIMP skill" fail while GIMP is not focused.
+        """
+        skills = self.for_model()
+        matching = [s for s in skills if s.matches(app_id, title)]
+        rest = [s for s in skills if s not in matching]
+        return matching + rest
 
     def for_user(self) -> list[SkillSummary]:
         return [s for s in self.list() if s.invocation.user_invocable]

@@ -134,6 +134,8 @@ chmod +x "${DEST}/scripts/keylane-daemon" "${DEST}/scripts/keylane-ui" \
          "${DEST}/scripts/keylane-toggle" "${DEST}/scripts/keylane-mic" \
          "${DEST}/scripts/keylane-settings" "${DEST}/scripts/keylane-update" \
          "${DEST}/scripts/keylane-status" "${DEST}/scripts/npu-bench.py" \
+         "${DEST}/scripts/keylane-dictate" "${DEST}/scripts/keylane-compose" \
+         "${DEST}/scripts/keylane-point" "${DEST}/scripts/keylane-next" \
          "${DEST}/scripts/setup-hotkey.sh"
 KEYLANE_DEST="${DEST}" KEYLANE_DATA="${BASE}/data" KEYLANE_VENV="${BASE}/.venv" \
   "${DEST}/scripts/enable-startup.sh"

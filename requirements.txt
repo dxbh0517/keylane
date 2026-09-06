@@ -28,6 +28,9 @@ safetensors>=0.4
 tomli; python_version < "3.11"
 huggingface_hub
 Pillow
+# Reading a dropped PDF. Optional: without it every other file type
+# still works and a dropped PDF says what to install.
+pypdf
 trafilatura>=1.12
 ddgs>=9.0
 playwright>=1.40

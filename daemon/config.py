@@ -22,6 +22,7 @@ ALLOWED_SECTIONS = frozenset(
     {
         "assistant", "notify", "speech", "security", "research",
         "permissions", "mcp", "ui", "models", "updates",
+        "dictation", "overlay",
     }
 )
 
@@ -116,6 +117,8 @@ def _defaults() -> dict[str, Any]:
         "notify": assistant.get("notify", {}),
         "speech": assistant.get("speech", {}),
         "security": assistant.get("security", {}),
+        "dictation": assistant.get("dictation", {}),
+        "overlay": assistant.get("overlay", {}),
         "research": {
             **research_raw.get("research", {}),
             "search_backend": research_raw.get("research", {}).get("search_backend", "searxng"),

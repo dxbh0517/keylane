@@ -35,6 +35,7 @@ _NAV = (
     ("Model", "model"),
     ("Web", "web"),
     ("Speech", "speech"),
+    ("Screen", "screen"),
     ("Skills & Tools", "skills_tools"),
     ("Security", "security"),
     ("MCP", "mcp"),
@@ -166,6 +167,7 @@ class SettingsWindow(Gtk.Window):
         self._build_model()
         self._build_web()
         self._build_speech()
+        self._build_screen()
         self._build_skills_tools()
         self._build_security()
         self._build_mcp()
@@ -448,6 +450,8 @@ class SettingsWindow(Gtk.Window):
                 self._load_skills_tools()
             elif page_id == "mcp":
                 self._load_mcp_servers()
+            elif page_id == "screen":
+                self._load_screen_status()
         self._load_about()
 
     def _page(self, page_id: str) -> Gtk.Box:
@@ -1810,6 +1814,139 @@ class SettingsWindow(Gtk.Window):
         actions.append(notify_btn)
         section.append(actions)
 
+    def _build_screen(self) -> None:
+        page = self._page("screen")
+
+        dictation = self._section(
+            page,
+            "Dictation",
+            "Hold-to-talk that types into whatever window has the caret. Bind a "
+            "key to `ui/main.py --dictate`, and another to `--compose` to have "
+            "Keylane read the screen and draft the text for you.",
+        )
+
+        self._dictation_enabled = Gtk.CheckButton(label="Enable dictation")
+        self._dictation_enabled.add_css_class("settings-check")
+        self._dictation_enabled.connect(
+            "toggled",
+            lambda *_: self._patch(
+                "dictation", {"enabled": self._dictation_enabled.get_active()}
+            ),
+        )
+        dictation.append(self._dictation_enabled)
+
+        self._dictation_cleanup = Gtk.CheckButton(label="Punctuate and capitalise transcripts")
+        self._dictation_cleanup.add_css_class("settings-check")
+        self._dictation_cleanup.connect(
+            "toggled",
+            lambda *_: self._patch(
+                "dictation", {"cleanup": self._dictation_cleanup.get_active()}
+            ),
+        )
+        dictation.append(self._dictation_cleanup)
+
+        self._whisper_entry = self._entry("base")
+        self._whisper_entry.connect(
+            "activate",
+            lambda *_: self._patch(
+                "dictation", {"model": self._whisper_entry.get_text().strip() or "base"}
+            ),
+        )
+        self._field(
+            dictation,
+            "Whisper model",
+            self._whisper_entry,
+            "tiny, base, small, medium or large. `base` loads fastest; `small` is "
+            "the first size that reliably keeps technical words intact.",
+        )
+
+        self._dictation_lang = self._entry("auto-detect")
+        self._dictation_lang.connect(
+            "activate",
+            lambda *_: self._patch(
+                "dictation", {"language": self._dictation_lang.get_text().strip()}
+            ),
+        )
+        self._field(
+            dictation,
+            "Language",
+            self._dictation_lang,
+            "Blank auto-detects. A code such as `en` or `de` is faster and steadier.",
+        )
+
+        self._inject_status = Gtk.Label(label="checking…", xalign=0)
+        self._status_row(
+            dictation,
+            "Typing into other windows",
+            self._inject_status,
+            "GNOME/Wayland needs ydotool: Mutter has never implemented the "
+            "virtual-keyboard protocol that wtype uses.",
+        )
+
+        overlay = self._section(
+            page,
+            "Screen annotations",
+            "Keylane draws on your desktop to point at things — a ring around a "
+            "button, an arrow to it, a step-by-step walkthrough.",
+        )
+
+        self._overlay_enabled = Gtk.CheckButton(label="Let Keylane draw on the screen")
+        self._overlay_enabled.add_css_class("settings-check")
+        self._overlay_enabled.connect(
+            "toggled",
+            lambda *_: self._patch("overlay", {"enabled": self._overlay_enabled.get_active()}),
+        )
+        overlay.append(self._overlay_enabled)
+
+        self._overlay_handdrawn = Gtk.CheckButton(label="Hand-drawn strokes")
+        self._overlay_handdrawn.add_css_class("settings-check")
+        self._overlay_handdrawn.connect(
+            "toggled",
+            lambda *_: self._patch(
+                "overlay", {"hand_drawn": self._overlay_handdrawn.get_active()}
+            ),
+        )
+        overlay.append(self._overlay_handdrawn)
+
+        self._overlay_ocr = Gtk.CheckButton(label="Locate targets by reading the screen")
+        self._overlay_ocr.add_css_class("settings-check")
+        self._overlay_ocr.connect(
+            "toggled",
+            lambda *_: self._patch("overlay", {"ocr_snap": self._overlay_ocr.get_active()}),
+        )
+        overlay.append(self._overlay_ocr)
+
+        self._ocr_status = Gtk.Label(label="checking…", xalign=0)
+        self._status_row(
+            overlay,
+            "Text recognition",
+            self._ocr_status,
+            "Without tesseract, Keylane has to use the coordinates the model "
+            "estimates, which land far less accurately.",
+        )
+
+    def _load_screen_status(self) -> None:
+        """Report what this machine can actually do, not what is configured."""
+
+        def _work() -> dict[str, Any]:
+            from inject import describe as describe_injection
+            from vision import ocr
+
+            return {"inject": describe_injection(), "ocr": ocr.available()}
+
+        def _apply(found: dict[str, Any]) -> None:
+            inject = found.get("inject", {})
+            if inject.get("ok"):
+                layout = inject.get("layout") or "default"
+                self._inject_status.set_text(f"{inject['selected']} · layout {layout}")
+            else:
+                self._inject_status.set_text("unavailable — install wtype, ydotool or xdotool")
+            self._ocr_status.set_text(
+                "tesseract found" if found.get("ocr") else "tesseract not installed"
+            )
+
+        self._fetch_async("screen_status", _work, _apply)
+
     def _build_skills_tools(self) -> None:
         page = self._page("skills_tools")
         skills_section = self._section(
@@ -2551,6 +2688,17 @@ class SettingsWindow(Gtk.Window):
         self._tts_notify.set_active(bool(notify.get("tts_on_notify", False)))
         speech = data.get("speech", {})
         self._read_aloud.set_active(bool(speech.get("read_aloud", False)))
+
+        dictation = data.get("dictation", {})
+        self._dictation_enabled.set_active(bool(dictation.get("enabled", True)))
+        self._dictation_cleanup.set_active(bool(dictation.get("cleanup", True)))
+        self._whisper_entry.set_text(str(dictation.get("model", "base")))
+        self._dictation_lang.set_text(str(dictation.get("language", "")))
+
+        overlay = data.get("overlay", {})
+        self._overlay_enabled.set_active(bool(overlay.get("enabled", True)))
+        self._overlay_handdrawn.set_active(bool(overlay.get("hand_drawn", True)))
+        self._overlay_ocr.set_active(bool(overlay.get("ocr_snap", True)))
 
         security = data.get("security", {})
         allowlist = security.get("shell_allowlist", [])

@@ -211,3 +211,61 @@ def test_the_shipped_example_skill_is_discovered_and_disabled() -> None:
     skills = {s.name: s for s in build_context().skills.list()}
     assert "example-projects" in skills
     assert not skills["example-projects"].invocation.model_invocable
+
+
+# ── app scoping ──────────────────────────────────────────────────────────
+
+
+def test_a_skill_with_no_scope_is_never_app_specific() -> None:
+    """An unscoped skill is always available; scoping narrows, it never binds."""
+    assert not SkillSummary(name="general", description="").matches("firefox")
+
+
+def test_a_scoped_skill_matches_its_app() -> None:
+    skill = SkillSummary(name="gimp-tips", description="", apps=("gimp",))
+    assert skill.matches("org.gimp.GIMP")
+
+
+def test_a_scoped_skill_matches_a_variant_window_class() -> None:
+    """`code` should fire for `code-oss`, and the reverse should work too."""
+    assert SkillSummary(name="s", description="", apps=("code",)).matches("code-oss")
+    assert SkillSummary(name="s", description="", apps=("code-oss",)).matches("code")
+
+
+def test_a_site_scope_matches_the_window_title() -> None:
+    """A browser's window class only ever says "firefox"; the page is in the title."""
+    skill = SkillSummary(name="gh", description="", sites=("github.com",))
+    assert skill.matches("firefox", "keylane · github.com — Mozilla Firefox")
+
+
+def test_a_scoped_skill_does_not_match_an_unrelated_app() -> None:
+    assert not SkillSummary(name="s", description="", apps=("gimp",)).matches("firefox")
+
+
+def test_scope_is_read_from_frontmatter(registry, user_root) -> None:
+    _write(user_root.path, "photo-edit", "description: Editing\napps: [gimp, krita]")
+    reg = registry(user_root)
+    skill = reg.get("photo-edit")
+    assert skill.apps == ("gimp", "krita")
+
+
+def test_scope_accepts_a_bare_comma_list(registry, user_root) -> None:
+    """The frontmatter parser is a line reader, so both spellings must work."""
+    _write(user_root.path, "photo-edit", "description: Editing\napps: gimp, krita")
+    assert registry(user_root).get("photo-edit").apps == ("gimp", "krita")
+
+
+def test_the_focused_app_s_skills_are_listed_first(registry, user_root) -> None:
+    _write(user_root.path, "aaa-general", "description: General")
+    _write(user_root.path, "zzz-gimp", "description: GIMP\napps: [gimp]")
+    reg = registry(user_root)
+    names = [s.name for s in reg.for_window("org.gimp.GIMP")]
+    # Alphabetically "aaa-general" sorts first; relevance must beat that.
+    assert names[0] == "zzz-gimp"
+
+
+def test_ordering_never_hides_a_skill(registry, user_root) -> None:
+    """"Open the GIMP skill" must work while GIMP is not focused."""
+    _write(user_root.path, "gimp-tips", "description: GIMP\napps: [gimp]")
+    reg = registry(user_root)
+    assert [s.name for s in reg.for_window("firefox")] == ["gimp-tips"]
