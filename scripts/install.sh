@@ -58,9 +58,15 @@ systemctl --user stop ai-gateway.service ai-launcher.service 2>/dev/null || true
 # this runs from anything but a terminal.
 if [[ "${KEYLANE_SKIP_PACKAGES:-0}" != "1" ]] && command -v dnf >/dev/null 2>&1; then
   say "Installing system packages"
+  # wtype and ydotool are both installed because which one works is a
+  # property of the compositor, not of this machine's preferences, and the
+  # user may well move between sessions. tesseract is what locates a named
+  # target for screen annotation; without it the model has to estimate
+  # coordinates and lands visibly worse.
   sudo dnf install -y \
     python3-gobject gtk4 gtk4-layer-shell libnotify portaudio ffmpeg \
-    wl-clipboard wmctrl podman podman-compose || true
+    wl-clipboard wmctrl podman podman-compose \
+    wtype ydotool tesseract || true
 fi
 
 # ── migrate an old install ───────────────────────────────────────────────
