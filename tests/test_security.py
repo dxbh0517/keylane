@@ -6,13 +6,12 @@ fetch whatever URL it is handed, and `cat` will read whatever path it is handed.
 
 from __future__ import annotations
 
+import ipaddress
+
 import pytest
 
 from daemon.shellpolicy import CommandNotAllowed, check_command, read_roots
 from research.urlpolicy import UrlNotAllowed, check_url, is_public_address
-
-import ipaddress
-
 
 # ── outbound URL policy ──────────────────────────────────────────────────
 

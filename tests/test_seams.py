@@ -11,7 +11,6 @@ from seams.errors import LlmError
 from seams.llm import LlmRuntime
 from tools.registry import Tool, ToolOutcome, ToolRegistry, deny
 
-
 # ── model routing ────────────────────────────────────────────────────────
 
 

@@ -7,7 +7,6 @@ what the *store* holds after the turn, which is what the next turn reads.
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 
@@ -16,8 +15,8 @@ import pytest
 def agent(tmp_path, monkeypatch):
     """An agent on a throwaway database with a scripted model."""
     from memory.store import SessionStore
-    from seams import build_context, context as context_module
-    from seams.prompt import SystemPrompt
+    from seams import build_context
+    from seams import context as context_module
 
     store = SessionStore(tmp_path / "turn.db")
     monkeypatch.setattr("agent.loop.get_store", lambda: store)

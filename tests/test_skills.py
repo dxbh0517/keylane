@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from seams.skills import (
-    RANK_BUNDLED,
     RANK_PROJECT,
     RANK_USER,
     LocalSkillProvider,
