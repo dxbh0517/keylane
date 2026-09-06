@@ -81,6 +81,12 @@ class ModelEntry:
         """
         wanted = (device or "").strip().upper()
 
+        # An entry that names its own device is a build for that device and
+        # nothing else — a `gpu/gpu-int4` folder is a CUDA graph, and offering
+        # it for the NPU would be offering a download that cannot pay off.
+        if self.device and self.device.strip().upper() != wanted:
+            return False, f"this build is exported for {self.device.strip().upper()}"
+
         if wanted == "NPU" and not self.npu_ready:
             return False, (
                 "this export is not symmetric INT4, so the NPU runs it far below "

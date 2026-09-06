@@ -935,12 +935,34 @@ class SettingsWindow(Gtk.Window):
     # ── runtime ──────────────────────────────────────────────────────────
 
     def _build_runtime(self, page: Gtk.Box) -> None:
-        """Which inference stack runs the local model, and on which device."""
+        """Device, then the runtimes that reach it, then the models for both.
+
+        The old order asked for the runtime first, which is backwards from how
+        anyone decides: you know what silicon you want to spend before you know
+        or care which inference stack reaches it. It also made two questions
+        look independent when they are not — CUDA is only reachable through
+        ONNX Runtime, so choosing OpenVINO first quietly removed the GPU from
+        the list of devices without ever saying so.
+        """
         section = self._section(
             page,
-            "Runtime",
-            "A model is an export for one stack or the other, so this also "
-            "decides which models you can pick below.",
+            "Where models run",
+            "Pick the hardware first. The runtimes that can reach it, and the "
+            "models built for it, follow from that.",
+        )
+
+        (
+            self._device_trigger,
+            self._device_label,
+            self._device_popover,
+            self._device_menu,
+        ) = self._make_dropdown("NPU")
+        self._field(
+            section,
+            "Device",
+            self._device_trigger,
+            "Changing it invalidates the compile cache, so the next load is "
+            "slow either way.",
         )
 
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
@@ -961,25 +983,17 @@ class SettingsWindow(Gtk.Window):
             btn.connect("toggled", self._on_runtime_toggled, runtime_id)
             self._runtime_buttons[runtime_id] = btn
             box.append(btn)
-        self._field(section, "Inference runtime", box)
+        self._field(
+            section,
+            "Inference runtime",
+            box,
+            "Only the stacks that can reach the chosen device. A model is an "
+            "export for one stack or the other, so this decides the list below.",
+        )
 
         self._runtime_status = Gtk.Label(label="", xalign=0, wrap=True)
         self._runtime_status.add_css_class("settings-field-hint")
         section.append(self._runtime_status)
-
-        (
-            self._device_trigger,
-            self._device_label,
-            self._device_popover,
-            self._device_menu,
-        ) = self._make_dropdown("NPU")
-        self._field(
-            section,
-            "Device",
-            self._device_trigger,
-            "Applies to models on this runtime. Changing it invalidates the "
-            "compile cache, so the next load is slow either way.",
-        )
 
     def _runtime_info(self, runtime_id: str) -> dict[str, Any]:
         for info in self._runtimes:
@@ -990,12 +1004,21 @@ class SettingsWindow(Gtk.Window):
     def _on_runtime_toggled(self, button: Gtk.ToggleButton, runtime_id: str) -> None:
         if self._block_save or not button.get_active():
             return
+        previous_device = self._current_device()
         self._runtime_id = runtime_id
         self._patch("models", {"runtime": runtime_id})
+
+        # Carry the device across when the new runtime can reach it, so
+        # switching stacks does not silently move the work to other silicon.
+        if runtime_id in self._runtimes_for_device(previous_device):
+            self._model_devices[runtime_id] = previous_device
+            self._patch("models", {"devices": dict(self._model_devices)})
+
         self._sync_runtime_status()
         self._sync_device_menu()
-        self._refresh_model_ui()
+        self._sync_runtime_availability()
         self._sync_default_model_menu()
+        self._load_models(quiet=True)
 
     def _sync_runtime_status(self) -> None:
         info = self._runtime_info(self._runtime_id)
@@ -1011,33 +1034,86 @@ class SettingsWindow(Gtk.Window):
                 f"Install it with: {info.get('install_hint', '')}"
             )
 
-    def _sync_device_menu(self) -> None:
+    # Roughly fastest-first, which is the order someone scans them in.
+    _DEVICE_ORDER = ("NPU", "CUDA", "GPU", "CPU", "AUTO")
+
+    def _device_rows(self) -> list[dict[str, Any]]:
+        """Every device *any* runtime can reach, merged, best status winning.
+
+        The same physical part can be two different answers: OpenVINO reports an
+        NVIDIA card as an unusable `GPU`, while ONNX Runtime reaches it as a
+        usable `CUDA`. Merging per device and letting a usable answer win is
+        what stops one runtime's refusal from hiding another's support.
+        """
+        merged: dict[str, dict[str, Any]] = {}
+        for info in self._runtimes:
+            rid = str(info.get("id", ""))
+            rows = info.get("all_devices") or [
+                {"id": d, "label": d, "usable": True, "reason": ""}
+                for d in info.get("devices", [])
+            ]
+            for row in rows:
+                did = str(row.get("id", "")).upper()
+                if not did:
+                    continue
+                entry = merged.setdefault(
+                    did,
+                    {"id": did, "label": did, "usable": False, "reason": "", "runtimes": []},
+                )
+                if row.get("usable"):
+                    entry["usable"] = True
+                    entry["label"] = str(row.get("label") or did)
+                    entry["reason"] = ""
+                    entry["runtimes"].append(rid)
+                elif not entry["usable"]:
+                    entry["reason"] = entry["reason"] or str(row.get("reason") or "")
+                    if str(row.get("label", "")):
+                        entry["label"] = str(row["label"])
+
+        def _rank(row: dict[str, Any]) -> int:
+            try:
+                return self._DEVICE_ORDER.index(row["id"])
+            except ValueError:
+                return len(self._DEVICE_ORDER)
+
+        return sorted(merged.values(), key=_rank)
+
+    def _runtimes_for_device(self, device: str) -> list[str]:
+        for row in self._device_rows():
+            if row["id"] == device.upper():
+                return list(row["runtimes"])
+        return []
+
+    def _current_device(self) -> str:
+        """The chosen device: what this runtime is set to, else the first usable."""
+        rows = self._device_rows()
+        chosen = str(self._model_devices.get(self._runtime_id, "") or "").upper()
+        usable = [r["id"] for r in rows if r["usable"]]
+        if chosen and chosen in usable:
+            return chosen
         info = self._runtime_info(self._runtime_id)
-        devices = [str(d) for d in info.get("devices", [])] or ["NPU"]
-        self._device_ids = devices
+        fallback = str(info.get("default_device") or "").upper()
+        if fallback in usable:
+            return fallback
+        return usable[0] if usable else (rows[0]["id"] if rows else "NPU")
 
-        current = str(self._model_devices.get(self._runtime_id, "") or "")
-        if current not in devices:
-            current = str(info.get("default_device") or devices[0])
-        self._device_label.set_text(current)
+    def _sync_device_menu(self) -> None:
+        rows = self._device_rows()
+        self._device_ids = [r["id"] for r in rows]
+        current = self._current_device()
+        label = next((r["label"] for r in rows if r["id"] == current), current)
+        self._device_label.set_text(label)
 
-        # Every device the runtime knows about, usable or not. A device that is
-        # present but cannot be compiled for — an NVIDIA card OpenVINO happens
-        # to enumerate — is shown with its reason rather than hidden, because
-        # the user can see the hardware and would otherwise wonder.
-        rows = info.get("all_devices") or [
-            {"id": d, "label": d, "usable": True, "reason": ""} for d in devices
-        ]
-
+        # Unusable devices stay listed with their reason. The user can see the
+        # hardware; hiding it invites the question this answers.
         self._clear_box(self._device_menu)
         for row in rows:
-            device = str(row.get("id", ""))
-            usable = bool(row.get("usable", True))
-            btn = Gtk.Button(label=str(row.get("label") or device))
+            device = row["id"]
+            btn = Gtk.Button(label=row["label"])
             btn.add_css_class("settings-dropdown-option")
-            if not usable:
+            if not row["usable"]:
                 btn.set_sensitive(False)
-                btn.set_tooltip_text(str(row.get("reason") or "unavailable"))
+                btn.set_tooltip_text(row["reason"] or "unavailable")
                 self._device_menu.append(btn)
                 continue
             if device == current:
@@ -1047,12 +1123,30 @@ class SettingsWindow(Gtk.Window):
 
     def _set_device(self, device: str) -> None:
         self._device_popover.popdown()
+        device = device.upper()
+
+        # A device decides which runtimes are even possible, so picking one
+        # that this runtime cannot reach moves the runtime rather than
+        # silently leaving a pairing that will not load.
+        supported = self._runtimes_for_device(device)
+        moved = ""
+        if supported and self._runtime_id not in supported:
+            self._runtime_id = supported[0]
+            moved = self._runtime_label(self._runtime_id)
+            self._patch("models", {"runtime": self._runtime_id})
+            self._sync_runtime_buttons(self._runtime_id)
+
         self._model_devices[self._runtime_id] = device
-        self._device_label.set_text(device)
         self._patch("models", {"devices": dict(self._model_devices)})
-        self._toast(f"{self._runtime_label(self._runtime_id)} will use {device}")
+        self._toast(
+            f"{device} — switched to {moved}" if moved else f"{self._runtime_label(self._runtime_id)} will use {device}"
+        )
         self._sync_device_menu()
-        self._refresh_model_ui()
+        self._sync_runtime_buttons(self._runtime_id)
+        self._sync_runtime_status()
+        # The daemon decides which models suit a device, so the list is
+        # re-fetched rather than re-filtered against a stale answer.
+        self._load_models(quiet=True)
 
     def _runtime_label(self, runtime_id: str) -> str:
         info = self._runtime_info(runtime_id)
@@ -1740,8 +1834,28 @@ class SettingsWindow(Gtk.Window):
             if runtime_id in self._runtime_buttons:
                 self._runtime_id = runtime_id
                 self._runtime_buttons[runtime_id].set_active(True)
+            self._sync_runtime_availability()
         finally:
             self._block_save = was_blocked
+
+    def _sync_runtime_availability(self) -> None:
+        """Disable the stacks that cannot reach the chosen device.
+
+        CUDA is only reachable through ONNX Runtime, and the old panel expressed
+        that by silently dropping CUDA from the device list once OpenVINO was
+        selected — the constraint was real and invisible. Here the device leads
+        and the runtime that cannot serve it is greyed with the reason.
+        """
+        if not self._runtimes:
+            return
+        device = self._current_device()
+        supported = set(self._runtimes_for_device(device))
+        for rid, button in self._runtime_buttons.items():
+            ok = not supported or rid in supported
+            button.set_sensitive(ok)
+            button.set_tooltip_text(
+                "" if ok else f"{self._runtime_label(rid)} cannot reach {device}"
+            )
 
     def _load_routes(self) -> None:
         def _work() -> dict[str, Any]:

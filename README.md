@@ -117,10 +117,22 @@ package is for — without it, ONNX models run on CPU only.
 > the one `openvino-genai` wants. If OpenVINO GenAI stops loading afterwards,
 > install the two runtimes in separate virtualenvs and keep the one you use.
 
-**Device** is chosen per runtime in the same panel (`NPU` / `GPU` / `CUDA` /
-`CPU`, plus `AUTO` on ONNX Runtime, which keeps whatever provider the model
-shipped with). Changing the device invalidates the compile cache, so the next
-load is slow either way.
+**Settings → Model asks in the order you actually decide**: the device first,
+then the runtimes that can reach it, then the models built for both. The old
+order asked for the runtime first, which made two questions look independent
+when they are not — CUDA is reachable only through ONNX Runtime, so choosing
+OpenVINO first quietly removed the GPU from the device list without ever
+saying so. Now the runtime that cannot serve the chosen device is greyed with
+the reason, and picking a device the current runtime cannot reach moves the
+runtime rather than leaving a pairing that will not load.
+
+Devices are merged across runtimes, and a usable answer wins. That matters for
+exactly one case and it is the important one: the same NVIDIA card is an
+unusable `GPU` to OpenVINO and a usable `CUDA` to ONNX Runtime, so asking only
+the selected runtime is what used to lose it.
+
+Changing the device invalidates the compile cache, so the next load is slow
+either way.
 
 `GPU` and `CUDA` are not two names for the same thing, and the difference is
 the reason a discrete card used to be unreachable. `GPU` means an **Intel** GPU
@@ -262,6 +274,9 @@ from Hugging Face on first activation.
 | `deepseek-r1-qwen-7b` | DeepSeek R1 Distill Qwen 7B (asymmetric) | OpenVINO | — |
 | `phi-4-mini-instruct` | Phi 4 Mini Instruct (asymmetric) | OpenVINO | — |
 | `qwen3.5-9b` | Qwen 3.5 9B (vision, asymmetric) | OpenVINO | — |
+| `phi-4-cuda` | Phi 4 14B | ONNX Runtime | CUDA |
+| `phi-4-mini-cuda` | Phi 4 Mini | ONNX Runtime | CUDA |
+| `qwen2.5-0.5b-tools-cuda` | Qwen 2.5 0.5B tool-calling | ONNX Runtime | CUDA |
 | `minicpm5-1b-onnx` | MiniCPM5 1B (agentic) | ONNX Runtime | CPU |
 | `phi-4-mini-onnx` | Phi 4 Mini Instruct | ONNX Runtime | CPU |
 | `phi-3.5-mini-onnx` | Phi 3.5 Mini Instruct (AWQ) | ONNX Runtime | CPU |
@@ -283,6 +298,22 @@ int8 accumulation. None of those repos ships an OpenVINO NPU build, so that
 runtime's device default is CPU. `minicpm5-1b-onnx` is the exception in shape
 rather than target: a flat repo with one FP16 graph at the root and no
 execution provider baked in.
+
+### What a GPU is for
+
+An NPU is bounded by what fits in a symmetric INT4 export it can compile; a
+24 GB card is bounded by 24 GB. Three entries exist for that, and they name
+their own device, so they are offered for CUDA and nowhere else — a CUDA graph
+is not a model you would want to download for an NPU:
+
+| | |
+| --- | --- |
+| `phi-4-cuda` | 14B, 9.0 GB of VRAM. The reason to have a GPU: this does not fit on an NPU at any quantization. |
+| `phi-4-mini-cuda` | 4B, 3.4 GB. A good default when the card is shared with something else. |
+| `qwen2.5-0.5b-tools-cuda` | 0.8 GB, tuned for tool calls. Small enough to sit beside a browser and a game. |
+
+Microsoft publishes these as `gpu/` in newer repos and `cuda/` in older ones,
+and both are recognised — see the note on that naming above.
 
 ### Small models that are good at tools
 

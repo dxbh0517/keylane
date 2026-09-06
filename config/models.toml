@@ -245,6 +245,52 @@ description = "A VLM, not a text model — the vision tower is why its first NPU
 # build — the only NPU folder anywhere in them is Qualcomm QNN, which is not
 # this hardware — so the device default for this runtime is CPU.
 
+# ── ONNX Runtime GenAI · exported for an NVIDIA GPU ──────────────────────
+# `device = "CUDA"` is not a preference either: these are CUDA graphs, so they
+# are offered for that device and no other. Microsoft publishes them as `gpu/`
+# in newer repos and `cuda/` in older ones — the folder called `gpu` here means
+# NVIDIA, not the Intel GPU that Keylane's `GPU` device means.
+#
+# This is where a 24 GB card earns its keep: a 14B model has nowhere else to go
+# on this hardware.
+
+[[models]]
+id = "phi-4-cuda"
+name = "Phi 4 14B (CUDA)"
+hf_repo = "microsoft/phi-4-onnx"
+subfolder = "gpu/gpu-int4-rtn-block-32"
+runtime = "onnxruntime"
+device = "CUDA"
+params_b = 14
+npu_ready = false
+quantization = "INT4 RTN block 32, CUDA — 9.0 GB of VRAM"
+description = "The largest model here, and the reason to have a GPU: 14B does not fit on an NPU at any quantization."
+
+[[models]]
+id = "phi-4-mini-cuda"
+name = "Phi 4 Mini (CUDA)"
+hf_repo = "microsoft/Phi-4-mini-instruct-onnx"
+subfolder = "gpu/gpu-int4-rtn-block-32"
+runtime = "onnxruntime"
+device = "CUDA"
+params_b = 4
+npu_ready = false
+quantization = "INT4 RTN block 32, CUDA — 3.4 GB of VRAM"
+description = "Microsoft's own CUDA export. A good default when the GPU is shared with something else."
+
+[[models]]
+id = "qwen2.5-0.5b-tools-cuda"
+name = "Qwen 2.5 0.5B tool-calling (CUDA)"
+hf_repo = "elbruno/Qwen2.5-0.5B-LocalLLMs-ToolCalling"
+runtime = "onnxruntime"
+device = "CUDA"
+params_b = 1
+npu_ready = false
+quantization = "0.8 GB of VRAM"
+description = "Small enough to load beside whatever else is on the card. Tuned for tool calls, which is most of what a turn is."
+
+# ── ONNX Runtime GenAI ───────────────────────────────────────────────────
+
 [[models]]
 id = "minicpm5-1b-onnx"
 name = "MiniCPM5 1B (ONNX, agentic)"
