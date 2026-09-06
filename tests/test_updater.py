@@ -24,7 +24,6 @@ from updater.apply import (
 from updater.github import Release
 from updater.version import VERSION, is_newer, parse
 
-
 # ── versions ─────────────────────────────────────────────────────────────
 
 
