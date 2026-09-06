@@ -193,25 +193,49 @@ def test_openvino_repo_variants_prefer_the_root_export():
     assert {v.subfolder for v in variants} == {"", "nested"}
 
 
-def test_onnx_repo_variants_reject_vendor_locked_builds():
+_REPO_LISTING = [
+    "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4/genai_config.json",
+    "cuda/cuda-fp16/genai_config.json",
+    "directml/directml-int4-awq-block-128/genai_config.json",
+    "README.md",
+]
+
+
+def test_onnx_repo_variants_reject_vendor_locked_builds(monkeypatch):
+    """Without an NVIDIA card, a CUDA build is the wrong machine.
+
+    `cuda_status` is pinned rather than inherited. This test used to read
+    whatever card the developer happened to have, so it passed on a laptop and
+    failed on a workstation for reasons having nothing to do with the change
+    under test.
+    """
+    import runtimes.onnx_rt as onnx
+
+    monkeypatch.setattr(onnx, "cuda_status", lambda: (False, "no card"))
     backend = backend_for("onnxruntime")
-    variants = backend.repo_variants(
-        [
-            "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4/genai_config.json",
-            "cuda/cuda-fp16/genai_config.json",
-            "directml/directml-int4-awq-block-128/genai_config.json",
-            "README.md",
-        ]
-    )
-    ranked = sorted(variants, key=lambda v: -v.score)
+    ranked = sorted(backend.repo_variants(_REPO_LISTING), key=lambda v: -v.score)
     assert ranked[0].subfolder.startswith("cpu_and_mobile/")
-    # A CUDA or DirectML build is not a worse choice, it is the wrong machine —
-    # it has to sort below the runnable threshold, not merely last.
+    # Not a worse choice — the wrong machine. It has to sort below the runnable
+    # threshold, not merely last.
     from runtimes.onnx_rt import RUNNABLE_SCORE
 
     assert [v.subfolder for v in ranked if v.score >= RUNNABLE_SCORE] == [
         "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4"
     ]
+
+
+def test_onnx_repo_variants_prefer_cuda_when_the_card_is_there(monkeypatch):
+    """With the card, the same build is the best one in the repo."""
+    import runtimes.onnx_rt as onnx
+
+    monkeypatch.setattr(onnx, "cuda_status", lambda: (True, ""))
+    backend = backend_for("onnxruntime")
+    ranked = sorted(backend.repo_variants(_REPO_LISTING), key=lambda v: -v.score)
+    assert ranked[0].subfolder == "cuda/cuda-fp16"
+    # DirectML is foreign whatever is plugged in.
+    assert all(
+        v.score < 0 for v in ranked if v.subfolder.startswith("directml/")
+    )
 
 
 def test_onnx_repo_variants_read_qnn_as_a_foreign_target():

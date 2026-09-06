@@ -150,3 +150,113 @@ def test_an_onnx_export_is_recommended_on_cuda() -> None:
 
 def test_auto_imposes_nothing() -> None:
     assert _entry(npu_ready=False).suits_device("AUTO")[0]
+
+
+# ── the CUDA runtime has to be findable, not merely installed ────────────
+#
+# Found by installing onnxruntime-genai-cuda and watching it fail. The CUDA
+# libraries arrive as separate `nvidia-*` wheels that unpack to
+# site-packages/nvidia/<pkg>/lib — a directory no loader searches — so ONNX
+# Runtime failed at model init with "Failed to load library: libcublasLt.so.13"
+# on an installation that was, by every check Keylane made, complete.
+
+
+def test_preloading_is_idempotent() -> None:
+    """It runs on every CUDA load; doing the work twice would be waste."""
+    import runtimes.onnx_rt as onnx
+
+    monkeyed = onnx._preloaded_cuda
+    try:
+        onnx._preloaded_cuda = False
+        first = onnx.preload_cuda_libraries()
+        second = onnx.preload_cuda_libraries()
+        assert second == 0
+        assert first >= 0
+    finally:
+        onnx._preloaded_cuda = monkeyed
+
+
+def test_a_listed_provider_is_not_a_loadable_one(monkeypatch) -> None:
+    """`get_available_providers` reports what was *compiled in*.
+
+    Believing it gave a Settings panel that offered CUDA and a stack trace
+    when it was picked.
+    """
+    import runtimes.onnx_rt as onnx
+
+    monkeypatch.setattr(onnx, "_cuda_runtime_loadable", lambda: False)
+    monkeypatch.setitem(__import__("sys").modules, "onnxruntime_genai", _FakeGenai())
+    assert not onnx.cuda_provider_available()
+
+
+class _FakeGenai:
+    """Stands in for onnxruntime-genai 0.15, which has no provider list."""
+
+
+def test_cuda_needs_both_listed_and_loadable(monkeypatch) -> None:
+    import sys
+
+    import runtimes.onnx_rt as onnx
+
+    monkeypatch.setitem(sys.modules, "onnxruntime_genai", _FakeGenai())
+    monkeypatch.setattr(onnx, "_cuda_runtime_loadable", lambda: True)
+
+    class _Ort:
+        @staticmethod
+        def get_available_providers():
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", _Ort())
+    assert onnx.cuda_provider_available()
+
+
+# ── running out of VRAM is the normal failure on a shared GPU ────────────
+
+
+def _oom() -> RuntimeError:
+    return RuntimeError(
+        "Exception during initialization: bfc_arena.cc:359 ... Failed to "
+        "allocate memory for requested buffer of size 12582912"
+    )
+
+
+def test_an_out_of_vram_load_says_so(tmp_path, monkeypatch) -> None:
+    """ONNX Runtime names the *last* small allocation it tried.
+
+    "failed to allocate 12582912" on a 24 GB card reads as a bug in Keylane
+    rather than as a browser and two model servers holding the memory.
+    """
+    import runtimes.onnx_rt as onnx
+
+    model = tmp_path / "m"
+    model.mkdir()
+    (model / "model.onnx.data").write_bytes(b"\0" * 2048)
+    monkeypatch.setattr(onnx, "free_vram_mb", lambda: 900)
+
+    message = onnx._explain_load_failure(_oom(), model, "CUDA")
+    assert "not enough free VRAM" in message
+    assert "900 MiB is free" in message
+    # The original is kept: it is what a bug report needs.
+    assert "bfc_arena" in message
+
+
+def test_the_vram_message_survives_nvidia_smi_being_absent(tmp_path, monkeypatch) -> None:
+    import runtimes.onnx_rt as onnx
+
+    model = tmp_path / "m"
+    model.mkdir()
+    monkeypatch.setattr(onnx, "free_vram_mb", lambda: None)
+    assert "not enough free VRAM" in onnx._explain_load_failure(_oom(), model, "CUDA")
+
+
+def test_other_errors_are_passed_through_untouched(tmp_path) -> None:
+    import runtimes.onnx_rt as onnx
+
+    original = RuntimeError("genai_config.json names no model file")
+    assert onnx._explain_load_failure(original, tmp_path, "CUDA") == str(original)
+
+
+def test_an_allocation_failure_on_cpu_is_not_a_vram_problem(tmp_path) -> None:
+    import runtimes.onnx_rt as onnx
+
+    assert "VRAM" not in onnx._explain_load_failure(_oom(), tmp_path, "CPU")

@@ -254,6 +254,96 @@ def nvidia_present() -> bool:
     )
 
 
+# The CUDA runtime as shipped by the `nvidia-*` wheels, which is where it
+# actually lives on a pip-installed stack: site-packages/nvidia/*/lib.
+_NVIDIA_LIB_GLOB = os.path.join("nvidia", "*", "lib", "lib*.so*")
+# Enough to prove the runtime is loadable. cuBLAS is the one that failed first
+# in practice — onnxruntime-gpu 1.29 wants libcublasLt.so.13 — and cudart is
+# the floor beneath everything.
+_CUDA_CORE_LIBS = ("libcudart.so", "libcublasLt.so")
+
+_preloaded_cuda = False
+
+
+def preload_cuda_libraries() -> int:
+    """dlopen the CUDA runtime from the nvidia-* wheels. Returns how many.
+
+    Without this, CUDA is installed and unusable. `onnxruntime-genai-cuda`
+    depends on `onnxruntime-gpu`, whose CUDA libraries arrive as separate
+    `nvidia-*` wheels that unpack to ``site-packages/nvidia/<pkg>/lib`` — a
+    directory no loader searches. ONNX Runtime then fails at model
+    initialisation with
+
+        Cuda interface not available: Failed to load library:
+        libcublasLt.so.13: cannot open shared object file
+
+    which reads as a broken installation rather than a missing path. PyTorch
+    solves the same problem the same way, which is why `import torch` before
+    onnxruntime is a folk remedy for it.
+
+    Loading each with RTLD_GLOBAL puts it in the process under its SONAME, so
+    ONNX Runtime's own dlopen finds it already there. Idempotent, and silent
+    about individual failures: these are dependencies of each other and load
+    order decides which ones resolve, so a count of zero is the only
+    interesting outcome.
+    """
+    global _preloaded_cuda
+    if _preloaded_cuda:
+        return 0
+
+    import ctypes  # noqa: PLC0415
+    import glob  # noqa: PLC0415
+    import site  # noqa: PLC0415
+
+    roots = list(site.getsitepackages())
+    try:
+        roots.append(site.getusersitepackages())
+    except Exception:  # noqa: BLE001
+        pass
+
+    loaded = 0
+    for base in roots:
+        for path in sorted(glob.glob(os.path.join(base, _NVIDIA_LIB_GLOB))):
+            try:
+                ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+                loaded += 1
+            except OSError:
+                continue
+    _preloaded_cuda = True
+    if loaded:
+        logger.info("preloaded %d CUDA libraries from the nvidia-* packages", loaded)
+    return loaded
+
+
+def _cuda_runtime_loadable() -> bool:
+    """Whether the CUDA runtime can actually be opened, not merely compiled in.
+
+    `onnxruntime.get_available_providers()` lists CUDA because the provider was
+    *built* into the wheel — it says nothing about whether its shared libraries
+    resolve, and on a fresh install they do not. Believing it produced a
+    Settings panel that offered CUDA and a stack trace when it was chosen.
+    """
+    import ctypes  # noqa: PLC0415
+
+    preload_cuda_libraries()
+    for name in _CUDA_CORE_LIBS:
+        try:
+            ctypes.CDLL(name, mode=ctypes.RTLD_GLOBAL)
+        except OSError:
+            # Try the versioned SONAMEs the wheels actually install.
+            import glob  # noqa: PLC0415
+            import site  # noqa: PLC0415
+
+            found = False
+            for base in site.getsitepackages():
+                if glob.glob(os.path.join(base, "nvidia", "*", "lib", f"{name}*")):
+                    found = True
+                    break
+            if not found:
+                return False
+    return True
+
+
 def cuda_provider_available() -> bool:
     """Whether the installed onnxruntime-genai can actually target CUDA.
 
@@ -266,16 +356,28 @@ def cuda_provider_available() -> bool:
         import onnxruntime_genai as og  # noqa: PLC0415
     except ImportError:
         return False
-    # Newer builds expose the provider list; older ones do not, and there the
-    # append is the only way to find out — so assume yes and let build_config
-    # report the real failure rather than refusing up front.
+    # onnxruntime-genai 0.15 has no provider list, so ask the runtime beneath
+    # it: `onnxruntime-genai-cuda` depends on `onnxruntime-gpu`, and that is the
+    # package that owns the provider.
+    listed = False
     providers = getattr(og, "get_available_providers", None)
+    if providers is not None:
+        try:
+            listed = any("cuda" in str(name).lower() for name in providers())
+        except Exception:  # noqa: BLE001
+            providers = None
     if providers is None:
-        return True
-    try:
-        return any("cuda" in str(name).lower() for name in providers())
-    except Exception:  # noqa: BLE001
-        return True
+        try:
+            import onnxruntime as ort  # noqa: PLC0415
+
+            listed = any("cuda" in p.lower() for p in ort.get_available_providers())
+        except Exception:  # noqa: BLE001
+            # Nothing will answer. Assume yes and let the load report the real
+            # failure rather than refusing a device that may well work.
+            return True
+
+    # Listed is not loadable. Both have to hold.
+    return listed and _cuda_runtime_loadable()
 
 
 def cuda_status() -> tuple[bool, str]:
@@ -283,7 +385,10 @@ def cuda_status() -> tuple[bool, str]:
     if not nvidia_present():
         return False, "no NVIDIA driver on this machine"
     if not cuda_provider_available():
-        return False, "onnxruntime-genai has no CUDA provider (pip install onnxruntime-genai-cuda)"
+        return False, (
+            "no working CUDA provider — pip install onnxruntime-genai-cuda "
+            "'onnxruntime-gpu[cuda,cudnn]'"
+        )
     return True, ""
 
 
@@ -315,6 +420,10 @@ def build_config(model_dir: Path, device: str, cache: Path | None) -> Any:
         usable, reason = cuda_status()
         if not usable:
             raise RuntimeError(f"cannot run on CUDA: {reason}")
+        # Before the provider is appended, not after: ONNX Runtime dlopens the
+        # CUDA libraries when it builds the session, and by then it is too late
+        # to put them where it will look.
+        preload_cuda_libraries()
         config.append_provider("cuda")
         return config
 
@@ -350,12 +459,69 @@ def _openvino_ep_available() -> bool:
     return "OpenVINOExecutionProvider" in onnxruntime.get_available_providers()
 
 
+def free_vram_mb() -> int | None:
+    """Free VRAM on the first NVIDIA GPU, or None if it cannot be read."""
+    import subprocess  # noqa: PLC0415
+
+    try:
+        done = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    try:
+        return int(done.stdout.strip().splitlines()[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def _explain_load_failure(exc: Exception, model_dir: Path, device: str) -> str:
+    """Turn a runtime error from model init into something actionable.
+
+    The one that matters is running out of VRAM, because on a desktop the GPU
+    is shared: a browser, a game, another model server. ONNX Runtime reports it
+    as an arena failure naming the *last* small allocation it tried —
+
+        BFCArena.cc:359 ... Failed to allocate memory for requested buffer of
+        size 12582912
+
+    which reads as a 12 MB allocation failing on a 24 GB card, and sends you
+    looking for a bug rather than at whatever else is holding the memory.
+    """
+    text = str(exc)
+    lowered = text.lower()
+    if device.strip().upper() != CUDA_DEVICE:
+        return text
+    if "allocate" not in lowered and "out of memory" not in lowered:
+        return text
+
+    free = free_vram_mb()
+    weights = sum(f.stat().st_size for f in model_dir.glob("*.onnx*") if f.is_file())
+    detail = f"{model_dir.name} needs about {weights / 1e9:.1f} GB of VRAM"
+    if free is not None:
+        detail += f" and {free} MiB is free"
+    return (
+        f"not enough free VRAM to load this model on CUDA — {detail}. "
+        "Close whatever else is using the GPU (nvidia-smi lists it), or pick a "
+        f"smaller model or another device.\n\nUnderlying error: {text}"
+    )
+
+
 def open_model(model_dir: Path, device: str, cache: Path | None) -> tuple[Any, Any]:
     """Load the model and its tokenizer. Used by both the probe and the daemon."""
     import onnxruntime_genai as og  # noqa: PLC0415
 
     config = build_config(model_dir, device, cache)
-    model = og.Model(config) if config is not None else og.Model(str(model_dir))
+    try:
+        model = og.Model(config) if config is not None else og.Model(str(model_dir))
+    except RuntimeError as exc:
+        raise RuntimeError(_explain_load_failure(exc, model_dir, device)) from exc
     return model, og.Tokenizer(model)
 
 
@@ -702,11 +868,18 @@ class OnnxRuntimeBackend:
 # Keylane can offer.
 _FOREIGN_TARGETS = ("directml", "dml", "qnn", "webgpu", "web", "rocm", "trt")
 
-# CUDA is conditional, not foreign. It is unusable on a machine with no NVIDIA
-# card and no CUDA provider — and on a machine with both it is the best build
-# in the repo by a wide margin, which is the whole reason CUDA was added as a
-# device. Judging it by folder name alone is what made a 5090 invisible.
-_CUDA_TARGETS = ("cuda", "trt-cuda")
+# Builds aimed at a discrete GPU. Conditional, not foreign: unusable on a
+# machine with no NVIDIA card and no CUDA provider, and the best build in the
+# repo on a machine with both.
+#
+# Both spellings are in circulation and the newer one is the confusing one.
+# Phi-3-mini publishes `cuda/cuda-int4-rtn-block-32`; Phi-3.5-mini and
+# Phi-4-mini publish the same thing as `gpu/gpu-int4-awq-block-128`. So a
+# folder called `gpu` in an ONNX repo means NVIDIA, while `GPU` as a Keylane
+# device means an Intel GPU through the OpenVINO EP — opposite vendors, same
+# three letters. Matching only "cuda" left the newer repos' GPU build looking
+# like an ordinary one and scored below the CPU build.
+_DISCRETE_GPU_TARGETS = ("cuda", "gpu", "trt-cuda")
 
 # Below this a variant is not a worse choice, it is the wrong machine.
 RUNNABLE_SCORE = 0
@@ -730,10 +903,12 @@ def _variant_score(folder: str) -> int:
     segments = set(re.split(r"[/\-_.]+", name))
     if any(target in segments for target in _FOREIGN_TARGETS):
         return -100
-    if any(target in segments for target in _CUDA_TARGETS):
+    if any(target in segments for target in _DISCRETE_GPU_TARGETS):
         usable, _reason = cuda_status()
         # Above every OpenVINO-EP build when the card is there: a 24 GB GPU
-        # beats an NPU for anything that fits on it.
+        # beats an NPU for anything that fits on it. Without the card it is not
+        # a worse choice but the wrong one — these graphs are built for CUDA,
+        # and the `cpu_and_mobile` build beside them is what to use instead.
         return 200 if usable else -100
 
     score = 50
