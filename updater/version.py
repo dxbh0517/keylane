@@ -15,7 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-VERSION = "0.9.3"
+VERSION = "0.10.0"
 
 # Semantic-ish: major.minor.patch, compared numerically field by field. A tag
 # may carry a leading "v" and a suffix like "-rc1"; both are handled below.
