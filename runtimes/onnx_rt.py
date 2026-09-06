@@ -82,6 +82,10 @@ ENABLE_THINKING = os.environ.get("KEYLANE_ENABLE_THINKING", "0").strip().lower()
 
 _TOKENIZER_FILES = ("tokenizer.json", "tokenizer.model", "spiece.model", "vocab.json")
 
+# A real vocabulary is tens of kilobytes at the very least; anything smaller is
+# a file that started arriving and stopped.
+_MIN_TOKENIZER_BYTES = 1024
+
 # Loading a Hugging Face tokenizer costs a second or two; the chat template it
 # carries never changes for a directory, so it is loaded once per model.
 _HF_TOKENIZERS: dict[str, Any] = {}
@@ -746,8 +750,42 @@ class OnnxRuntimeBackend:
                 if blob.stat().st_size < _MIN_MODEL_BYTES:
                     missing.append(f"{blob.name} (empty or truncated)")
 
-        if not any((model_dir / name).is_file() for name in _TOKENIZER_FILES):
-            missing.append("tokenizer.json")
+        missing.extend(self._missing_tokenizer(model_dir))
+        return missing
+
+    @staticmethod
+    def _missing_tokenizer(model_dir: Path) -> list[str]:
+        """Tokenizer files that are absent, or present and half-written.
+
+        Existence alone was the check, and existence alone is what a torn
+        download satisfies. A truncated `tokenizer.json` or `merges.txt` loads
+        as a corrupt merge table, and the failure surfaces from deep inside the
+        tokenizer as
+
+            Invalid range in '{}' in regular expression
+
+        which names nothing a person can act on and does not look like a
+        download problem at all. Checking the sizes turns that into "missing
+        weights", which the caller already knows how to fix by fetching again.
+        """
+        present = [name for name in _TOKENIZER_FILES if (model_dir / name).is_file()]
+        if not present:
+            return ["tokenizer.json"]
+
+        missing: list[str] = []
+        for name in present:
+            path = model_dir / name
+            if path.stat().st_size < _MIN_TOKENIZER_BYTES:
+                missing.append(f"{name} (empty or truncated)")
+
+        # A BPE tokenizer split across vocab.json and merges.txt needs both,
+        # and half of one is the case that produces the regex error.
+        if (model_dir / "vocab.json").is_file():
+            merges = model_dir / "merges.txt"
+            if not merges.is_file():
+                missing.append("merges.txt")
+            elif merges.stat().st_size < _MIN_TOKENIZER_BYTES:
+                missing.append("merges.txt (empty or truncated)")
         return missing
 
     @staticmethod

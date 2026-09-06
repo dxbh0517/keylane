@@ -10,6 +10,7 @@ behind into a sentence a person can act on.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from collections.abc import Callable
@@ -18,16 +19,46 @@ from typing import Mapping, Sequence
 OK_MARKER = "KEYLANE_PROBE_OK"
 
 
+# The line a traceback ends on: `RuntimeError: something went wrong`. Matched
+# so a message that runs to several lines can be taken whole.
+_EXCEPTION_LINE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit)?: ")
+
+
 def last_line(text: str) -> str:
-    """The most useful line of a traceback: the last one that is not frame noise."""
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
-    if not lines:
+    """The useful part of a traceback: the exception and everything it said.
+
+    Taking the *last* line is right for a one-line message and wrong for one
+    written to be read. A load failure explains which model, how much VRAM it
+    needed and what is holding the card — several sentences over several lines
+    — and reading from the end returned the final fragment while discarding
+    every part that made it useful.
+
+    So the exception line is found and taken with its continuation, newlines
+    folded to keep this a single line for the caller.
+    """
+    raw = [ln for ln in (text or "").splitlines() if ln.strip()]
+    if not raw:
         return ""
-    for line in reversed(lines):
-        if line.startswith(("File ", "Traceback", "  ")):
+
+    def _is_frame(line: str) -> bool:
+        stripped = line.strip()
+        return line.startswith((" ", "\t")) or stripped.startswith(("File ", "Traceback"))
+
+    # The last line that *starts* an exception, not the last line overall. A
+    # continuation ("Underlying error: …") is neither frame noise nor a new
+    # exception, so scanning for the first non-frame line from the end stops on
+    # it and throws away the sentences above.
+    for index in range(len(raw) - 1, -1, -1):
+        if _is_frame(raw[index]):
             continue
-        return line[:300]
-    return lines[-1][:300]
+        if _EXCEPTION_LINE.match(raw[index].strip()):
+            message = " ".join(part.strip() for part in raw[index:])
+            return message[:600]
+
+    for line in reversed(raw):
+        if not _is_frame(line):
+            return line.strip()[:600]
+    return raw[-1].strip()[:600]
 
 
 def signal_failure(returncode: int, stderr: str, stdout: str) -> str:

@@ -53,7 +53,10 @@ def _onnx_export(root: Path, *, vision: bool = False, context: int = 4096) -> Pa
     (root / "model.onnx.data").write_bytes(b"\0" * 16384)
     if vision:
         (root / "vision.onnx").write_bytes(b"\0" * 16384)
-    (root / "tokenizer.json").write_text("{}", encoding="utf-8")
+    # Sized like a real vocabulary. A two-byte placeholder is indistinguishable
+    # from a download that stopped after the first character, which is exactly
+    # what missing_weights now refuses.
+    (root / "tokenizer.json").write_text("{}" + " " * 8192, encoding="utf-8")
     return root
 
 
