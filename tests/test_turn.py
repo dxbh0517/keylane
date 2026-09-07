@@ -368,7 +368,9 @@ def test_the_note_refuses_the_conclusion_the_model_reached() -> None:
     note = tool_failure_note(
         "mcp.mailspring.list_unread_threads",
         {"accountId": "user_account_id"},
-        ["mcp.mailspring.list_accounts", "shell"],
+        # The tool being called has to be in the list, or this is the other
+        # case entirely — an invented name, which gets opposite advice.
+        ["mcp.mailspring.list_unread_threads", "mcp.mailspring.list_accounts", "shell"],
     )
     assert "not a missing capability" in note
     assert "do not tell the user you lack access" in note
@@ -400,3 +402,69 @@ def test_only_failures_are_steered(result: str, is_error: bool) -> None:
     from agent.loop import _looks_like_an_error
 
     assert _looks_like_an_error(result) is is_error
+
+
+# ── a tool name the model invented ───────────────────────────────────────
+#
+# The first version of tool_failure_note assumed a failed call meant bad
+# arguments. A model that had done the discovery correctly then called
+# `mcp.mailspring.list_unread_emails` — which does not exist; the real one is
+# `list_unread_threads` — and was told the tool "exists and you may call it
+# again". It reasonably concluded it could not do the job and said so.
+
+
+_AVAILABLE = [
+    "mcp.mailspring.list_accounts",
+    "mcp.mailspring.list_unread_threads",
+    "mcp.mailspring.list_threads",
+    "shell",
+    "recall",
+]
+
+
+def test_an_invented_tool_name_is_not_said_to_exist() -> None:
+    from agent.loop import tool_failure_note
+
+    note = tool_failure_note(
+        "mcp.mailspring.list_unread_emails", {"accountId": "73b9dacc"}, _AVAILABLE
+    )
+    assert "exists and you may call it again" not in note
+    assert "no tool called" in note
+
+
+def test_an_invented_name_gets_the_real_one() -> None:
+    """The whole point: `list_unread_emails` is one word from the real tool."""
+    from agent.loop import tool_failure_note
+
+    note = tool_failure_note(
+        "mcp.mailspring.list_unread_emails", {"accountId": "73b9dacc"}, _AVAILABLE
+    )
+    assert "mcp.mailspring.list_unread_threads" in note
+
+
+def test_suggestions_come_from_the_same_server_first() -> None:
+    from agent.loop import _closest_tools
+
+    assert all(
+        t.startswith("mcp.mailspring.")
+        for t in _closest_tools("mcp.mailspring.list_unread_emails", _AVAILABLE)
+    )
+
+
+def test_a_name_with_no_close_match_still_gets_somewhere_to_look() -> None:
+    from agent.loop import _closest_tools
+
+    found = _closest_tools("mcp.mailspring.wibble", _AVAILABLE)
+    assert found
+    assert all("list" in t for t in found)
+
+
+def test_a_real_tool_is_still_told_that_it_is_real() -> None:
+    """The two cases need opposite advice; neither may leak into the other."""
+    from agent.loop import tool_failure_note
+
+    note = tool_failure_note(
+        "mcp.mailspring.list_unread_threads", {"accountId": "user_account_id"}, _AVAILABLE
+    )
+    assert "no tool called" not in note
+    assert "exists and you may call it again" in note
