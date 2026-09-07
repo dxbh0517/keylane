@@ -134,6 +134,79 @@ def _compress_tool_result(name: str, result: str) -> str:
     return result
 
 
+# Values a model writes when it does not know the real one. Matched whole, in
+# lowercase, with separators folded — so `user_account_id`, `<ACCOUNT-ID>` and
+# `your account id` are all the same guess.
+_PLACEHOLDER_VALUES = frozenset(
+    {
+        "id", "account id", "accountid", "user account id", "your account id",
+        "the account id", "user id", "userid", "example", "example id",
+        "your email", "your email address", "email address", "name", "value",
+        "string", "xxx", "todo", "tbd", "none", "null", "placeholder",
+        "some id", "my account", "default", "unknown", "test",
+    }
+)
+_PLACEHOLDER_SHAPE = re.compile(r"^[<\[{(]|[>\]})]$")
+
+
+def looks_like_a_placeholder(value: Any) -> bool:
+    """Whether an argument reads as something the model made up to fill a slot.
+
+    A tool that is called with an invented id fails, and a small model reads
+    that failure as "I do not have this tool" — which is how a working MCP
+    server is reported to the user as an absent one. Naming the guess is what
+    turns an unhelpful error into a next step.
+    """
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    if _PLACEHOLDER_SHAPE.search(text):
+        return True
+    folded = re.sub(r"[-_.]+", " ", text.lower()).strip()
+    folded = re.sub(r"\s+", " ", folded)
+    return folded in _PLACEHOLDER_VALUES
+
+
+def guessed_arguments(arguments: dict[str, Any]) -> list[str]:
+    """The argument names whose values look invented."""
+    if not isinstance(arguments, dict):
+        return []
+    return [key for key, value in arguments.items() if looks_like_a_placeholder(value)]
+
+
+def tool_failure_note(name: str, arguments: dict[str, Any], available: list[str]) -> str:
+    """What to tell the model after a tool call failed.
+
+    Without this the model is told only that the call errored, and concludes
+    the capability is missing. It is not — it has the tool, it called it with
+    an argument it invented.
+    """
+    guessed = guessed_arguments(arguments)
+    lines = [
+        f"The `{name}` tool exists and you may call it again. This was a failed "
+        "call, not a missing capability — do not tell the user you lack access."
+    ]
+    if guessed:
+        which = ", ".join(f"`{key}`" for key in sorted(guessed))
+        lines.append(
+            f"You supplied a placeholder for {which}. Real values come from the "
+            "tools that list them, not from you: call the listing tool first, "
+            "read the id out of its result, then call this one again."
+        )
+        siblings = [t for t in available if t.startswith(name.rsplit(".", 1)[0] + ".")]
+        listing = [t for t in siblings if "list" in t or "get_accounts" in t]
+        if listing:
+            lines.append("Try one of: " + ", ".join(f"`{t}`" for t in sorted(listing)[:4]) + ".")
+    else:
+        lines.append(
+            "Check the arguments against the tool's schema, or use a different "
+            "tool. If the error says the request was refused, say what it said."
+        )
+    return " ".join(lines)
+
+
 def tool_result_block(name: str, body: str, *, note: str = "") -> str:
     """The one rendering of a tool result — the model sees exactly this string.
 
@@ -142,6 +215,22 @@ def tool_result_block(name: str, body: str, *, note: str = "") -> str:
     """
     payload = f"{body}\n{note}" if note else body
     return f'<tool_result name="{name}">\n{payload}\n</tool_result>'
+
+
+def _looks_like_an_error(result: str) -> bool:
+    """Whether a tool result is a failure. The registry answers in JSON."""
+    text = (result or "").strip()
+    if not text:
+        return False
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict) and ("error" in data or data.get("isError")):
+            return True
+    lowered = text[:200].lower()
+    return lowered.startswith(("error:", "error ", '{"error"'))
 
 
 def _ensure_tools() -> None:
@@ -443,8 +532,19 @@ class AIAgent:
                         continue
 
                     result = await self.tools.call(name, args, on_event=_event_bridge)
+                    note = ""
+                    if _looks_like_an_error(result):
+                        note = tool_failure_note(
+                            name, args, list(self.tools.visible().keys())
+                        )
+                        logger.info("tool %s failed; steering the retry: %s", name, note[:90])
                     _record("assistant", _assistant_history_stub(call))
-                    _record("user", tool_result_block(name, _compress_tool_result(name, result)))
+                    _record(
+                        "user",
+                        tool_result_block(
+                            name, _compress_tool_result(name, result), note=note
+                        ),
+                    )
                     continue
 
                 final = _clean_for_user(raw)
