@@ -176,13 +176,54 @@ def guessed_arguments(arguments: dict[str, Any]) -> list[str]:
     return [key for key, value in arguments.items() if looks_like_a_placeholder(value)]
 
 
+def _closest_tools(name: str, available: list[str], limit: int = 4) -> list[str]:
+    """Real tool names nearest the one the model asked for.
+
+    Prefers siblings from the same MCP server, since a model that invents
+    `list_unread_emails` is nearly always reaching for something the same
+    server does provide under another name.
+    """
+    import difflib  # noqa: PLC0415
+
+    prefix = name.rsplit(".", 1)[0] + "." if "." in name else ""
+    siblings = [t for t in available if prefix and t.startswith(prefix)]
+    pool = siblings or available
+    close = difflib.get_close_matches(name, pool, n=limit, cutoff=0.5)
+    if close:
+        return close
+    # Nothing similar enough: offer the server's own listing tools, which are
+    # where a model finds out what it may actually call.
+    return sorted(t for t in pool if "list" in t.rsplit(".", 1)[-1])[:limit]
+
+
 def tool_failure_note(name: str, arguments: dict[str, Any], available: list[str]) -> str:
     """What to tell the model after a tool call failed.
 
     Without this the model is told only that the call errored, and concludes
-    the capability is missing. It is not — it has the tool, it called it with
-    an argument it invented.
+    the capability is missing. It usually is not — the tool is there and was
+    called with an argument the model invented, or the tool was never there and
+    the *name* was invented.
+
+    Those need opposite advice, and getting it wrong is worse than saying
+    nothing. This function's first version told a model that a tool it had
+    hallucinated "exists and you may call it again"; the model, reasonably,
+    concluded it could not do the job.
     """
+    if name not in available:
+        suggestions = _closest_tools(name, available)
+        note = [
+            f"There is no tool called `{name}` — you invented that name. Do not "
+            "tell the user the capability is missing until you have tried a tool "
+            "that exists."
+        ]
+        if suggestions:
+            note.append(
+                "These do exist and are the closest: "
+                + ", ".join(f"`{t}`" for t in suggestions)
+                + "."
+            )
+        return " ".join(note)
+
     guessed = guessed_arguments(arguments)
     lines = [
         f"The `{name}` tool exists and you may call it again. This was a failed "
