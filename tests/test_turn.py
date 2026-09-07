@@ -325,3 +325,78 @@ def test_the_openai_route_still_returns_prose() -> None:
 
     source = inspect.getsource(openai_api.chat_completions)
     assert "extract_user_answer(raw)" in source
+
+
+# ── a tool called with an invented argument ──────────────────────────────
+#
+# jan-nano called mcp.mailspring.list_unread_threads with
+# {'accountId': 'user_account_id'} — a value it made up rather than reading
+# from list_accounts. The call failed, and the model reported that to the user
+# as "I don't have access to your email threads", which is the one conclusion
+# that is not true: it has the tool and called it wrong.
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["user_account_id", "<ACCOUNT-ID>", "your email", "example", "TBD", "your_account_id"],
+)
+def test_invented_values_are_recognised(value: str) -> None:
+    from agent.loop import looks_like_a_placeholder
+
+    assert looks_like_a_placeholder(value)
+
+
+@pytest.mark.parametrize("value", ["73b9dacc", "Inbox", "omar@example.com", "2026-09-07"])
+def test_real_values_are_left_alone(value: str) -> None:
+    """A false positive would nag a model that did everything right."""
+    from agent.loop import looks_like_a_placeholder
+
+    assert not looks_like_a_placeholder(value)
+
+
+def test_non_strings_are_not_placeholders() -> None:
+    from agent.loop import looks_like_a_placeholder
+
+    assert not looks_like_a_placeholder(7)
+    assert not looks_like_a_placeholder(None)
+    assert not looks_like_a_placeholder({"nested": "id"})
+
+
+def test_the_note_refuses_the_conclusion_the_model_reached() -> None:
+    from agent.loop import tool_failure_note
+
+    note = tool_failure_note(
+        "mcp.mailspring.list_unread_threads",
+        {"accountId": "user_account_id"},
+        ["mcp.mailspring.list_accounts", "shell"],
+    )
+    assert "not a missing capability" in note
+    assert "do not tell the user you lack access" in note
+    assert "`accountId`" in note
+    # It names the sibling that would produce the real value.
+    assert "mcp.mailspring.list_accounts" in note
+
+
+def test_a_failure_with_sound_arguments_gets_different_advice() -> None:
+    """Nothing was guessed, so telling it to go and look would be wrong."""
+    from agent.loop import tool_failure_note
+
+    note = tool_failure_note("shell", {"command": "ls"}, ["shell"])
+    assert "placeholder" not in note
+    assert "schema" in note
+
+
+@pytest.mark.parametrize(
+    ("result", "is_error"),
+    [
+        ('{"error": "no such account", "code": "MCP_ERROR"}', True),
+        ("Error: the Keylane UI is not running", True),
+        ('{"threads": [], "count": 0}', False),
+        ("You have 3 unread threads.", False),
+        ("", False),
+    ],
+)
+def test_only_failures_are_steered(result: str, is_error: bool) -> None:
+    from agent.loop import _looks_like_an_error
+
+    assert _looks_like_an_error(result) is is_error
