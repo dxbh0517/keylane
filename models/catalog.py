@@ -22,7 +22,6 @@ from daemon.config import load_toml
 from daemon.paths import MODELS_DIR
 from npu.kind import PipelineKind
 from npu.limits import CHARS_PER_TOKEN
-from npu.thinking import sanitize_response
 from runtimes import DEFAULT_RUNTIME, RuntimeBackend, backend_for, normalise_runtime_id
 
 logger = logging.getLogger(__name__)
@@ -933,7 +932,18 @@ class LocalModelRuntime:
             )
         finally:
             self._infer_lock.release()
-        return sanitize_response(raw)
+        # Raw, deliberately. Sanitizing here looks like tidiness and is a
+        # silent lobotomy: `sanitize_response` strips `<tool_call>` blocks
+        # along with `<think>` ones, so the agent — the only caller that has to
+        # *read* a tool call — received the one string that could never contain
+        # one. Every local tool call, MCP servers included, was destroyed
+        # between the model emitting it and the loop parsing it.
+        #
+        # Cleaning is the consumer's job, and each consumer wants something
+        # different: the agent parses markup, the HUD hides it, an
+        # OpenAI-compatible client wants prose. Only the ones that show text to
+        # a person clean it now.
+        return raw
 
     def chat(
         self,

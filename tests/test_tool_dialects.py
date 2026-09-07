@@ -149,3 +149,40 @@ def test_a_thinking_block_and_a_call_are_both_removed() -> None:
         '<function name="web_search"><param name="question">x</param></function>'
     )
     assert sanitize_response(text) == ""
+
+
+# ── the field a model uses for the tool's name ───────────────────────────
+#
+# Observed mid-turn from Qwen3, having used `name` correctly on the call
+# before: {"tool_call": "mcp.mailspring.list_folders", "arguments": {...}}.
+# Refusing that spelling does not produce an error — the JSON is handed to the
+# user as though it were the answer.
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"name": "inbox_list", "arguments": {}}',
+        '{"tool_call": "inbox_list", "arguments": {}}',
+        '{"tool": "inbox_list", "args": {}}',
+        '{"function": "inbox_list", "parameters": {}}',
+        '{"tool_name": "inbox_list", "input": {}}',
+    ],
+)
+def test_the_name_is_read_whatever_the_model_calls_the_field(raw: str) -> None:
+    assert parse_tool_call(raw) == {"name": "inbox_list", "arguments": {}}
+
+
+def test_arguments_are_read_whatever_the_model_calls_them() -> None:
+    call = parse_tool_call('{"tool_call": "web_search", "params": {"question": "tides"}}')
+    assert call["arguments"] == {"question": "tides"}
+
+
+def test_ordinary_json_is_still_not_a_tool_call() -> None:
+    """The looser the name matching, the more this one matters."""
+    assert parse_tool_call('{"unrelated": "json", "value": 3}') is None
+    assert parse_tool_call('{"name": ""}') is None
+
+
+def test_a_json_object_of_prose_is_not_a_call() -> None:
+    assert parse_tool_call('{"answer": "you have three unread emails"}') is None

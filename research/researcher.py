@@ -75,7 +75,7 @@ def _plan_queries(question: str, *, max_queries: int) -> list[str]:
         f"Question: {question}"
     )
     try:
-        raw = llm.generate(prompt, route="utility", max_new_tokens=128)
+        raw = sanitize_response(llm.generate(prompt, route="utility", max_new_tokens=128))
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if match:
             data = json.loads(match.group())
@@ -127,7 +127,7 @@ def _select_urls(
         f"Format: one line per number, e.g. '1 yes\\n2 no'\n\n{listing}"
     )
     try:
-        raw = llm.generate(prompt, route="utility", max_new_tokens=128)
+        raw = sanitize_response(llm.generate(prompt, route="utility", max_new_tokens=128))
         picked: list[dict[str, str]] = []
         for line in raw.splitlines():
             m = re.match(r"\s*(\d+)\s*(yes|y|true|1)", line, re.IGNORECASE)

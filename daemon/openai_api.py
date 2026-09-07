@@ -122,6 +122,7 @@ async def chat_completions(body: ChatCompletionRequest) -> Any:
     """One completion from the resident model, streamed or not."""
     import asyncio
 
+    from npu.thinking import extract_user_answer
     from seams import get_context
     from seams.errors import LlmError
 
@@ -140,12 +141,14 @@ async def chat_completions(body: ChatCompletionRequest) -> Any:
 
     if not body.stream:
         try:
-            answer = await asyncio.to_thread(
+            raw = await asyncio.to_thread(
                 llm.chat, messages, route="interactive", max_new_tokens=max_tokens
             )
         except LlmError as exc:
             raise HTTPException(503, str(exc)) from exc
-        return _envelope(model, answer)
+        # An OpenAI client wants prose, not this model's reasoning or any tool
+        # markup it invented. The runtime hands back exactly what was decoded.
+        return _envelope(model, extract_user_answer(raw))
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     loop = asyncio.get_running_loop()

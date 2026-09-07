@@ -275,3 +275,53 @@ def test_generation_does_not_block_the_event_loop():
         return await task
 
     assert asyncio.run(_run()) == "done"
+
+
+# ── the runtime must not clean what the agent has to read ────────────────
+#
+# `RuntimeState.generate` used to end with `return sanitize_response(raw)`.
+# That strips `<tool_call>` blocks along with `<think>` ones, so the agent —
+# the one caller that has to *read* a tool call — received the single string
+# that could never contain one. Every local tool call, MCP servers included,
+# was destroyed between the model emitting it and the loop parsing it.
+#
+# It survived the suite because every test here stubs the LLM seam, so none of
+# them ever ran the sanitizing that the real runtime did.
+
+
+def test_sanitizing_destroys_a_tool_call() -> None:
+    """The premise. If this ever stops being true, the guard below is moot."""
+    from npu.thinking import sanitize_response
+
+    from agent.tools_parse import parse_tool_call
+
+    raw = (
+        "<think>\nI should look at their mail.\n</think>\n\n"
+        '<tool_call>\n{"name": "mcp.mailspring.list_accounts", "arguments": {}}\n</tool_call>'
+    )
+    assert parse_tool_call(raw) is not None
+    assert parse_tool_call(sanitize_response(raw)) is None
+
+
+def test_the_runtime_hands_back_what_the_model_decoded() -> None:
+    """Cleaning is the consumer's job: each one wants something different.
+
+    The agent parses markup, the HUD hides it, an OpenAI client wants prose.
+    """
+    import inspect
+
+    from models.catalog import LocalModelRuntime
+
+    source = inspect.getsource(LocalModelRuntime.generate)
+    assert "return sanitize_response(raw)" not in source
+    assert source.rstrip().endswith("return raw")
+
+
+def test_the_openai_route_still_returns_prose() -> None:
+    """It serves clients that want an answer, not this model's reasoning."""
+    import inspect
+
+    from daemon import openai_api
+
+    source = inspect.getsource(openai_api.chat_completions)
+    assert "extract_user_answer(raw)" in source
