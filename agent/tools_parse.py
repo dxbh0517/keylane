@@ -36,18 +36,43 @@ def _extract_json_object(text: str) -> str | None:
     return None
 
 
+# What a model calls the field holding the tool's name. `name` is what
+# Keylane's prompt asks for and what most models emit; the rest are what they
+# emit anyway. Observed from Qwen3 mid-turn, having used `name` correctly on
+# the call before: {"tool_call": "mcp.mailspring.list_folders", "arguments": …}.
+# Refusing that spelling does not produce an error — the JSON is shown to the
+# user as if it were the answer.
+_NAME_KEYS = ("name", "tool_call", "tool", "function", "tool_name", "function_name")
+_ARGUMENT_KEYS = ("arguments", "args", "parameters", "params", "input")
+
+
+def _first_string(data: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _parse_payload(raw_json: str) -> dict[str, Any] | None:
     blob = _extract_json_object(raw_json.strip()) or raw_json.strip()
     try:
         data = json.loads(blob)
     except json.JSONDecodeError:
         return None
-    if not isinstance(data, dict) or "name" not in data:
+    if not isinstance(data, dict):
         return None
-    arguments = data.get("arguments", {})
-    if not isinstance(arguments, dict):
-        arguments = {}
-    return {"name": str(data["name"]), "arguments": arguments}
+
+    name = _first_string(data, _NAME_KEYS)
+    if not name:
+        return None
+
+    arguments: Any = {}
+    for key in _ARGUMENT_KEYS:
+        if isinstance(data.get(key), dict):
+            arguments = data[key]
+            break
+    return {"name": name, "arguments": arguments}
 
 
 def _payload_from_inner(inner: str) -> dict[str, Any] | None:
