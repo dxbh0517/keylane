@@ -364,8 +364,40 @@ def test_a_reasoning_model_gets_room_to_finish() -> None:
     assert MAX_REPLY_TOKENS >= 1024
 
 
-def test_the_reply_reserve_matches_the_reply_budget() -> None:
-    """A prompt that fits and a reply that does not is the same bug twice."""
-    from npu.limits import MAX_REPLY_TOKENS, RESERVE_TOKENS
+def test_the_reply_is_declared_to_the_pipeline_not_taken_from_the_prompt() -> None:
+    """The prompt window and the response allowance are separate on the NPU.
 
-    assert RESERVE_TOKENS == MAX_REPLY_TOKENS
+    Taking the reply out of the prompt window reserves the same tokens twice.
+    It cost 4000 characters of prompt, which with an MCP server connected was
+    the difference between 33% of the budget left for the conversation and 17%.
+    """
+    from npu.limits import MAX_REPLY_TOKENS, RESERVE_TOKENS
+    from npu.pipeline_config import pipeline_init_kwargs
+
+    assert RESERVE_TOKENS < MAX_REPLY_TOKENS, "the reserve is scaffolding, not the reply"
+    npu = pipeline_init_kwargs("NPU", None, "llm")
+    assert npu["MIN_RESPONSE_LEN"] == MAX_REPLY_TOKENS
+    assert npu["MAX_PROMPT_LEN"] >= 8192
+
+
+def test_a_vlm_on_the_npu_declares_the_same_window() -> None:
+    from npu.limits import MAX_REPLY_TOKENS
+    from npu.pipeline_config import pipeline_init_kwargs
+
+    props = pipeline_init_kwargs("NPU", None, "vlm")["config"]["DEVICE_PROPERTIES"]["NPU"]
+    assert props["MIN_RESPONSE_LEN"] == MAX_REPLY_TOKENS
+
+
+def test_only_the_npu_compiles_a_window_in() -> None:
+    """CPU and GPU are bounded by patience, not by a compiled graph."""
+    from npu.pipeline_config import pipeline_init_kwargs
+
+    assert pipeline_init_kwargs("CPU", None, "llm") == {}
+
+
+def test_the_budget_clears_the_floor_with_an_mcp_server_connected() -> None:
+    """55 tools is a real configuration: Keylane's own plus Mailspring's 21."""
+    from npu.limits import MIN_CONVERSATION_SHARE, npu_prompt_budget_chars
+
+    budget = npu_prompt_budget_chars()
+    assert (budget - MEASURED_FLOOR_CHARS) / budget >= MIN_CONVERSATION_SHARE

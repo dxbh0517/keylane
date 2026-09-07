@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from npu.kind import PipelineKind
-from npu.limits import NPU_MAX_PROMPT_TOKENS
+from npu.limits import MAX_REPLY_TOKENS, NPU_MAX_PROMPT_TOKENS
 
 
 def _is_npu(device: str) -> bool:
@@ -30,6 +30,7 @@ def pipeline_init_kwargs(device: str, cache: Path | None, kind: PipelineKind) ->
             # Without this the VLM compiles with a 1024-token prompt limit and
             # throws on anything longer — which the system prompt alone exceeds.
             device_props["MAX_PROMPT_LEN"] = NPU_MAX_PROMPT_TOKENS
+            device_props["MIN_RESPONSE_LEN"] = MAX_REPLY_TOKENS
         if cache_str:
             device_props["CACHE_DIR"] = cache_str
         if not device_props:
@@ -39,6 +40,10 @@ def pipeline_init_kwargs(device: str, cache: Path | None, kind: PipelineKind) ->
     kwargs: dict[str, Any] = {}
     if _is_npu(device):
         kwargs["MAX_PROMPT_LEN"] = NPU_MAX_PROMPT_TOKENS
+        # The other half of the window, and the reason the prompt budget does
+        # not have to pay for it. Left unset, the pipeline picks a default that
+        # a 2048-token reply can outrun.
+        kwargs["MIN_RESPONSE_LEN"] = MAX_REPLY_TOKENS
         kwargs["GENERATE_HINT"] = "FAST_COMPILE"
     if cache_str:
         kwargs["CACHE_DIR"] = cache_str
