@@ -325,14 +325,47 @@ def test_no_budget_means_no_verdict() -> None:
     assert assembly.headroom_share == 1.0
 
 
+# The required floor measured with 55 tools registered — Keylane's own plus
+# Mailspring's 21. It grows with every tool, and it is what the budget has to
+# clear.
+MEASURED_FLOOR_CHARS = 8171
+
+
 def test_the_npu_budget_leaves_room_for_a_real_tool_set() -> None:
     """4096 tokens stopped being enough the moment an MCP server was added.
 
-    Measured with 55 tools registered: a required floor of 8171 characters
-    against 9318 available. The floor is the thing that grows with every tool,
-    so the budget has to clear it with room to spare rather than by a margin.
+    Stated against the share the conversation must keep rather than a round
+    multiple, because the two constants pull against each other: room for a
+    longer reply is taken out of the room for the prompt, and raising one
+    without checking the other is how this budget gets crossed a third time.
     """
-    from npu.limits import NPU_MAX_PROMPT_TOKENS, npu_prompt_budget_chars
+    from npu.limits import (
+        MIN_CONVERSATION_SHARE,
+        NPU_MAX_PROMPT_TOKENS,
+        npu_prompt_budget_chars,
+    )
 
     assert NPU_MAX_PROMPT_TOKENS >= 8192
-    assert npu_prompt_budget_chars() > 8171 * 2
+    budget = npu_prompt_budget_chars()
+    headroom = budget - MEASURED_FLOOR_CHARS
+    assert headroom > 0, "the tool index alone does not fit"
+    assert headroom / budget >= MIN_CONVERSATION_SHARE
+
+
+def test_a_reasoning_model_gets_room_to_finish() -> None:
+    """Measured: ~400 tokens of reasoning before the tool call was emitted.
+
+    512 left about a hundred tokens of slack, which one turn of history
+    consumes — and the failure is silence rather than a short answer, because
+    reasoning is stripped before the user sees it.
+    """
+    from npu.limits import MAX_REPLY_TOKENS
+
+    assert MAX_REPLY_TOKENS >= 1024
+
+
+def test_the_reply_reserve_matches_the_reply_budget() -> None:
+    """A prompt that fits and a reply that does not is the same bug twice."""
+    from npu.limits import MAX_REPLY_TOKENS, RESERVE_TOKENS
+
+    assert RESERVE_TOKENS == MAX_REPLY_TOKENS

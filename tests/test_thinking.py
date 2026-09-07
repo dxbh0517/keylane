@@ -72,3 +72,49 @@ def test_output_stream_filter_holds_tool_markup():
     assert filt.feed("<tool_call>{") == ""
     assert filt.feed('"name": "web_search"}') == ""
     assert filt.flush() == ""
+
+
+# ── a reply spent entirely on reasoning ──────────────────────────────────
+#
+# A reasoning model spends its budget thinking before it answers, and the
+# reasoning is stripped before the user sees it — so a cap it cannot finish
+# inside produces an empty reply rather than a short one. The narrow check
+# only caught the unterminated case; a model that closes its block and then
+# runs out fell through to "I could not produce a response", which is the one
+# thing that did not happen.
+
+
+def test_an_unterminated_reasoning_block_is_caught() -> None:
+    from npu.thinking import reasoned_without_answering
+
+    assert reasoned_without_answering("<think>\nstill working on it and then the budget")
+
+
+def test_a_closed_block_with_no_answer_after_it_is_caught() -> None:
+    """The case that was reported as "could not produce a response"."""
+    from npu.thinking import reasoned_without_answering
+
+    assert reasoned_without_answering("<think>\nI have decided what to do.\n</think>\n\n")
+
+
+def test_reasoning_followed_by_an_answer_is_not_caught() -> None:
+    from npu.thinking import reasoned_without_answering
+
+    assert not reasoned_without_answering("<think>\nthinking\n</think>\n\nYou have 3 unread.")
+
+
+def test_a_plain_empty_reply_is_not_blamed_on_reasoning() -> None:
+    """No reasoning happened, so saying it was spent thinking would be untrue."""
+    from npu.thinking import reasoned_without_answering
+
+    assert not reasoned_without_answering("")
+    assert not reasoned_without_answering("   \n ")
+
+
+def test_a_reply_that_is_only_a_tool_call_is_not_blamed_on_reasoning() -> None:
+    """It sanitizes to nothing too, and it is the loop's business, not this."""
+    from npu.thinking import reasoned_without_answering
+
+    assert not reasoned_without_answering(
+        '<tool_call>\n{"name": "mcp.mailspring.list_accounts", "arguments": {}}\n</tool_call>'
+    )

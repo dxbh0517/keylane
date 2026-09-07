@@ -65,8 +65,28 @@ MIN_CONVERSATION_SHARE = 0.25
 # prompt that triggered this measured 2.8 — and being wrong here throws.
 CHARS_PER_TOKEN = 2.6
 
-# Room left for the generated reply and the chat scaffolding.
-RESERVE_TOKENS = 512
+# How long a reply may be. 512 predates both reasoning models and MCP, and it
+# is the wrong number for either.
+#
+# A reasoning model spends its budget thinking before it answers, and the
+# reasoning is stripped before the user sees it — so a cap it cannot finish
+# inside produces an empty reply, not a short one. Measured on
+# phi-4-mini-reasoning with 55 tools registered and the question "do I have any
+# unread emails?": ~400 tokens of reasoning, then the correct tool call, with
+# about a hundred tokens to spare. One turn of history is enough to lose it, and
+# what the user gets is silence rather than a truncated answer.
+#
+# Override with KEYLANE_MAX_REPLY_TOKENS.
+MAX_REPLY_TOKENS = int(os.environ.get("KEYLANE_MAX_REPLY_TOKENS", "2048"))
+
+# Short, frequent, disposable: query planning and URL selection. These do not
+# reason at length and do not need the room.
+UTILITY_REPLY_TOKENS = 256
+
+# Room left for the generated reply and the chat scaffolding, kept equal to the
+# reply budget so the two cannot drift into a prompt that fits and a reply that
+# does not.
+RESERVE_TOKENS = MAX_REPLY_TOKENS
 
 
 def npu_prompt_budget_tokens() -> int:

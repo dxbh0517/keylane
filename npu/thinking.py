@@ -311,3 +311,21 @@ def ran_out_mid_thought(raw: str) -> bool:
         return False
     # An unterminated block is one with no close tag after the last open.
     return _THINK_CLOSE not in raw[opened:]
+
+
+def reasoned_without_answering(raw: str) -> bool:
+    """True when the reply was reasoning and nothing the user can be shown.
+
+    Broader than :func:`ran_out_mid_thought`, and the difference is the case
+    that was being reported wrongly. A model can run out of budget *after*
+    closing its reasoning block and before writing anything — the block is
+    terminated, so the narrower check says no, and the turn fell through to
+    "I could not produce a response", which is the one thing that did not
+    happen. It produced several hundred tokens of reasoning and stopped.
+
+    Either way the fix is the same and the user needs to hear it: the reply
+    budget was spent thinking.
+    """
+    if not raw or _THINK_OPEN not in raw:
+        return False
+    return not sanitize_response(raw).strip()
