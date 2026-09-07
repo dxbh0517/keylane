@@ -281,6 +281,30 @@ to fit is logged as a warning rather than an info line, and
 do fail loudly. If it is low, disable tools you do not use in **Settings →
 MCP** — an MCP server's tools can be turned off individually.
 
+### Replies have to be long enough to think in
+
+A reply may be **2048 tokens** (`KEYLANE_MAX_REPLY_TOKENS`). It was 512, which
+predates both reasoning models and MCP and is the wrong number for either.
+
+A reasoning model spends its budget thinking *before* it answers, and Keylane
+strips the reasoning before you see it — so a cap it cannot finish inside
+produces an **empty** reply, not a short one. Measured on
+`phi-4-mini-reasoning` with 55 tools registered, asked "do I have any unread
+emails?": about 400 tokens of reasoning, then the correct tool call, with
+roughly a hundred tokens to spare. One turn of history is enough to lose it,
+and what arrives is silence.
+
+The reserve inside the prompt budget is kept equal to the reply budget, because
+a prompt that fits and a reply that does not is the same bug twice — and the
+two pull against each other, since room for a longer reply comes out of the
+room for the prompt.
+
+When it does happen, it now says so. "I could not produce a response" was
+reported for a model that had produced several hundred tokens of reasoning and
+run out; the message names the budget and what to change. Note that a
+`-reasoning` build will always spend the budget this way — for an agent loop,
+where every iteration pays the cost, prefer the plain build of the same model.
+
 ### Curated models
 
 Pick one in **Settings → Model** or via `POST /models/select`. They auto-download

@@ -10,11 +10,12 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable
 
 from agent.prompt import assemble_for_turn
+from npu.limits import MAX_REPLY_TOKENS, UTILITY_REPLY_TOKENS
 from agent.tools_parse import has_tool_call_markup, parse_tool_call
 from daemon.config import assistant_settings
 from memory.store import get_store
 from seams import get_context
-from npu.thinking import extract_user_answer, ran_out_mid_thought, sanitize_response
+from npu.thinking import extract_user_answer, reasoned_without_answering, sanitize_response
 from research.events import set_research_callback
 from seams.prompt import Assembly, latest_context_digest
 from tools.goal_tools import register_goal_tools, render_goal
@@ -292,7 +293,7 @@ class AIAgent:
             llm.chat,
             messages,
             route=self.route,
-            max_new_tokens=512,
+            max_new_tokens=MAX_REPLY_TOKENS,
             images=images,
             on_token=forward,
         )
@@ -454,20 +455,24 @@ class AIAgent:
                             "I could not complete that request. "
                             "Try asking again or check that web search (SearXNG) is running.",
                         )
-                    elif ran_out_mid_thought(raw):
-                        # The model reasoned right up to the token limit and
-                        # never reached an answer. Saying "I could not produce
-                        # a response" is untrue and unactionable: it produced
+                    elif reasoned_without_answering(raw):
+                        # The model reasoned up to the token limit and never
+                        # reached an answer. Saying "I could not produce a
+                        # response" is untrue and unactionable: it produced
                         # plenty, and the fix is a bigger budget or a model
                         # that does not think as hard.
                         logger.warning(
-                            "model used all %d tokens reasoning without answering", 512
+                            "model spent all %d reply tokens reasoning without "
+                            "answering (%d chars of reasoning)",
+                            MAX_REPLY_TOKENS,
+                            len(raw),
                         )
                         final = _emit_user_answer(
                             on_event,
-                            "The model spent its whole reply thinking and never got to "
-                            "an answer. Try a shorter question, or pick a model that "
-                            "reasons less in Settings → Model.",
+                            f"The model spent its whole {MAX_REPLY_TOKENS}-token reply "
+                            "thinking and never reached an answer. Pick a model that "
+                            "does not reason at length — a `-reasoning` build always "
+                            "will — or raise KEYLANE_MAX_REPLY_TOKENS.",
                         )
                     else:
                         final = _emit_user_answer(
@@ -524,7 +529,7 @@ class AIAgent:
             "If no, reply NO_SKILL."
         )
         try:
-            resp = llm.generate(prompt, route="utility", max_new_tokens=256)
+            resp = llm.generate(prompt, route="utility", max_new_tokens=UTILITY_REPLY_TOKENS)
             if "NO_SKILL" in resp:
                 return
             call = parse_tool_call(resp)
