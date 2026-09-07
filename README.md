@@ -294,10 +294,13 @@ emails?": about 400 tokens of reasoning, then the correct tool call, with
 roughly a hundred tokens to spare. One turn of history is enough to lose it,
 and what arrives is silence.
 
-The reserve inside the prompt budget is kept equal to the reply budget, because
-a prompt that fits and a reply that does not is the same bug twice — and the
-two pull against each other, since room for a longer reply comes out of the
-room for the prompt.
+On the NPU the prompt window and the response allowance are **separate**
+pipeline properties — `MAX_PROMPT_LEN` and `MIN_RESPONSE_LEN` — so the reply is
+declared to the pipeline rather than subtracted from the prompt budget.
+Reserving it from the prompt reserves the same tokens twice: it cost 4000
+characters, which with an MCP server connected was the difference between 33%
+of the budget left for the conversation and 17%. Compiling with both set takes
+8 s.
 
 When it does happen, it now says so. "I could not produce a response" was
 reported for a model that had produced several hundred tokens of reasoning and

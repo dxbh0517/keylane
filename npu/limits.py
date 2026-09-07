@@ -83,10 +83,18 @@ MAX_REPLY_TOKENS = int(os.environ.get("KEYLANE_MAX_REPLY_TOKENS", "2048"))
 # reason at length and do not need the room.
 UTILITY_REPLY_TOKENS = 256
 
-# Room left for the generated reply and the chat scaffolding, kept equal to the
-# reply budget so the two cannot drift into a prompt that fits and a reply that
-# does not.
-RESERVE_TOKENS = MAX_REPLY_TOKENS
+# Scaffolding only — the chat template's own tags and the few tokens a
+# tokenizer counts differently from this estimate.
+#
+# Not the reply budget. Tying the two looked like the careful choice and was a
+# mistake: on the NPU the prompt window and the response allowance are
+# *separate* pipeline properties (MAX_PROMPT_LEN and MIN_RESPONSE_LEN), so
+# taking the reply out of the prompt window reserves the same tokens twice. It
+# cost 4000 characters of prompt, which with an MCP server connected was the
+# difference between 33% of the budget left for the conversation and 17%.
+#
+# The reply is declared to the pipeline instead — see npu/pipeline_config.py.
+RESERVE_TOKENS = 512
 
 
 def npu_prompt_budget_tokens() -> int:
