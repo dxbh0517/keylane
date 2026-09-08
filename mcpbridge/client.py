@@ -7,9 +7,11 @@ official ``mcp`` SDK on ``sys.path`` and every import below would fail.
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from typing import Any
+from urllib.parse import urlparse
 
 from daemon.config import get_section, mcp_settings
 from mcpbridge.forms import server_transport
@@ -21,9 +23,101 @@ _sessions: dict[str, Any] = {}
 _stack: AsyncExitStack | None = None
 _lock = asyncio.Lock()
 
+# Long enough to notice a black hole, short enough not to stall startup.
+_HTTP_PROBE_TIMEOUT = 1.5
+
 
 class McpError(RuntimeError):
     pass
+
+
+def is_connect_failure(exc: BaseException) -> bool:
+    """Whether *exc* is (or wraps) a TCP connection that never completed.
+
+    ``streamable_http_client`` POSTs from a child task. Nothing listening
+    is delivered to the caller as ``CancelledError`` or a
+    ``BaseExceptionGroup``, not as the ``ConnectError`` itself — which is
+    why ``except Exception`` around ``initialize()`` never saw errno 111,
+    and why a Mailspring that was not running took the daemon down with it.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        current = stack.pop()
+        ident = id(current)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        if isinstance(current, OSError) and current.errno in {
+            errno.ECONNREFUSED,
+            errno.EHOSTUNREACH,
+            errno.ENETUNREACH,
+        }:
+            return True
+        name = type(current).__name__.lower()
+        text = str(current).lower()
+        if "connecterror" in name or "connectionrefused" in name:
+            return True
+        if (
+            "connection refused" in text
+            or "all connection attempts failed" in text
+            or "[errno 111]" in text
+        ):
+            return True
+        if isinstance(current, BaseExceptionGroup):
+            stack.extend(current.exceptions)
+        if current.__cause__ is not None:
+            stack.append(current.__cause__)
+        if current.__context__ is not None:
+            stack.append(current.__context__)
+    return False
+
+
+async def _require_http_listener(sid: str, url: str) -> None:
+    """Refuse to enter the MCP HTTP client unless something answers.
+
+    The SDK's streamable-HTTP session starts a task group and POSTs from
+    inside it. A refused connection cancels that group, the parent sees
+    ``CancelledError`` (a ``BaseException``), and Starlette treats a
+    cancelled lifespan as "startup failed" — exit 3, nothing on :9100,
+    errno 111 in the HUD. Checking the port first keeps a down Mailspring
+    as a skipped server rather than a dead daemon.
+    """
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if not host:
+        raise McpError(f"MCP server {sid}: http transport requires a url")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port),
+            timeout=_HTTP_PROBE_TIMEOUT,
+        )
+    except OSError as exc:
+        raise McpError(
+            f"MCP server {sid}: nothing is listening at {host}:{port}"
+        ) from exc
+    except TimeoutError as exc:
+        raise McpError(
+            f"MCP server {sid}: {host}:{port} did not accept a connection"
+        ) from exc
+    writer.close()
+    with suppress(Exception):
+        await writer.wait_closed()
+
+
+def _reraise_as_mcp(sid: str, endpoint: str, exc: BaseException, *, http: bool) -> None:
+    """Turn a refused / cancelled HTTP handshake into ``McpError``.
+
+    Never returns: either raises ``McpError`` or re-raises *exc*.
+    """
+    if isinstance(exc, (KeyboardInterrupt, SystemExit, McpError)):
+        raise
+    if is_connect_failure(exc) or (http and isinstance(exc, asyncio.CancelledError)):
+        raise McpError(f"MCP server {sid}: nothing is listening at {endpoint}") from exc
+    if isinstance(exc, Exception):
+        raise McpError(f"MCP server {sid}: {exc}") from exc
+    raise exc
 
 
 def normalize_auth_header(value: str | None) -> str:
@@ -67,33 +161,44 @@ async def _open_session(sid: str, srv: dict[str, Any], stack: AsyncExitStack) ->
     """Enter a ClientSession for *srv* on *stack* and initialize it."""
     from mcp import ClientSession
 
-    if server_transport(srv) == "http":
-        from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+    http = server_transport(srv) == "http"
+    endpoint = ""
+    try:
+        if http:
+            from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
-        url = str(srv.get("url", "")).strip()
-        if not url:
-            raise McpError(f"MCP server {sid}: http transport requires a url")
-        http = create_mcp_http_client(headers=_server_headers(srv) or None)
-        await stack.enter_async_context(http)
-        streams = await stack.enter_async_context(streamable_http_client(url, http_client=http))
-        read, write = streams[0], streams[1]
-    else:
-        from mcp import StdioServerParameters
-        from mcp.client.stdio import stdio_client
+            url = str(srv.get("url", "")).strip()
+            if not url:
+                raise McpError(f"MCP server {sid}: http transport requires a url")
+            endpoint = url
+            await _require_http_listener(sid, url)
+            client = create_mcp_http_client(headers=_server_headers(srv) or None)
+            await stack.enter_async_context(client)
+            streams = await stack.enter_async_context(
+                streamable_http_client(url, http_client=client)
+            )
+            read, write = streams[0], streams[1]
+        else:
+            from mcp import StdioServerParameters
+            from mcp.client.stdio import stdio_client
 
-        command = str(srv.get("command", "")).strip()
-        if not command:
-            raise McpError(f"MCP server {sid}: stdio transport requires a command")
-        params = StdioServerParameters(
-            command=command,
-            args=list(srv.get("args", [])),
-            env=srv.get("env"),
-        )
-        read, write = await stack.enter_async_context(stdio_client(params))
+            command = str(srv.get("command", "")).strip()
+            if not command:
+                raise McpError(f"MCP server {sid}: stdio transport requires a command")
+            endpoint = command
+            params = StdioServerParameters(
+                command=command,
+                args=list(srv.get("args", [])),
+                env=srv.get("env"),
+            )
+            read, write = await stack.enter_async_context(stdio_client(params))
 
-    session = await stack.enter_async_context(ClientSession(read, write))
-    await session.initialize()
-    return session
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        return session
+    except BaseException as exc:
+        _reraise_as_mcp(sid, endpoint or sid, exc, http=http)
+        raise  # unreachable; keeps type-checkers sure we never return None
 
 
 async def probe_mcp_server(srv: dict[str, Any]) -> dict[str, Any]:
@@ -203,17 +308,25 @@ async def load_mcp_tools(registry: ToolRegistry) -> int:
                 )
             else:
                 logger.info("MCP server %s (%s): %s tools", sid, server_transport(srv), registered)
+        except McpError as exc:
+            # A down Mailspring is a configuration fact, not a stack to dump.
+            logger.warning("%s", exc)
         except Exception:  # noqa: BLE001
             logger.exception("failed to load MCP server %s", sid)
     return count
 
 
-async def reload_mcp_tools(registry: ToolRegistry) -> int:
+async def _drop_stack() -> None:
     global _stack, _sessions
     _sessions.clear()
-    if _stack is not None:
-        await _stack.aclose()
-        _stack = None
+    stack, _stack = _stack, None
+    if stack is not None:
+        with suppress(BaseException):
+            await stack.aclose()
+
+
+async def reload_mcp_tools(registry: ToolRegistry) -> int:
+    await _drop_stack()
     for name in list(registry._tools.keys()):  # noqa: SLF001
         if name.startswith("mcp."):
             del registry._tools[name]  # noqa: SLF001
@@ -221,8 +334,4 @@ async def reload_mcp_tools(registry: ToolRegistry) -> int:
 
 
 async def shutdown_mcp() -> None:
-    global _stack, _sessions
-    _sessions.clear()
-    if _stack is not None:
-        await _stack.aclose()
-        _stack = None
+    await _drop_stack()

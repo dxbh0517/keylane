@@ -11,6 +11,7 @@ is not a privilege it did not already have.
 
 from __future__ import annotations
 
+import errno
 import logging
 from typing import Any
 
@@ -69,6 +70,36 @@ def forget_token() -> None:
     global _cached_token, _warned
     _cached_token = None
     _warned = False
+
+
+def describe_request_error(exc: BaseException) -> str:
+    """What to show when a request to the daemon did not complete.
+
+    httpx surfaces a refused connection as ``[Errno 111] Connection refused``,
+    which is true and useless: the number is the kernel's name for "nothing
+    is listening", and the process that should have been listening is the
+    Keylane daemon. Name that, not the errno.
+    """
+    if _daemon_unreachable(exc):
+        return (
+            "the Keylane daemon is not running — nothing is listening on "
+            "127.0.0.1:9100"
+        )
+    return str(exc)
+
+
+def _daemon_unreachable(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError) and current.errno == errno.ECONNREFUSED:
+            return True
+        text = str(current).lower()
+        if "connection refused" in text or "[errno 111]" in text:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _merged(kwargs: dict[str, Any]) -> dict[str, Any]:
