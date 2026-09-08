@@ -1772,7 +1772,7 @@ class SpotlightWindow(Gtk.ApplicationWindow):
                         elif etype == "error":
                             answer = f"Error: {event.get('message', 'unknown error')}"
             except Exception as exc:  # noqa: BLE001
-                answer = f"Error: {exc}"
+                answer = f"Error: {api.describe_request_error(exc)}"
 
             def _finish() -> bool:
                 self._end_stream()

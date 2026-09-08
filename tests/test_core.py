@@ -235,6 +235,103 @@ def test_a_server_registers_every_tool_it_offers(monkeypatch):
     assert sorted(registry._tools) == ["mcp.mail.tool_0", "mcp.mail.tool_1", "mcp.mail.tool_2"]
 
 
+def _closed_loopback_port() -> int:
+    """A TCP port that is guaranteed to refuse connections on this machine."""
+    import socket
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def test_a_refused_http_server_is_a_connect_failure():
+    """Errno 111 has to be recognised even when wrapped in the SDK's cancel."""
+    import asyncio
+    import errno
+
+    from mcpbridge.client import is_connect_failure
+
+    refused = OSError(errno.ECONNREFUSED, "Connection refused")
+    assert is_connect_failure(refused)
+    assert is_connect_failure(ConnectionRefusedError("Connection refused"))
+
+    cancelled = asyncio.CancelledError()
+    cancelled.__context__ = refused
+    assert is_connect_failure(cancelled)
+
+    group = ExceptionGroup("unhandled errors in a TaskGroup", [refused])
+    assert is_connect_failure(group)
+    assert not is_connect_failure(RuntimeError("the model is still loading"))
+
+
+def test_an_http_server_that_is_not_listening_does_not_kill_startup(monkeypatch):
+    """Mailspring's MCP port refused used to abort FastAPI's lifespan.
+
+    The streamable-HTTP client POSTs from a child task. Nothing listening
+    arrives as CancelledError, which is a BaseException, so the
+    ``except Exception`` around load swallowed nothing and Starlette
+    exited. The UI then reported errno 111 — connection refused — against
+    a daemon that had taken itself down.
+    """
+    import asyncio
+
+    from mcpbridge import client as mcp_client
+    from tools.registry import ToolRegistry
+
+    port = _closed_loopback_port()
+    monkeypatch.setattr(
+        mcp_client,
+        "mcp_settings",
+        lambda: {
+            "servers": [
+                {
+                    "id": "mailspring",
+                    "transport": "http",
+                    "url": f"http://127.0.0.1:{port}/mcp",
+                }
+            ]
+        },
+    )
+
+    async def _run() -> int:
+        try:
+            return await mcp_client.load_mcp_tools(ToolRegistry())
+        finally:
+            await mcp_client.shutdown_mcp()
+
+    assert asyncio.run(_run()) == 0
+
+
+def test_probing_an_unreachable_http_server_names_the_port():
+    import asyncio
+
+    from mcpbridge.client import McpError, probe_mcp_server
+
+    port = _closed_loopback_port()
+    srv = {
+        "id": "mailspring",
+        "transport": "http",
+        "url": f"http://127.0.0.1:{port}/mcp",
+    }
+
+    with pytest.raises(McpError, match=f"nothing is listening at 127.0.0.1:{port}"):
+        asyncio.run(probe_mcp_server(srv))
+
+
+def test_a_refused_daemon_is_named_rather_than_errno_111():
+    """The HUD used to show the kernel's wording for a daemon that was down."""
+    import errno
+
+    from ui.api import describe_request_error
+
+    message = describe_request_error(OSError(errno.ECONNREFUSED, "Connection refused"))
+    assert "111" not in message
+    assert "daemon" in message.lower()
+    assert "9100" in message
+
+
 # ── one transcript, balanced windows ─────────────────────────────────────
 
 
